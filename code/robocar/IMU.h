@@ -4,20 +4,37 @@
 class IMU {
 
 private:
-	int GPIO;
-	float LinearVelocity;
-	float Angularvelocity;
-	int CommunicationAdress;
-	int CurrentYaw;
-	bool CalibrationStatus;
+	int sdaPin;
+	int sclPin;
+	float linearVelocity;
+	float angularVelocity;
+	int communicationAdress;
+
+	float currentYaw;
+	bool calibrationStatus;
+
+	bool Updated;
 
 public:
-	IMU(int GPIOPin);
+	IMU(int SDAPin, int SCLPin, int ComAdress);
 
-	/**
-	 * velocity is een struct
-	 */
-	velocity Update();
+	bool Update();
+
+	float GetLinVelocity()const;
+
+	float GetAngVelocity()const;
+
+	float GetCurrentYaw()const;
+
+	bool GetCalibrationStatus()const;
+
+	void SetComAdress(int Adres);
+
+	int GetComAdress()const;
+
+	int GetSDAPin()const;
+
+	int GetSCLPin()const;
 };
 
 #endif

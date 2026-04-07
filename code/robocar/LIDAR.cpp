@@ -15,7 +15,7 @@ void LIDAR::IsObjectInRange(int minAngle, int MaxAngle, int Treshold) {
 	throw "Not yet implemented";
 }
 
-void LIDAR::applyMotionCorrection(float AngularVelocity, float parameter) {
-	// TODO - implement LIDAR::applyMotionCorrection
+void LIDAR::ApplyMotionCorrection(float CurrentYaw) {
+	// TODO - implement LIDAR::ApplyMotionCorrection
 	throw "Not yet implemented";
 }

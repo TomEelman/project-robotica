@@ -5,21 +5,28 @@ class Encoder {
 
 private:
 	int GPIO;
+	int GPIOPinRes;
 	float LinearVelocity;
 	int pulses;
 	int pulsesWithResolution;
+	bool Updaded;
 
 public:
-	Encoder(int GPIOPin);
+	Encoder(int GPIOPin, int GPIOPinRes);
 
-	/**
-	 * velocity is een struct
-	 */
-	velocity Update();
+	bool Update();
 
 	void Reset();
 
-	void GetEncoderData();
+	int GetPulses() const;
+
+	int GetPulsesWR()const;
+
+	float GetLinVelocity()const;
+
+	int GetGpio()const;
+
+	int GetGpioPinRes()const;
 };
 
 #endif
