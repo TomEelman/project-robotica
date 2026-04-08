@@ -41,7 +41,7 @@ void Robot::Update() {
     
     sensorHub.UpdateSensors();
     // Rechtuit vooruit
-    drive.Execute(DriveCommand(330.0f, 0.0f));
+    drive.Execute(DriveCommand(448.0f, 0.0f));
 
 
    // drive.Execute(DriveCommand(0.3f, 0.01f));

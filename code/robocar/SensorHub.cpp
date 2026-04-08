@@ -35,6 +35,10 @@ float SensorHub::GetSpeedRight() const {
     return encoderRight.GetLinVelocity();
 }
 
+float SensorHub::GetCurrentYaw()const{
+    return imu.GetCurrentYaw();
+}
+
 DateTime SensorHub::GetLastUpdate() const {
     return lastUpdate;
 }

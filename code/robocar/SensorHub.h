@@ -25,7 +25,7 @@ public:
 
     float GetSpeedLeft() const;
     float GetSpeedRight() const;
-
+    float GetCurrentYaw()const;
     DateTime GetLastUpdate() const;
 };
 

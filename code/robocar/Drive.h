@@ -23,7 +23,7 @@ private:
 
     PIDController pIDLeft;
     PIDController pIDRight;
-
+    PIDController pIDYaw;
     SensorHub& sensorHub;
 
     float wheelbase;
@@ -38,6 +38,11 @@ private:
     float pwmLeft;   // huidige PWM waarde links
     float pwmRight;  // huidige PWM waarde rechts
 
+    float initialYaw;
+    bool isInitialYawSet;
+
+    float rampedLinear;
+    float rampStep;
 public:
     Drive(Motor& LeftMotor, Motor& RightMotor,
           SensorHub& Sensors,
