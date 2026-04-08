@@ -35,6 +35,9 @@ private:
     Drivemodes motorDirection;
     bool onTargetPos;
 
+    float pwmLeft;   // huidige PWM waarde links
+    float pwmRight;  // huidige PWM waarde rechts
+
 public:
     Drive(Motor& LeftMotor, Motor& RightMotor,
           SensorHub& Sensors,
