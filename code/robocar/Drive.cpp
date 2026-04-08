@@ -5,8 +5,8 @@ Drive::Drive(Motor& LeftMotor, Motor& RightMotor, SensorHub& Sensors, float Whee
     : motorLeft(LeftMotor),
       motorRight(RightMotor),
       sensorHub(Sensors),
-      pIDLeft(0.2f, 0.1f, 0.01f),
-      pIDRight(0.2f, 0.1f, 0.01f),
+      pIDLeft(0.2f, 0.1f, 0.00f),
+      pIDRight(0.2f, 0.1f, 0.00f),
       wheelbase(Wheelbase),
       threshold(Threshold),
       enableMotorA(true),
@@ -30,11 +30,13 @@ void Drive::Execute(const DriveCommand& Command) {
     float currentLeft  = sensorHub.GetSpeedLeft();
     float currentRight = sensorHub.GetSpeedRight();
 
-    // PID berekening per motor
-    float outputLeft  = pIDLeft.Compute(currentLeft,  targetLeft);
+    float outputLeft  = pIDLeft.Compute(currentLeft, targetLeft);
     float outputRight = pIDRight.Compute(currentRight, targetRight);
+
+ // elke 10 iteraties
     printf("Speed L: %.2f | Target L: %.2f\n", currentLeft, targetLeft);
     printf("Speed R: %.2f | Target R: %.2f\n", currentRight, targetRight);
+
     
     // Rijrichting bepalen op basis van gewenste snelheden
     if (linear > threshold) {

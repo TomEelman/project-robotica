@@ -1,6 +1,6 @@
 #ifndef PIDCONTROLLER_H
 #define PIDCONTROLLER_H
-
+#include "pico/stdlib.h"
 class PIDController {
 
 private:
@@ -12,6 +12,7 @@ private:
 	float integral;
 	int minPWM;
 	int maxPWM;
+	uint64_t lastTime;
 
 public:
 	PIDController(float p, float i, float d);

@@ -10,6 +10,8 @@ SensorHub::SensorHub(int encLeft, int encLeftRes,
     sensorsUpdated = false;
 }
 
+
+
 bool SensorHub::UpdateSensors() {
 
     bool imuOk = imu.Update();

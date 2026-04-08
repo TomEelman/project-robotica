@@ -7,30 +7,42 @@ PIDController::PIDController(float p, float i, float d) {
     prevError = 0.0f;
     integral  = 0.0f;
     setpoint  = 0.0f;
-    minPWM   = -100;
-    maxPWM   =  100;
+    minPWM   = -50;
+    maxPWM   =  50;
 }
 
 float PIDController::Compute(float CurrentValue, float Setpoint) {
+    uint64_t now = time_us_64();
+    float dt = (now - lastTime) / 1000000.0f;
+
+    // voorkom divide by zero
+    if (dt <= 0.000001f) {
+        dt = 0.000001f;
+    }
+
+    lastTime = now;
+
     float error = Setpoint - CurrentValue;
 
-    // P: proportioneel aan de huidige fout
+    // P
     float p = kp * error;
 
-    // I: opgebouwde fout over tijd
-    integral += error;
+    // I
+    integral += error * dt;
     float i = ki * integral;
 
-    // D: verandering van de fout (dempend)
-    float derivative = error - prevError;
+    // D
+    float derivative = (error - prevError) / dt;
     float d = kd * derivative;
 
     prevError = error;
 
-    // Output berekenen en clampen tussen minPWM en maxPWM
     float output = p + i + d;
-    if (output > maxPWM) output = maxPWM;
-    if (output < minPWM) output = minPWM;
+
+    // clamp (beter kleiner houden!)
+    float maxOutput = 255.0f;
+    if (output > maxOutput) output = maxOutput;
+    if (output < -maxOutput) output = -maxOutput;
 
     return output;
 }

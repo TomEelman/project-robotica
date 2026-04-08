@@ -9,6 +9,6 @@ int main() {
 
     while (true) {
         robot.Update();
-        sleep_ms(1000);  // regelloop van 100 Hz
+        sleep_ms(10);  // regelloop van 100 Hz
     }
 }

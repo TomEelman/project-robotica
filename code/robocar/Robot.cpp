@@ -8,15 +8,15 @@ constexpr int MOTOR_LEFT_PWM      = 8;
 constexpr int MOTOR_LEFT_FORWARD  = 2;
 constexpr int MOTOR_LEFT_BACKWARD = 3;
 
-constexpr int ENCODER_LEFT_PULS = 10;
-constexpr int ENCODER_LEFT_PULSRES = 11;
+constexpr int ENCODER_LEFT_PULS = 11;
+constexpr int ENCODER_LEFT_PULSRES = 10;
 
 constexpr int MOTOR_RIGHT_PWM      = 9;
 constexpr int MOTOR_RIGHT_FORWARD  = 6;
 constexpr int MOTOR_RIGHT_BACKWARD = 7;
 
-constexpr int ENCODER_RIGHT_PULS = 12;
-constexpr int ENCODER_RIGHT_PULSRES = 13;
+constexpr int ENCODER_RIGHT_PULS = 14;
+constexpr int ENCODER_RIGHT_PULSRES = 15;
 
 constexpr int IMU_SDA = 4;
 constexpr int IMU_SCL = 5;
@@ -38,6 +38,7 @@ void Robot::Update() {
     // Testsequentie: vooruit, bocht, achteruit, stop
     // Linear velocity: vooruit positief, achteruit negatief
     // Angular velocity: links negatief, rechts positief
+    
     sensorHub.UpdateSensors();
     // Rechtuit vooruit
     drive.Execute(DriveCommand(330.0f, 0.0f));
