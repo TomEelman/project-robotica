@@ -8,7 +8,7 @@ Drive::Drive(Motor& LeftMotor, Motor& RightMotor, SensorHub& Sensors, float Whee
       sensorHub(Sensors),
       pIDLeft(0.141f, 1.763f, 0.0074f),
       pIDRight(0.135f, 1.688f, 0.0071f),
-      pIDYaw(7.0f, 0.0f, 0.f),
+      pIDYaw(2.0f, 3.3f, 0.65f),
       wheelbase(Wheelbase),
       threshold(Threshold),
       enableMotorA(true),
