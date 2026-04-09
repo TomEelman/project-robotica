@@ -1,5 +1,10 @@
 #include "SensorHub.h"
 #include <cstdio>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 SensorHub::SensorHub(int encLeft, int encLeftRes,
                      int encRight, int encRightRes,
                      int imuSDAPin, int imuSCLPin)
@@ -23,7 +28,7 @@ bool SensorHub::UpdateSensors() {
     // TODO: lastUpdate correct instellen
     // lastUpdate = DateTime::Now(); (afhankelijk van jouw implementatie)
         float yaw = imu.GetCurrentYaw();
-    printf("Yaw: %.2f\n", yaw);
+    //printf("Yaw: %.2f\n", yaw);
     return sensorsUpdated;
 }
 
@@ -31,6 +36,9 @@ float SensorHub::GetSpeedLeft() const {
     return encoderLeft.GetLinVelocity();
 }
 
+float SensorHub::GetAngVelocity() const{
+    return imu.GetAngVelocity();
+}
 float SensorHub::GetSpeedRight() const {
     return encoderRight.GetLinVelocity();
 }
@@ -41,4 +49,15 @@ float SensorHub::GetCurrentYaw()const{
 
 DateTime SensorHub::GetLastUpdate() const {
     return lastUpdate;
+}
+
+// In SensorHub.cpp
+float SensorHub::GetEncoderYaw() {
+    float DistanceL = encoderLeft.GetDistanceMm();
+    float DistanceR = encoderRight.GetDistanceMm();
+
+    // Bereken de hoek in radialen en zet om naar graden
+    float encoderYawRad = (DistanceR - DistanceL) / 219.0f;
+    currentEncoderYaw = encoderYawRad * (180.0f / M_PI);
+    return currentEncoderYaw;
 }

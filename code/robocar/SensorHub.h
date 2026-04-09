@@ -15,6 +15,8 @@ private:
 
     DateTime lastUpdate;
     bool sensorsUpdated;
+    float currentEncoderYaw;
+ 
 
 public:
     SensorHub(int encLeft, int encLeftRes,
@@ -27,6 +29,8 @@ public:
     float GetSpeedRight() const;
     float GetCurrentYaw()const;
     DateTime GetLastUpdate() const;
+    float GetEncoderYaw();
+    float GetAngVelocity() const;
 };
 
 #endif

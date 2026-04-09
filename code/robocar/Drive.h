@@ -14,7 +14,6 @@ enum Drivemodes {
     STOPPED
 };
 
-
 class Drive {
 
 private:
@@ -39,6 +38,8 @@ private:
     float pwmRight;  // huidige PWM waarde rechts
 
     float initialYaw;
+    float encoderYaw;
+    float targetYaw;
     bool isInitialYawSet;
 
     float rampedLinear;

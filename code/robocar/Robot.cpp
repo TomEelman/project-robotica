@@ -21,7 +21,7 @@ constexpr int ENCODER_RIGHT_PULSRES = 15;
 constexpr int IMU_SDA = 4;
 constexpr int IMU_SCL = 5;
 
-constexpr float WHEELBASE  = 0.19f;  // afstand tussen wielen in meters, aanpassen
+constexpr float WHEELBASE  = 0.219f;  // afstand tussen wielen in meters, aanpassen
 constexpr int   THRESHOLD  = 0.01;      // minimale snelheid voor rijden
 
 // ── Constructor ──────────────────────────────────────────────────
@@ -35,17 +35,14 @@ Robot::Robot()
 
 // ── Update (aanroepen in je hoofdlus) ───────────────────────────
 void Robot::Update() {
-    // Testsequentie: vooruit, bocht, achteruit, stop
-    // Linear velocity: vooruit positief, achteruit negatief
-    // Angular velocity: links negatief, rechts positief
-    
     sensorHub.UpdateSensors();
-    // Rechtuit vooruit
-    drive.Execute(DriveCommand(448.0f, 0.0f));
-
-
-   // drive.Execute(DriveCommand(0.3f, 0.01f));
-
-    // Stop
-    //drive.Stop();
-}
+    sleep_ms(1000);
+            drive.Execute(DriveCommand(0.0f, 0.1f));
+sleep_ms(1000);
+            drive.Execute(DriveCommand(448.0f, 0.0f));
+sleep_ms(1000);
+            drive.Execute(DriveCommand(0.0f, 0.0f));
+            sleep_ms(1000);
+            drive.Stop();
+            
+    }
