@@ -1,26 +1,31 @@
 #ifndef LIDAR_H
 #define LIDAR_H
+
+#include "hardware/uart.h"
+
 #define SCAN_SIZE 360
+
 class LIDAR {
 
 private:
-	int port;
-	int maxRange;
-	int minAngle;
-	int scanData[SCAN_SIZE];
-	int rotationSpeed;
-	int currentAngle;
-	int nextAngle;
-	bool Updaded;
+    uart_inst_t* uartPort;
+    int          baudRate;
+    int          maxRange;
+    int          minRange;
+    int          scanData[SCAN_SIZE];
+    int          rotationSpeed;
+    int          currentAngle;
+    int          nextAngle;
+    bool         updated;
 
 public:
-	void LiDAR(int GPIOPin);
+    LIDAR(uart_inst_t* uartPort, int baudRate = 460800);
 
-	void Update();
+    bool Update();
 
-	void IsObjectInRange(int minAngle, int MaxAngle, int Treshold);
+    bool IsObjectInRange(int minAngle, int maxAngle, int threshold) const;
 
-	void ApplyMotionCorrection(float CurrentYaw);
+    void ApplyMotionCorrection(float currentYaw);
 };
 
 #endif

@@ -45,7 +45,7 @@ add_executable(ProjectRoboticz
     PIDController.cpp
     DriveCommand.cpp
     Motor.cpp
-    
+    LIDAR.cpp       
 )
 
 pico_set_program_name(ProjectRoboticz "ProjectRoboticz")

@@ -1,21 +1,30 @@
 #include "LIDAR.h"
-
-void LIDAR::LiDAR(int GPIOPin) {
-	// TODO - implement LIDAR::LiDAR
-	throw "Not yet implemented";
+#include <cstring>
+#include <cmath>
+ 
+LIDAR::LIDAR(uart_inst_t* uartPort, int baudRate)
+    : uartPort(uartPort),
+      baudRate(baudRate),
+      maxRange(4000),
+      minRange(0),
+      rotationSpeed(0),
+      currentAngle(0),
+      nextAngle(0),
+      updated(false)
+{
+    uart_init(uartPort, baudRate);
+    memset(scanData, 0, sizeof(scanData));
 }
 
-void LIDAR::Update() {
-	// TODO - implement LIDAR::Update
-	throw "Not yet implemented";
+bool LIDAR::Update() {
+	return true;
 }
 
-void LIDAR::IsObjectInRange(int minAngle, int MaxAngle, int Treshold) {
-	// TODO - implement LIDAR::IsObjectInRange
-	throw "Not yet implemented";
+bool LIDAR::IsObjectInRange(int minAngle, int maxAngle, int threshold) const {
+	return true;
+
 }
 
-void LIDAR::ApplyMotionCorrection(float CurrentYaw) {
-	// TODO - implement LIDAR::ApplyMotionCorrection
-	throw "Not yet implemented";
+void LIDAR::ApplyMotionCorrection(float currentYaw) {
+	return;
 }

@@ -2,34 +2,35 @@
 #define SENSORHUB_H
 
 #include "IMU.h"
-#include "LIDAR.h"
 #include "Encoder.h"
 #include "DateTime.h"
+#include "LIDAR.h"
 
 class SensorHub {
 
 private:
-    LIDAR lidar;
     IMU imu;
     Encoder encoderLeft;
     Encoder encoderRight;
+    LIDAR lidar;
+
     DateTime lastUpdate;
     bool sensorsUpdated;
-    float currentEncoderYaw;
- 
 
 public:
     SensorHub(int encLeft, int encLeftRes,
               int encRight, int encRightRes,
-              int imuSDAPin, int imuSCLPin);
+              int imuSDAPin, int imuSCLPin,
+              uart_inst_t* lidarUart, int lidarBaud = 460800);
+
     bool UpdateSensors();
-    float GetLidarScan() const;
-    float GetCurrentYaw() const;
+
     float GetSpeedLeft() const;
     float GetSpeedRight() const;
+    float GetCurrentYaw() const;
     DateTime GetLastUpdate() const;
-    float GetEncoderYaw();
-    float GetAngVelocity() const;
+
+    bool IsLidarObjectInRange(int minAngle, int maxAngle, int threshold) const;
 };
 
 #endif

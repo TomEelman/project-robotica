@@ -1,67 +1,48 @@
 #include "SensorHub.h"
-#include <cstdio>
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
+ 
 SensorHub::SensorHub(int encLeft, int encLeftRes,
                      int encRight, int encRightRes,
-                     int imuSDAPin, int imuSCLPin)
+                     int imuSDAPin, int imuSCLPin,
+                     uart_inst_t* lidarUart, int lidarBaud)
     : encoderLeft(encLeft, encLeftRes),
       encoderRight(encRight, encRightRes),
-      imu(imuSDAPin, imuSCLPin, 0x28)   
+      imu(imuSDAPin, imuSCLPin, 0x28),
+      lidar(lidarUart, lidarBaud),
+      sensorsUpdated(false)
 {
-    sensorsUpdated = false;
 }
-
 
 
 bool SensorHub::UpdateSensors() {
+    bool imuOk     = imu.Update();
+    bool leftOk    = encoderLeft.Update();
+    bool rightOk   = encoderRight.Update();
+    bool lidarOk   = lidar.Update();
 
-    bool imuOk = imu.Update();
-    bool leftOk = encoderLeft.Update();
-    bool rightOk = encoderRight.Update();
+    sensorsUpdated = imuOk && leftOk && rightOk && lidarOk;
 
-    sensorsUpdated = imuOk && leftOk && rightOk;
+    // TODO: set lastUpdate once a DateTime source is available
+    // lastUpdate = DateTime::Now();
 
-    // TODO: lastUpdate correct instellen
-    // lastUpdate = DateTime::Now(); (afhankelijk van jouw implementatie)
-        float yaw = imu.GetCurrentYaw();
-    //printf("Yaw: %.2f\n", yaw);
     return sensorsUpdated;
-}
-
-float SensorHub::GetLidarScan()const{
-    return lidar.Update();
-}
-
-float SensorHub::GetCurrentYaw()const{
-    return imu.GetCurrentYaw();
 }
 
 float SensorHub::GetSpeedLeft() const {
     return encoderLeft.GetLinVelocity();
 }
 
-float SensorHub::GetAngVelocity() const{
-    return imu.GetAngVelocity();
-}
 float SensorHub::GetSpeedRight() const {
     return encoderRight.GetLinVelocity();
+}
+
+float SensorHub::GetCurrentYaw() const {
+    return imu.GetCurrentYaw();
 }
 
 DateTime SensorHub::GetLastUpdate() const {
     return lastUpdate;
 }
 
-// In SensorHub.cpp
-float SensorHub::GetEncoderYaw() {
-    float DistanceL = encoderLeft.GetDistanceMm();
-    float DistanceR = encoderRight.GetDistanceMm();
-
-    // Bereken de hoek in radialen en zet om naar graden
-    float encoderYawRad = (DistanceR - DistanceL) / 219.0f;
-    currentEncoderYaw = encoderYawRad * (180.0f / M_PI);
-    return currentEncoderYaw;
+bool SensorHub::IsLidarObjectInRange(int minAngle, int maxAngle, int threshold) const {
+    return lidar.IsObjectInRange(minAngle, maxAngle, threshold);
 }
