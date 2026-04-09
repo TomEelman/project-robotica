@@ -1,13 +1,13 @@
 #ifndef LIDAR_H
 #define LIDAR_H
-#define SCAN_ZISE 360
+#define SCAN_SIZE 360
 class LIDAR {
 
 private:
 	int port;
 	int maxRange;
 	int minAngle;
-	int scanData[SCAN_ZISE];
+	int scanData[SCAN_SIZE];
 	int rotationSpeed;
 	int currentAngle;
 	int nextAngle;

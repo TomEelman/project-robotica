@@ -32,6 +32,14 @@ bool SensorHub::UpdateSensors() {
     return sensorsUpdated;
 }
 
+float SensorHub::GetLidarScan()const{
+    return lidar.Update();
+}
+
+float SensorHub::GetCurrentYaw()const{
+    return imu.GetCurrentYaw();
+}
+
 float SensorHub::GetSpeedLeft() const {
     return encoderLeft.GetLinVelocity();
 }
@@ -41,10 +49,6 @@ float SensorHub::GetAngVelocity() const{
 }
 float SensorHub::GetSpeedRight() const {
     return encoderRight.GetLinVelocity();
-}
-
-float SensorHub::GetCurrentYaw()const{
-    return imu.GetCurrentYaw();
 }
 
 DateTime SensorHub::GetLastUpdate() const {
