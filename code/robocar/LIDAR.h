@@ -32,7 +32,7 @@ public:
 
     bool Update();
 
-    int  GetDistance(int angle) const; // returns distance in mm, 0 = no data
+    int  GetDistance(int angle) const;
 
     bool IsObjectInRange(int minAngle, int maxAngle, int threshold) const;
 

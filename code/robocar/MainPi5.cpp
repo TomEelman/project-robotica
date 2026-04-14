@@ -1,5 +1,6 @@
 #include "LIDAR.h"
 #include <iostream>
+#include <unistd.h>
 
 int main() {
     LIDAR lidar("/dev/ttyUSB0");
@@ -11,20 +12,25 @@ int main() {
 
     std::cout << "Connected. Scanning...\n";
 
-    if (!lidar.Update()) {
-        std::cerr << "Scan failed\n";
-        lidar.Disconnect();
-        return 1;
-    }
+    for(int i = 0; i < 10; i++){
+     	if (!lidar.Update()) {          // â† was outside the loop before
+        	std::cerr << "Scan failed\n";
+        	lidar.Disconnect();
+     	}
 
-    std::cout << "Scan complete:\n";
-    std::cout << "Angle(deg)  Distance(mm)\n";
-    std::cout << "------------------------\n";
-    for (int angle = 0; angle < 360; angle++) {
-        int dist = lidar.GetDistance(angle);
-        if (dist > 0) {
-            std::cout << angle << "°\t" << dist << " mm\n";
-        }
+    	std::cout << "Scan complete:\n";
+   	std::cout << "Angle(deg)  Distance(mm)\n";
+   	std::cout << "------------------------\n";
+    	
+	for (int angle = 0; angle < 360; angle++) {
+        	int dist = lidar.GetDistance(angle);
+        	
+		if (dist > 0) {
+            		std::cout << angle << "°\t" << dist << " mm\n";
+        	}
+    	}
+
+	sleep(2);
     }
 
     lidar.Disconnect();

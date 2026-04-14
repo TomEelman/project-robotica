@@ -7,10 +7,12 @@
 #include <cstring>
 #include <cmath>
 #include <iostream>
+#include <cstdio>
 
 static constexpr uint8_t CMD_SYNC  = 0xA5;
 static constexpr uint8_t CMD_SCAN  = 0x20;
 static constexpr uint8_t CMD_STOP  = 0x25;
+static constexpr uint8_t CMD_RESET = 0x40;
 static constexpr uint8_t ANS_SYNC1 = 0xA5;
 static constexpr uint8_t ANS_SYNC2 = 0x5A;
 
@@ -42,10 +44,10 @@ bool LIDAR::Connect() {
         close(fd);
         fd = -1;
         return false;
-    }
-
-    cfsetospeed(&tty, BAUD_RATE);
-    cfsetispeed(&tty, BAUD_RATE);
+    } 
+    
+    cfsetospeed(&tty, B460800);
+    cfsetispeed(&tty, B460800);
 
     tty.c_cflag = (tty.c_cflag & ~CSIZE) | CS8;
     tty.c_cflag |= (CLOCAL | CREAD);
@@ -64,6 +66,13 @@ bool LIDAR::Connect() {
     }
 
     tcflush(fd, TCIOFLUSH);
+
+    // Reset the device and wait for it to boot
+    sendCommand(CMD_RESET);
+    usleep(2000000); // 2 seconds
+    tcflush(fd, TCIFLUSH);
+
+    std::cout << "LIDAR: device ready\n";
     return true;
 }
 
@@ -83,27 +92,55 @@ bool LIDAR::sendCommand(uint8_t cmd) {
 }
 
 bool LIDAR::readDescriptor() {
-    uint8_t desc[7];
+    // Search for the two sync bytes 0xA5 0x5A rather than assuming alignment
+    uint8_t b = 0;
+    while (true) {
+        if (read(fd, &b, 1) != 1) {
+            std::cerr << "LIDAR: timeout waiting for descriptor sync1\n";
+            return false;
+        }
+        if (b != ANS_SYNC1) continue;
+
+        if (read(fd, &b, 1) != 1) {
+            std::cerr << "LIDAR: timeout waiting for descriptor sync2\n";
+            return false;
+        }
+        if (b == ANS_SYNC2) break;
+    }
+
+    // Read remaining 5 bytes of the descriptor
+    uint8_t rest[5];
     int got = 0;
-    while (got < 7) {
-        int n = static_cast<int>(read(fd, desc + got, static_cast<size_t>(7 - got)));
-        if (n <= 0) return false;
+    while (got < 5) {
+        int n = static_cast<int>(read(fd, rest + got, static_cast<size_t>(5 - got)));
+        if (n <= 0) {
+            std::cerr << "LIDAR: failed reading descriptor body\n";
+            return false;
+        }
         got += n;
     }
-    return desc[0] == ANS_SYNC1 && desc[1] == ANS_SYNC2;
+
+    std::cout << "LIDAR: descriptor: A5 5A";
+    for (int i = 0; i < 5; i++) printf(" %02X", rest[i]);
+    std::cout << "\n";
+
+    return true;
 }
 
-// Reads one complete scan revolution (360°) from the device.
+// Reads one complete scan revolution (360Â°) from the device.
 bool LIDAR::Update() {
     if (fd < 0) return false;
-
+    
+    tcflush(fd, TCIFLUSH);
     if (!sendCommand(CMD_SCAN)) return false;
     usleep(100000); // wait for descriptor
     if (!readDescriptor()) return false;
 
     memset(scanData, 0, sizeof(scanData));
 
+    std::cout << "LIDAR: reading scan packets...\n";
     bool firstRevStart = false;
+    int packetCount = 0;
 
     while (true) {
         uint8_t pkt[5];
@@ -114,12 +151,19 @@ bool LIDAR::Update() {
             got += n;
         }
 
-        bool startFlag         = (pkt[0] >> 1) & 0x01;
-        bool invertedStartFlag =  pkt[0]        & 0x01;
+	bool startFlag         =  pkt[0]        & 0x01;
+	bool invertedStartFlag = (pkt[0] >> 1) & 0x01;
         bool checkBit          =  pkt[1]        & 0x01;
 
+        packetCount++;
+
         // Both flags must be complementary and check bit must be set
-        if ((startFlag == invertedStartFlag) || !checkBit) continue;
+        if ((startFlag == invertedStartFlag) || !checkBit) {
+            if (packetCount <= 5)
+                printf("LIDAR: invalid packet [%d]: %02X %02X %02X %02X %02X\n",
+                       packetCount, pkt[0], pkt[1], pkt[2], pkt[3], pkt[4]);
+            continue;
+        }
 
         int   quality  =  pkt[0] >> 2;
         float angle    = static_cast<float>((static_cast<uint16_t>(pkt[2]) << 7) | (pkt[1] >> 1)) / 64.0f;
@@ -128,6 +172,9 @@ bool LIDAR::Update() {
         int angleIdx = static_cast<int>(angle) % SCAN_SIZE;
 
         if (startFlag) {
+            std::cout << "LIDAR: revolution start (packets so far: " << packetCount << ")\n";if (!sendCommand(CMD_SCAN)) return false;
+
+
             if (firstRevStart) {
                 // Second start flag means we completed one full revolution
                 updated = true;
@@ -166,3 +213,4 @@ void LIDAR::ApplyMotionCorrection(float currentYaw) {
         scanData[(i + shift + SCAN_SIZE) % SCAN_SIZE] = tmp[i];
     }
 }
+
