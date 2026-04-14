@@ -1,6 +1,6 @@
 #include "PathPlanner.h"
 
-PathPlanner::PathPlanner(GridMap map) {
+PathPlanner::PathPlanner(GridMap map) : gridMap(map), currentPath(nullptr, 0) {
     // TODO - implement PathPlanner::PathPlanner
     throw "Not yet implemented";
 }

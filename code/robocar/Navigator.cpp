@@ -2,7 +2,7 @@
 #include "Position.h"
 #include "DriveCommand.h"
 
-Navigator::Navigator() {
+Navigator::Navigator() : path(nullptr, 0), currentTarget(0.0f, 0.0f) {
     // TODO - implement Navigator::Navigator
     throw "Not yet implemented";
 }

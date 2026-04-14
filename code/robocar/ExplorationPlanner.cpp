@@ -1,6 +1,6 @@
 #include "ExplorationPlanner.h"
 
-ExplorationPlanner::ExplorationPlanner() {
+ExplorationPlanner::ExplorationPlanner() : currentTarget(0.0f, 0.0f), state(IDLE) {
     // TODO - implement ExplorationPlanner::ExplorationPlanner
     throw "Not yet implemented";
 }

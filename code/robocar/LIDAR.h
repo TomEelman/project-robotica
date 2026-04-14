@@ -1,14 +1,17 @@
 #ifndef LIDAR_H
 #define LIDAR_H
 
-#include "hardware/uart.h"
+#include <string>
+#include <cstdint>
 
 #define SCAN_SIZE 360
+#define BAUD_RATE 460800
 
 class LIDAR {
 
 private:
-    uart_inst_t* uartPort;
+    std::string  port;
+    int          fd;
     int          baudRate;
     int          maxRange;
     int          minRange;
@@ -18,10 +21,18 @@ private:
     int          nextAngle;
     bool         updated;
 
+    bool sendCommand(uint8_t cmd);
+    bool readDescriptor();
+
 public:
-    LIDAR(uart_inst_t* uartPort, int baudRate = 460800);
+    LIDAR(const std::string& port, int baudRate = BAUD_RATE);
+
+    bool Connect();
+    void Disconnect();
 
     bool Update();
+
+    int  GetDistance(int angle) const; // returns distance in mm, 0 = no data
 
     bool IsObjectInRange(int minAngle, int maxAngle, int threshold) const;
 
