@@ -3,7 +3,7 @@
 #include "hardware/gpio.h"
 #include "pico/stdlib.h"
 
-// ── BNO055 registers ─────────────────────────────────────────────
+
 #define BNO055_CHIP_ID      0xA0
 #define REG_CHIP_ID         0x00
 #define REG_OPR_MODE        0x3D
@@ -18,7 +18,7 @@
 
 
 
-// ── Interne I2C hulpfuncties ─────────────────────────────────────
+
 static uint8_t bno_read8(uint8_t addr, uint8_t reg) {
     uint8_t val;
     i2c_write_blocking(I2C_PORT, addr, &reg, 1, true);

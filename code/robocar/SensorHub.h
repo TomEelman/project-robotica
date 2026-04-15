@@ -4,7 +4,6 @@
 #include "IMU.h"
 #include "Encoder.h"
 #include "DateTime.h"
-#include "LIDAR.h"
 
 class SensorHub {
 
@@ -12,7 +11,6 @@ private:
     IMU imu;
     Encoder encoderLeft;
     Encoder encoderRight;
-    LIDAR lidar;
 
     DateTime lastUpdate;
     bool sensorsUpdated;
@@ -20,8 +18,7 @@ private:
 public:
     SensorHub(int encLeft, int encLeftRes,
               int encRight, int encRightRes,
-              int imuSDAPin, int imuSCLPin,
-              uart_inst_t* lidarUart, int lidarBaud = 460800);
+              int imuSDAPin, int imuSCLPin);
 
     bool UpdateSensors();
 
@@ -32,7 +29,6 @@ public:
     float GetCurrentYaw() const;
     float GetAngVelocity() const;
     DateTime GetLastUpdate() const;
-    bool IsLidarObjectInRange(int minAngle, int maxAngle, int threshold) const;
 };
 
 #endif

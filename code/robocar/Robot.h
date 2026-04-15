@@ -5,6 +5,7 @@
 #include "SensorHub.h"
 #include "Drive.h"
 #include "DriveCommand.h"
+#include "Kalmanfilter.h"
 
 class Robot {
 
@@ -13,6 +14,8 @@ private:
     Motor motorRight;
     SensorHub sensorHub;
     Drive drive;
+    KalmanFilter kalmanLinks;   // ← hier toevoegen
+    KalmanFilter kalmanRechts; 
 
 public:
     Robot();

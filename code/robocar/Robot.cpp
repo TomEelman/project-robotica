@@ -34,15 +34,25 @@ Robot::Robot()
       motorRight(MOTOR_RIGHT_PWM, MOTOR_RIGHT_FORWARD, MOTOR_RIGHT_BACKWARD),
       sensorHub(ENCODER_LEFT_PULS, ENCODER_LEFT_PULSRES,
                 ENCODER_RIGHT_PULS, ENCODER_RIGHT_PULSRES,
-                IMU_SDA, IMU_SCL,
-                uart1, LIDAR_BAUD),
-      drive(motorLeft, motorRight, sensorHub, WHEELBASE, THRESHOLD)
+                IMU_SDA, IMU_SCL),
+      drive(motorLeft, motorRight, sensorHub, WHEELBASE, THRESHOLD),
+    kalmanLinks(50.0f, 36.0f),   // Q=50, R=36
+    kalmanRechts(50.0f, 36.0f)
 {
 }
 
 void Robot::Update() {
     sensorHub.UpdateSensors();
     drive.Execute(DriveCommand(378.0f, 0.0f));
+
+    // Aanmaken met jouw ruiswaarden
+    KalmanFilter kalmanLinks(50.0f, 36.0f);   // Q=50, R=36
+    KalmanFilter kalmanRechts(50.0f, 36.0f);
+
+// In Robot::Update()
+float vLinks  = kalmanLinks.Update(sensorHub.GetSpeedLeft());
+float vRechts = kalmanRechts.Update(sensorHub.GetSpeedRight());
+    /*
     float yaw = sensorHub.GetCurrentYaw();
 static float prevLeft = 0.0f;
 static float prevRight = 0.0f;
@@ -63,4 +73,5 @@ float dYaw = (dRight - dLeft) / wheelBase;
 static float encYaw = 0.0f;
 encYaw += dYaw;
     printf("yaw:%f encyaw%f\n",yaw, encYaw);
+    */
 }

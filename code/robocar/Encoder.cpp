@@ -5,7 +5,7 @@
 // ── Constanten ───────────────────────────────────────────────────
 #define PULSES_PER_ROT    330
 #define WHEEL_CIRC_MM     204.2f
-#define UPDATE_US         10000    // 10ms
+#define UPDATE_US         100000    // 100ms
 #define TIMEOUT_US        300000    // 300ms stilstand
 
 // ── Globals ──────────────────────────────────────────────────────
@@ -66,8 +66,8 @@ bool Encoder::Update() {
 
     if ((now - lastPulseTime) > TIMEOUT_US) {
         LinearVelocity = 0.0f;
-        Updated = true;
-        return true;
+        Updated = false;
+        return false;
     }
 
     if (delta == 0) {
