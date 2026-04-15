@@ -5,7 +5,10 @@
 #include <cstdint>
 
 #define SCAN_SIZE 360
-#define BAUD_RATE 460800
+
+#ifndef B460800
+#define B460800 460800
+#endif
 
 class LIDAR {
 
@@ -25,7 +28,7 @@ private:
     bool readDescriptor();
 
 public:
-    LIDAR(const std::string& port, int baudRate = BAUD_RATE);
+    LIDAR(const std::string& port, int baudRate = 460800);
 
     bool Connect();
     void Disconnect();

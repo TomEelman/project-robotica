@@ -20,12 +20,14 @@ all: $(TARGET)
 
 $(TARGET): $(OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ $^
-	rm -f $(OBJS)
+	@rm -f $(OBJS)
+	@echo "Build klaar, .o bestanden verwijderd."
 
 %.o: %.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 clean:
-	rm -f *.o $(TARGET)
+	@rm -f *.o $(TARGET)
+	@echo "Opgeruimd: .o bestanden en $(TARGET) verwijderd."
 
 .PHONY: all clean

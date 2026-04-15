@@ -9,12 +9,12 @@
 #include <iostream>
 #include <cstdio>
 
-static constexpr uint8_t CMD_SYNC  = 0xA5;
-static constexpr uint8_t CMD_SCAN  = 0x20;
-static constexpr uint8_t CMD_STOP  = 0x25;
-static constexpr uint8_t CMD_RESET = 0x40;
-static constexpr uint8_t ANS_SYNC1 = 0xA5;
-static constexpr uint8_t ANS_SYNC2 = 0x5A;
+static constexpr uint8_t CMD_SYNC  = 0xA5;  // startbyte voor elk commando
+static constexpr uint8_t CMD_SCAN  = 0x20;  // "begin scannen"
+static constexpr uint8_t CMD_STOP  = 0x25;  // "stop scannen"
+static constexpr uint8_t CMD_RESET = 0x40;  // "herstart apparaat"
+static constexpr uint8_t ANS_SYNC1 = 0xA5;  // eerste antwoord-syncbyte
+static constexpr uint8_t ANS_SYNC2 = 0x5A;  // tweede antwoord-syncbyte
 
 LIDAR::LIDAR(const std::string& port, int baudRate)
     : port(port),
@@ -27,11 +27,54 @@ LIDAR::LIDAR(const std::string& port, int baudRate)
       nextAngle(0),
       updated(false)
 {
-    memset(scanData, 0, sizeof(scanData));
+    memset(scanData, 0, sizeof(scanData)); // initialiseert de scandata array met nullen
+}
+
+// Neemt een referentie zodat de wijzigingen ook buiten de functie gelden
+void configure_tty(struct termios& tty) {
+    // Stelt de baudrate in op 460800, dit is RPLIDAR C1 specifiek
+    cfsetospeed(&tty, B460800);
+    cfsetispeed(&tty, B460800);
+
+    // Stel 8 databits in: wis eerst de huidige bitgrootte (CSIZE), zet dan CS8 (8 bits)
+    tty.c_cflag = (tty.c_cflag & ~static_cast<tcflag_t>(CSIZE)) | CS8;
+
+    // CLOCAL: negeer modemstatussignalen (geen CD/DTR/RTS nodig)
+    // CREAD:  schakel de ontvanger in zodat data gelezen kan worden
+    tty.c_cflag |= (CLOCAL | CREAD);
+
+    // PARENB:  geen pariteitsbit genereren/controleren
+    // CSTOPB:  gebruik 1 stopbit in plaats van 2
+    // CRTSCTS: geen hardware flow control (RTS/CTS pinnen niet gebruiken)
+    tty.c_cflag &= ~static_cast<tcflag_t>(PARENB | CSTOPB | CRTSCTS);
+
+    // IGNBRK: verwerk break-signalen normaal (niet negeren)
+    // IXON:   geen software flow control bij verzenden (geen XON/XOFF)
+    // IXOFF:  geen software flow control bij ontvangen
+    // IXANY:  elk teken mag de output niet hervatten
+    tty.c_iflag &= ~static_cast<tcflag_t>(IGNBRK | IXON | IXOFF | IXANY);
+
+    // Zet lokale modus & output verwerking op 0 (raw mode)
+    tty.c_lflag = 0;
+    tty.c_oflag = 0;
+
+    // Blokkeer read() totdat minstens 1 byte beschikbaar is
+    tty.c_cc[VMIN]  = 1;
+
+    // Timeout van 1 seconde (waarde in tienden van seconden: 10 = 1.0s)
+    // Als na 1 seconde nog geen data is, keert read() terug met 0 bytes
+    tty.c_cc[VTIME] = 10;
 }
 
 bool LIDAR::Connect() {
+    /*
+    Flags:
+        O_RDWR   zet de port naar "ReaD WRite"
+        O_NOCTTY zorgt dat het geen controlling terminal wordt
+        O_SYNC   zorgt dat writes wachten tot het apparaat ze heeft ontvangen
+    */
     fd = open(port.c_str(), O_RDWR | O_NOCTTY | O_SYNC);
+
     if (fd < 0) {
         std::cerr << "LIDAR: failed to open " << port << ": " << strerror(errno) << "\n";
         return false;
@@ -39,24 +82,16 @@ bool LIDAR::Connect() {
 
     struct termios tty;
     memset(&tty, 0, sizeof(tty));
+
+    // Leest de huidige terminalinstellingen in tty
     if (tcgetattr(fd, &tty) != 0) {
         std::cerr << "LIDAR: tcgetattr failed: " << strerror(errno) << "\n";
         close(fd);
         fd = -1;
         return false;
-    } 
-    
-    cfsetospeed(&tty, B460800);
-    cfsetispeed(&tty, B460800);
+    }
 
-    tty.c_cflag = (tty.c_cflag & ~CSIZE) | CS8;
-    tty.c_cflag |= (CLOCAL | CREAD);
-    tty.c_cflag &= ~(PARENB | PARODD | CSTOPB | CRTSCTS);
-    tty.c_iflag &= ~(IGNBRK | IXON | IXOFF | IXANY);
-    tty.c_lflag = 0;
-    tty.c_oflag = 0;
-    tty.c_cc[VMIN]  = 1;
-    tty.c_cc[VTIME] = 10; // 1 second timeout
+    configure_tty(tty);
 
     if (tcsetattr(fd, TCSANOW, &tty) != 0) {
         std::cerr << "LIDAR: tcsetattr failed: " << strerror(errno) << "\n";
@@ -67,23 +102,12 @@ bool LIDAR::Connect() {
 
     tcflush(fd, TCIOFLUSH);
 
-    // Reset the device and wait for it to boot
     sendCommand(CMD_RESET);
-    usleep(2000000); // 2 seconds
+    sleep(2);
     tcflush(fd, TCIFLUSH);
 
-    std::cout << "LIDAR: device ready\n";
+    std::cout << "LIDAR: device configured and ready\n";
     return true;
-}
-
-void LIDAR::Disconnect() {
-    if (fd >= 0) {
-        uint8_t stop[2] = { CMD_SYNC, CMD_STOP };
-        write(fd, stop, 2);
-        usleep(20000);
-        close(fd);
-        fd = -1;
-    }
 }
 
 bool LIDAR::sendCommand(uint8_t cmd) {
@@ -127,13 +151,14 @@ bool LIDAR::readDescriptor() {
     return true;
 }
 
-// Reads one complete scan revolution (360Â°) from the device.
+// Reads one complete scan revolution (360°) from the device.
 bool LIDAR::Update() {
     if (fd < 0) return false;
     
     tcflush(fd, TCIFLUSH);
     if (!sendCommand(CMD_SCAN)) return false;
-    usleep(100000); // wait for descriptor
+
+    sleep(1);
     if (!readDescriptor()) return false;
 
     memset(scanData, 0, sizeof(scanData));
@@ -145,14 +170,15 @@ bool LIDAR::Update() {
     while (true) {
         uint8_t pkt[5];
         int got = 0;
+
         while (got < 5) {
             int n = static_cast<int>(read(fd, pkt + got, static_cast<size_t>(5 - got)));
             if (n <= 0) return false;
             got += n;
         }
 
-	bool startFlag         =  pkt[0]        & 0x01;
-	bool invertedStartFlag = (pkt[0] >> 1) & 0x01;
+	    bool startFlag         =  pkt[0]        & 0x01;
+	    bool invertedStartFlag = (pkt[0] >> 1) & 0x01;
         bool checkBit          =  pkt[1]        & 0x01;
 
         packetCount++;
@@ -173,7 +199,6 @@ bool LIDAR::Update() {
 
         if (startFlag) {
             std::cout << "LIDAR: revolution start (packets so far: " << packetCount << ")\n";if (!sendCommand(CMD_SCAN)) return false;
-
 
             if (firstRevStart) {
                 // Second start flag means we completed one full revolution
@@ -214,3 +239,13 @@ void LIDAR::ApplyMotionCorrection(float currentYaw) {
     }
 }
 
+void LIDAR::Disconnect() {
+    if (fd >= 0) {
+        // Stuur stopcommando zodat het apparaat netjes stopt met draaien
+        uint8_t stop[2] = { CMD_SYNC, CMD_STOP };
+        write(fd, stop, 2);
+        usleep(20000); // 20ms wachten zodat het apparaat stopt
+        close(fd);
+        fd = -1;
+    }
+}

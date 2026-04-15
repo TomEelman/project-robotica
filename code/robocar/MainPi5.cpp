@@ -13,7 +13,7 @@ int main() {
     std::cout << "Connected. Scanning...\n";
 
     for(int i = 0; i < 10; i++){
-     	if (!lidar.Update()) {          // â† was outside the loop before
+     	if (!lidar.Update()) {
         	std::cerr << "Scan failed\n";
         	lidar.Disconnect();
      	}
