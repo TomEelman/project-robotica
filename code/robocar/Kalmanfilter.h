@@ -3,20 +3,27 @@
 
 class KalmanFilter {
 public:
-    float x;  // schatting
-    float P;  // onzekerheid
+    float x;
+    float P;
+    float Q;
+    float R;
 
-    float Q;  // procesruis
-    float R;  // meetsruis
+private:
+    bool initialized = false;
 
-    KalmanFilter(float q, float r, float initial = 0.0f) {
-        Q = q;
-        R = r;
-        x = initial;
-        P = 1.0f;
-    }
+public:
+    KalmanFilter() : Q(50.0f), R(36.0f), x(0.0f), P(1.0f) {}
+    
+    KalmanFilter(float q, float r) 
+        : Q(q), R(r), x(0.0f), P(1.0f) {}
 
     float Update(float meting) {
+        if (!initialized) {
+            x = meting;
+            initialized = true;
+            return x;
+        }
+
         // Predict
         P = P + Q;
 
@@ -28,4 +35,5 @@ public:
         return x;
     }
 };
+
 #endif

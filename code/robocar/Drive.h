@@ -5,6 +5,7 @@
 #include "PIDController.h"
 #include "SensorHub.h"
 #include "DriveCommand.h"
+#include "Kalmanfilter.h"
 
 enum Drivemodes {
     FORWARD,
@@ -49,6 +50,7 @@ private:
 
     float rampedLinear;
     float rampStep;
+
 public:
     Drive(Motor& LeftMotor, Motor& RightMotor,
           SensorHub& Sensors,
@@ -57,7 +59,7 @@ public:
     bool TurnDegrees(float degrees);
     bool IsTurning() const { return isTurning; }
 
-    void Execute(const DriveCommand& Command);
+    void Execute(const DriveCommand& Command, float dt);
 
     void Stop();
 };

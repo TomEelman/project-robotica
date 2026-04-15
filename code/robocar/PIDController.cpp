@@ -12,15 +12,11 @@ PIDController::PIDController(float p, float i, float d, float maxIntegral_, floa
     minOutput    = -maxOutput_;
     maxOutput    =  maxOutput_;
     lastTime     = time_us_64();
+
 }
 
-float PIDController::Compute(float CurrentValue, float Setpoint) {
-    uint64_t now = time_us_64();
-    float dt = (now - lastTime) / 1000000.0f;
+float PIDController::Compute(float CurrentValue, float Setpoint, float dt) {
 
-    if (dt <= 0.000001f) dt = 0.000001f;
-
-    lastTime = now;
 
     float error = Setpoint - CurrentValue;
 

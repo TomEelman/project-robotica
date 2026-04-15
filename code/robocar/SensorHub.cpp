@@ -1,5 +1,4 @@
 #include "SensorHub.h"
-#include <string>
 SensorHub::SensorHub(int encLeft, int encLeftRes,
                      int encRight, int encRightRes,
                      int imuSDAPin, int imuSCLPin)
@@ -39,10 +38,10 @@ float SensorHub::GetDistanceRight() const {
     return encoderRight.GetDistanceMm();
 }
 
-
 float SensorHub::GetCurrentYaw() const {
     return imu.GetCurrentYaw();
 }
+
 float SensorHub::GetAngVelocity()const{
     return imu.GetAngVelocity();
 }

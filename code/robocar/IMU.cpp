@@ -2,7 +2,7 @@
 #include "hardware/i2c.h"
 #include "hardware/gpio.h"
 #include "pico/stdlib.h"
-
+#include <stdio.h>
 
 #define BNO055_CHIP_ID      0xA0
 #define REG_CHIP_ID         0x00
@@ -104,7 +104,7 @@ bool IMU::Update() {
     // Kalibratiestatus uitlezen
     uint8_t calib = bno_read8(communicationAdress, REG_CALIB_STAT);
     calibrationStatus = ((calib & 0xC0) == 0xC0);  // sys calib bits
-
+    printf("yaw:%f\n", currentYaw);
     Updated = true;
     return true;
 }

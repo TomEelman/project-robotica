@@ -44,7 +44,8 @@ add_executable(ProjectRoboticz
     Robot.cpp
     PIDController.cpp
     DriveCommand.cpp
-    Motor.cpp       
+    Motor.cpp
+    Localisation.cpp     
 )
 
 pico_set_program_name(ProjectRoboticz "ProjectRoboticz")

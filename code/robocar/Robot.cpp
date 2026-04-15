@@ -1,6 +1,6 @@
 #include "Robot.h"
 #include <cstdio>
-
+#define PI 3.14159265358979323846f
 
 // GP0/1 bezet door UART
 // Motor A: ENA=GP8, IN1=GP2, IN2=GP3
@@ -36,42 +36,19 @@ Robot::Robot()
                 ENCODER_RIGHT_PULS, ENCODER_RIGHT_PULSRES,
                 IMU_SDA, IMU_SCL),
       drive(motorLeft, motorRight, sensorHub, WHEELBASE, THRESHOLD),
-    kalmanLinks(50.0f, 36.0f),   // Q=50, R=36
-    kalmanRechts(50.0f, 36.0f)
+      localisation(WHEELBASE, THRESHOLD)  
+
 {
 }
 
-void Robot::Update() {
-    sensorHub.UpdateSensors();
-    drive.Execute(DriveCommand(378.0f, 0.0f));
-
-    // Aanmaken met jouw ruiswaarden
-    KalmanFilter kalmanLinks(50.0f, 36.0f);   // Q=50, R=36
-    KalmanFilter kalmanRechts(50.0f, 36.0f);
-
-// In Robot::Update()
-float vLinks  = kalmanLinks.Update(sensorHub.GetSpeedLeft());
-float vRechts = kalmanRechts.Update(sensorHub.GetSpeedRight());
-    /*
-    float yaw = sensorHub.GetCurrentYaw();
-static float prevLeft = 0.0f;
-static float prevRight = 0.0f;
-
-float left = sensorHub.GetDistanceLeft();   // totaal!
-float right = sensorHub.GetDistanceRight(); // totaal!
-printf("Left%f Right%f\n",left, right);
-float dLeft = left - prevLeft;
-float dRight = right - prevRight;
-
-prevLeft = left;
-prevRight = right;
-
-float wheelBase = 0.219f; // meters
-
-float dYaw = (dRight - dLeft) / wheelBase;
-
-static float encYaw = 0.0f;
-encYaw += dYaw;
-    printf("yaw:%f encyaw%f\n",yaw, encYaw);
-    */
+void Robot::Update(float dt) {
+    sensorHub.UpdateSensors(); 
+    float Angvelocity = sensorHub.GetAngVelocity();
+    float imuYawRate = Angvelocity* (PI / 180.0f);
+    float vLeft = sensorHub.GetSpeedLeft();
+    float vRight =sensorHub.GetSpeedRight();
+    localisation.Update(vLeft, vRight, imuYawRate, dt);
+    drive.Execute(DriveCommand(378.0f, 0.0f),dt);
+    printf("vL %.2f vR %.2f omega %.3f theta %8f\n",
+       vLeft, vRight, imuYawRate, localisation.GetTheta());
 }

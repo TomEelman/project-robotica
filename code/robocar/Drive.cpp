@@ -21,7 +21,7 @@ Drive::Drive(Motor& LeftMotor, Motor& RightMotor, SensorHub& Sensors, float Whee
 
 
 
-void Drive::Execute(const DriveCommand& Command) {
+void Drive::Execute(const DriveCommand& Command, float dt) {
     float linear  = Command.GetLinVelocity();
     float angular = Command.GetAngVelocity();
     static float Kv = 255.0f / linear;
@@ -61,7 +61,7 @@ void Drive::Execute(const DriveCommand& Command) {
     while (yawError > 180.0f)  yawError -= 360.0f;
     while (yawError < -180.0f) yawError += 360.0f;
 
-    float steerCorrection = pIDYaw.Compute(0, -yawError); 
+    float steerCorrection = pIDYaw.Compute(0, -yawError, dt); 
 
 
     float targetLeft  = (rampedLinear - steerCorrection);
@@ -71,8 +71,8 @@ void Drive::Execute(const DriveCommand& Command) {
     float currentLeft  = sensorHub.GetSpeedLeft();
     float currentRight = sensorHub.GetSpeedRight();
 
-    float correctionLeft  = pIDLeft.Compute(currentLeft,  targetLeft);
-    float correctionRight = pIDRight.Compute(currentRight, targetRight);
+    float correctionLeft  = pIDLeft.Compute(currentLeft,  targetLeft, dt);
+    float correctionRight = pIDRight.Compute(currentRight, targetRight, dt);
 
 
     pwmLeft  = correctionLeft;
@@ -102,7 +102,7 @@ void Drive::Execute(const DriveCommand& Command) {
 void Drive::Stop() {
     motorDirection = STOPPED;
     onTargetPos    = true;
-    pwmLeft        = 50.0f;  // reset naar startwaarde
+    pwmLeft        = 50.0f;
     pwmRight       = 50.0f;
 
     motorLeft.Stop();
