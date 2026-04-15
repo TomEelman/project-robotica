@@ -1,11 +1,11 @@
 #include "Encoder.h"
 #include "hardware/gpio.h"
 #include "hardware/timer.h"
-
+#include <stdio.h>
 // ── Constanten ───────────────────────────────────────────────────
 #define PULSES_PER_ROT    330
 #define WHEEL_CIRC_MM     204.2f
-#define UPDATE_US         100000    // 100ms
+#define UPDATE_US         10000    // 10ms
 #define TIMEOUT_US        300000    // 300ms stilstand
 
 // ── Globals ──────────────────────────────────────────────────────
@@ -36,7 +36,7 @@ Encoder::Encoder(int GPIOPin, int GPIOPinRes) {
     if (!irqInitialized) {
         gpio_set_irq_enabled_with_callback(
             GPIOPinRes,
-            GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL,
+            GPIO_IRQ_EDGE_RISE,
             true,
             &encoderISR
         );
@@ -44,7 +44,7 @@ Encoder::Encoder(int GPIOPin, int GPIOPinRes) {
     } else {
         gpio_set_irq_enabled(
             GPIOPinRes,
-            GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL,
+            GPIO_IRQ_EDGE_RISE,
             true
         );
     }
@@ -64,7 +64,6 @@ bool Encoder::Update() {
 
     if (delta > 0) lastPulseTime = now;
 
-    // stilstand timeout
     if ((now - lastPulseTime) > TIMEOUT_US) {
         LinearVelocity = 0.0f;
         Updated = true;
@@ -77,8 +76,8 @@ bool Encoder::Update() {
         return true;
     }
 
-    // beide flanken → effectief 660 pulsen per rotatie
-    float rotations  = (float)delta / (pulsesWithResolution * 2);
+   
+    float rotations  = (float)delta / (pulsesWithResolution);
     float distanceMm = rotations * WHEEL_CIRC_MM;
     float timeSec    = elapsed / 1000000.0f;
 
@@ -102,4 +101,4 @@ void Encoder::Reset() {
 float Encoder::GetLinVelocity() const { return LinearVelocity; }
 float Encoder::GetDistanceMm()  const { return DistanceMm;     }
 int   Encoder::GetGpio()        const { return GPIO;           }
-int   Encoder::GetGpioPinRes()  const { return GPIOPinRes;     }
+int   Encoder::GetGpioPinRes()  const { return pulseCounts[GPIOPinRes];    }

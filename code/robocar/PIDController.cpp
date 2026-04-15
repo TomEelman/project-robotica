@@ -1,16 +1,17 @@
 // PIDController.cpp
 #include "PIDController.h"
 
-PIDController::PIDController(float p, float i, float d) {
-    kp        = p;
-    ki        = i;
-    kd        = d;
-    prevError = 0.0f;
-    integral  = 0.0f;
-    setpoint  = 0.0f;
-    minPWM = -255.0f;  // maximale correctie per stap
-    maxPWM =  255.0f;
-    lastTime  = time_us_64();
+PIDController::PIDController(float p, float i, float d, float maxIntegral_, float maxOutput_) {
+    kp           = p;
+    ki           = i;
+    kd           = d;
+    prevError    = 0.0f;
+    integral     = 0.0f;
+    setpoint     = 0.0f;
+    maxIntegral  = maxIntegral_;
+    minOutput    = -maxOutput_;
+    maxOutput    =  maxOutput_;
+    lastTime     = time_us_64();
 }
 
 float PIDController::Compute(float CurrentValue, float Setpoint) {
@@ -28,8 +29,8 @@ float PIDController::Compute(float CurrentValue, float Setpoint) {
 
     // I met anti-windup
     integral += error * dt;
-    if (integral >  100.0f) integral =  100.0f;
-    if (integral < -100.0f) integral = -100.0f;
+    if (integral >  maxIntegral) integral =  maxIntegral;
+    if (integral < -maxIntegral) integral = -maxIntegral;
     float i = ki * integral;
 
     // D
@@ -40,8 +41,8 @@ float PIDController::Compute(float CurrentValue, float Setpoint) {
 
     float output = p + i + d;
 
-    if (output >  maxPWM) output =  maxPWM;
-    if (output < -maxPWM) output = -maxPWM;
+    if (output >  maxOutput) output =  maxOutput;
+    if (output < -maxOutput) output = -maxOutput;
 
     return output;
 }

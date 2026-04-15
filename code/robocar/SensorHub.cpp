@@ -31,12 +31,23 @@ float SensorHub::GetSpeedLeft() const {
     return encoderLeft.GetLinVelocity();
 }
 
+float SensorHub::GetDistanceLeft() const {
+    return encoderLeft.GetDistanceMm();
+}
+
 float SensorHub::GetSpeedRight() const {
     return encoderRight.GetLinVelocity();
 }
+float SensorHub::GetDistanceRight() const {
+    return encoderRight.GetDistanceMm();
+}
+
 
 float SensorHub::GetCurrentYaw() const {
     return imu.GetCurrentYaw();
+}
+float SensorHub::GetAngVelocity()const{
+    return imu.GetAngVelocity();
 }
 
 DateTime SensorHub::GetLastUpdate() const {

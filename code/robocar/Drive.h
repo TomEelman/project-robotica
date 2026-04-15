@@ -32,6 +32,11 @@ private:
     bool enableMotorB;
 
     Drivemodes motorDirection;
+
+    bool  isTurning     = false;
+    float turnStartYaw;
+    float targetTurnYaw ;
+
     bool onTargetPos;
 
     float pwmLeft;   // huidige PWM waarde links
@@ -48,6 +53,9 @@ public:
     Drive(Motor& LeftMotor, Motor& RightMotor,
           SensorHub& Sensors,
           float Wheelbase, int Threshold);
+
+    bool TurnDegrees(float degrees);
+    bool IsTurning() const { return isTurning; }
 
     void Execute(const DriveCommand& Command);
 

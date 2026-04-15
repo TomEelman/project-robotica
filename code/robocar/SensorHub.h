@@ -26,10 +26,12 @@ public:
     bool UpdateSensors();
 
     float GetSpeedLeft() const;
+    float GetDistanceLeft() const;
     float GetSpeedRight() const;
+    float GetDistanceRight() const;
     float GetCurrentYaw() const;
+    float GetAngVelocity() const;
     DateTime GetLastUpdate() const;
-
     bool IsLidarObjectInRange(int minAngle, int maxAngle, int threshold) const;
 };
 
