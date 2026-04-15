@@ -1,7 +1,7 @@
 #include "Robot.h"
 #include <cstdio>
 
-// ── Pin definities ───────────────────────────────────────────────
+
 // GP0/1 bezet door UART
 // Motor A: ENA=GP8, IN1=GP2, IN2=GP3
 // Motor B: ENB=GP9, IN3=GP6, IN4=GP7
@@ -22,16 +22,13 @@ constexpr int ENCODER_RIGHT_PULSRES = 15;
 constexpr int IMU_SDA  = 4;
 constexpr int IMU_SCL  = 5;
 
-// LiDAR is connected via USB-serial, bridged to uart1 on the Pico.
-// Default baud rate for most LiDAR sensors is 115200.
-// TODO: make sure GP8/GP9 (or whichever pins you wired) are configured
-//       as uart1 TX/RX in your CMakeLists / board init.
+
 constexpr int LIDAR_BAUD = 115200;
 
 constexpr float WHEELBASE = 0.219f;  // afstand tussen wielen in meters
-constexpr int   THRESHOLD = 0.01;    // minimale snelheid voor rijden
+constexpr int   THRESHOLD = 0.01;    
 
-// ── Constructor ──────────────────────────────────────────────────
+
 Robot::Robot()
     : motorLeft (MOTOR_LEFT_PWM,  MOTOR_LEFT_FORWARD,  MOTOR_LEFT_BACKWARD),
       motorRight(MOTOR_RIGHT_PWM, MOTOR_RIGHT_FORWARD, MOTOR_RIGHT_BACKWARD),
@@ -43,15 +40,27 @@ Robot::Robot()
 {
 }
 
-// ── Update (aanroepen in je hoofdlus) ────────────────────────────
 void Robot::Update() {
     sensorHub.UpdateSensors();
-    sleep_ms(1000);
-    drive.Execute(DriveCommand(0.0f, 0.1f));
-    sleep_ms(1000);
-    drive.Execute(DriveCommand(448.0f, 0.0f));
-    sleep_ms(1000);
-    drive.Execute(DriveCommand(0.0f, 0.0f));
-    sleep_ms(1000);
-    drive.Stop();
+    drive.Execute(DriveCommand(378.0f, 0.0f));
+    float yaw = sensorHub.GetCurrentYaw();
+static float prevLeft = 0.0f;
+static float prevRight = 0.0f;
+
+float left = sensorHub.GetDistanceLeft();   // totaal!
+float right = sensorHub.GetDistanceRight(); // totaal!
+printf("Left%f Right%f\n",left, right);
+float dLeft = left - prevLeft;
+float dRight = right - prevRight;
+
+prevLeft = left;
+prevRight = right;
+
+float wheelBase = 0.219f; // meters
+
+float dYaw = (dRight - dLeft) / wheelBase;
+
+static float encYaw = 0.0f;
+encYaw += dYaw;
+    printf("yaw:%f encyaw%f\n",yaw, encYaw);
 }
