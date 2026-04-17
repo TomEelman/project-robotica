@@ -35,13 +35,14 @@ int main() {
             }
         }
 
-        // Example: check if anything is within 500mm in front (350-10 degrees)
-        if (lidar.IsObjectInRange(350, 360, 500) || lidar.IsObjectInRange(0, 10, 500)) {
-            std::cout << "Object detected in front!\n";
-        }
+		ctrl_c_pressed = true;
+
+        // if (lidar.IsObjectInRange(350, 360, 500) || lidar.IsObjectInRange(0, 10, 500)) {
+        //     std::cout << "Object detected in front!\n";
+        // }
     }
 
-    std::cout << "\nStopping...\n";
+    std::cout << "\nStopping Disconnecting LiDAR...\n";
     lidar.Disconnect();
     return 0;
 }

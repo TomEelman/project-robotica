@@ -2,6 +2,7 @@
 #include <iostream>
 #include <cstring>
 #include <cmath>
+#include <unistd.h>
 
 using namespace sl;
 

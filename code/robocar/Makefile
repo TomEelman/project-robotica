@@ -1,5 +1,5 @@
 CXX      = g++
-CXXFLAGS = -std=c++17 -Wall -Wextra -Wpedantic -Wconversion -I.
+CXXFLAGS = -std=c++17 -Wall -Wextra -Wconversion -I.
 
 RPLIDAR_SDK = $(HOME)/rplidar_sdk
 RPLIDAR_INC = -I$(RPLIDAR_SDK)/sdk/include -I$(RPLIDAR_SDK)/sdk/src
