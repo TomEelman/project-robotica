@@ -55,10 +55,10 @@ bool LIDAR::Connect() {
         return false;
     }
 
-    std::cout << "LIDAR: connected."
+    std::cout << "LIDAR: connected.";
     drv->setMotorSpeed();
     drv->startScan(0, 1);
-    delay_ms(2000); // wait 2 seconds for motor to spin up and first revolution to complete
+    usleep(2000000);
 
     return true;
 }
