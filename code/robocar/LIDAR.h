@@ -11,8 +11,8 @@ using namespace sl;
 
 class LIDAR {
 public:
-    LIDAR(const std::string& port, int baudRate = 460800);
-    ~LIDAR();
+    LiDAR(const std::string& port, int baudRate = 460800);
+    ~LiDAR();
 
     bool Connect();
     void Disconnect();
