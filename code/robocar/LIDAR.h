@@ -1,34 +1,18 @@
 #ifndef LIDAR_H
 #define LIDAR_H
 
+#include "sl_lidar.h"
+#include "sl_lidar_driver.h"
 #include <string>
-#include <cstdint>
 
 #define SCAN_SIZE 360
 
-#ifndef B460800
-#define B460800 460800
-#endif
+using namespace sl;
 
 class LIDAR {
-
-private:
-    std::string  port;
-    int          fd;
-    int          baudRate;
-    int          maxRange;
-    int          minRange;
-    int          scanData[SCAN_SIZE];
-    int          rotationSpeed;
-    int          currentAngle;
-    int          nextAngle;
-    bool         updated;
-
-    bool sendCommand(uint8_t cmd);
-    bool readDescriptor();
-
 public:
     LIDAR(const std::string& port, int baudRate = 460800);
+    ~LIDAR();
 
     bool Connect();
     void Disconnect();
@@ -36,10 +20,18 @@ public:
     bool Update();
 
     int  GetDistance(int angle) const;
-
     bool IsObjectInRange(int minAngle, int maxAngle, int threshold) const;
-
     void ApplyMotionCorrection(float currentYaw);
+
+private:
+    std::string        port;
+    int                baudRate;
+    int                maxRange;
+    int                minRange;
+    int                scanData[SCAN_SIZE];
+
+    IChannel*          channel;
+    ILidarDriver*      drv;
 };
 
 #endif
