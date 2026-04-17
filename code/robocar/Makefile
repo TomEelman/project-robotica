@@ -3,7 +3,7 @@ CXXFLAGS = -std=c++17 -Wall -Wextra -Wpedantic -Wconversion -I.
 
 RPLIDAR_SDK = $(HOME)/rplidar_sdk
 RPLIDAR_INC = -I$(RPLIDAR_SDK)/sdk/include -I$(RPLIDAR_SDK)/sdk/src
-RPLIDAR_LIB = -L$(RPLIDAR_SDK)/output/Linux/Release -lrplidar_sdk
+RPLIDAR_LIB = -L$(RPLIDAR_SDK)/output/Linux/Release -lsl_lidar_sdk
 
 TARGET = robocar_pi5
 
