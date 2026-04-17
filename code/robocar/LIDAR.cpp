@@ -1,7 +1,6 @@
 #include "LIDAR.h"
 #include <iostream>
 #include <cstring>
-#include <cmath>
 #include <unistd.h>
 
 using namespace sl;
@@ -9,12 +8,15 @@ using namespace sl;
 LIDAR::LIDAR(const std::string& port, int baudRate)
     : port(port),
       baudRate(baudRate),
-      maxRange(4000),
-      minRange(0),
+      maxRange(4000.0f),
+      minRange(0.0f),
       channel(nullptr),
-      drv(nullptr)
+      driver(nullptr)
 {
-    memset(scanData, 0, sizeof(scanData));
+    for (int i = 0; i < SCAN_SIZE; i++) {
+        scanData[i].angle    = i;
+        scanData[i].distance = 0.0f;
+    }
 }
 
 LIDAR::~LIDAR() {
@@ -22,98 +24,96 @@ LIDAR::~LIDAR() {
 }
 
 bool LIDAR::Connect() {
-    // Create driver instance
     auto result = createLidarDriver();
     if (!result) {
         std::cerr << "LIDAR: failed to create driver\n";
         return false;
     }
-    drv = *result;
+    driver = *result;
 
-    // Create serial channel
     auto chanResult = createSerialPortChannel(port, baudRate);
     if (!chanResult) {
         std::cerr << "LIDAR: failed to create serial channel\n";
-        delete drv;
-        drv = nullptr;
+        delete driver;
+        driver = nullptr;
         return false;
     }
     channel = *chanResult;
 
-    // Connect
-    if (!SL_IS_OK(drv->connect(channel))) {
+    if (!SL_IS_OK(driver->connect(channel))) {
         std::cerr << "LIDAR: failed to connect to " << port << "\n";
-        delete drv;
-        drv = nullptr;
+        delete driver;
+        driver = nullptr;
         return false;
     }
 
-    // Verify device is responsive
     sl_lidar_response_device_info_t devInfo;
-    if (!SL_IS_OK(drv->getDeviceInfo(devInfo))) {
+    if (!SL_IS_OK(driver->getDeviceInfo(devInfo))) {
         std::cerr << "LIDAR: failed to get device info\n";
         Disconnect();
         return false;
     }
 
-    std::cout << "LIDAR: connected.";
-    drv->setMotorSpeed();
-    drv->startScan(0, 1);
-    usleep(2000000);
+    driver->setMotorSpeed();
+    driver->startScan(0, 1);
+    usleep(2000000); // 2s for motor spin-up
 
     return true;
 }
 
 void LIDAR::Disconnect() {
-    if (drv) {
-        drv->stop();
-        drv->setMotorSpeed(0);
-        delete drv;
-        drv = nullptr;
+    if (driver) {
+        driver->stop();
+        driver->setMotorSpeed(0);
+        delete driver;
+        driver = nullptr;
     }
-    // channel is owned by the driver, no separate delete needed
     channel = nullptr;
 }
 
 bool LIDAR::Update() {
-    if (!drv) return false;
+    if (!driver) return false;
 
-    memset(scanData, 0, sizeof(scanData));
+    // Reset all distances, keep angles intact
+    for (int i = 0; i < SCAN_SIZE; i++) {
+        scanData[i].distance = 0.0f;
+    }
 
     sl_lidar_response_measurement_node_hq_t nodes[8192];
     size_t count = sizeof(nodes) / sizeof(nodes[0]);
 
-    sl_result op = drv->grabScanDataHq(nodes, count);
+    sl_result op = driver->grabScanDataHq(nodes, count);
     if (!SL_IS_OK(op)) {
         std::cerr << "LIDAR: grabScanDataHq failed: " << op << "\n";
         return false;
     }
 
-    drv->ascendScanData(nodes, count);
+    driver->ascendScanData(nodes, count);
 
     for (size_t i = 0; i < count; i++) {
         float angle    = (nodes[i].angle_z_q14 * 90.f) / 16384.f;
         float distance = static_cast<float>(nodes[i].dist_mm_q2) / 4.0f;
         int   quality  = nodes[i].quality >> SL_LIDAR_RESP_MEASUREMENT_QUALITY_SHIFT;
 
-        int angleIdx = static_cast<int>(angle) % SCAN_SIZE;
+        int idx = static_cast<int>(angle) % SCAN_SIZE;
 
-        if (quality > 0 && distance > static_cast<float>(minRange)
-                        && distance < static_cast<float>(maxRange)) {
-            scanData[angleIdx] = static_cast<int>(distance);
+        if (quality > 0 && distance > minRange && distance < maxRange) {
+            scanData[idx].angle    = idx;
+            scanData[idx].distance = distance;
         }
     }
 
     return true;
 }
-int LIDAR::GetDistance(int angle) const {
-    if (angle < 0 || angle >= SCAN_SIZE) return 0;
+
+LIDAR::ScanEntry LIDAR::GetDistance(int angle) const {
+    if (angle < 0 || angle >= SCAN_SIZE) return { angle, 0.0f };
     return scanData[angle];
 }
 
-bool LIDAR::IsObjectInRange(int minAngle, int maxAngle, int threshold) const {
+bool LIDAR::IsObjectInRange(int minAngle, int maxAngle, float threshold) const {
     for (int a = minAngle; a <= maxAngle; a++) {
-        int d = scanData[a % SCAN_SIZE];
+        float d = scanData[a % SCAN_SIZE].distance;
         if (d > minRange && d < threshold) return true;
     }
     return false;
@@ -123,9 +123,11 @@ void LIDAR::ApplyMotionCorrection(float currentYaw) {
     int shift = static_cast<int>(currentYaw) % SCAN_SIZE;
     if (shift == 0) return;
 
-    int tmp[SCAN_SIZE];
+    ScanEntry tmp[SCAN_SIZE];
     memcpy(tmp, scanData, sizeof(scanData));
     for (int i = 0; i < SCAN_SIZE; i++) {
-        scanData[(i + shift + SCAN_SIZE) % SCAN_SIZE] = tmp[i];
+        int newIdx = (i + shift + SCAN_SIZE) % SCAN_SIZE;
+        scanData[newIdx]       = tmp[i];
+        scanData[newIdx].angle = newIdx; // keep angle consistent with index
     }
 }

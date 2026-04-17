@@ -27,22 +27,17 @@ int main() {
             break;
         }
 
-        // Print all distances
-        for (int angle = 0; angle < 360; angle++) {
-            int dist = lidar.GetDistance(angle);
-            if (dist > 0) {
-                printf("Angle: %d Distance: %f mm\n", angle, (float)dist);
+        for (int angle = 0; angle < 1; angle++) {
+            LIDAR::ScanEntry entry = lidar.GetDistance(angle);
+            if (entry.distance > 0.0f) {
+                printf("Angle: %d deg  Distance: %f mm\n", entry.angle, entry.distance);
             }
         }
 
-		ctrl_c_pressed = true;
-
-        // if (lidar.IsObjectInRange(350, 360, 500) || lidar.IsObjectInRange(0, 10, 500)) {
-        //     std::cout << "Object detected in front!\n";
-        // }
+        ctrl_c_pressed = true;
     }
 
-    std::cout << "\nStopping Disconnecting LiDAR...\n";
+    std::cout << "\nStopping, disconnecting LIDAR...\n";
     lidar.Disconnect();
     return 0;
 }
