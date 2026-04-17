@@ -55,9 +55,10 @@ bool LIDAR::Connect() {
         return false;
     }
 
-    std::cout << "LIDAR: connected. Model: " << (int)devInfo.model
-              << " FW: " << (devInfo.firmware_version >> 8)
-              << "." << (devInfo.firmware_version & 0xFF) << "\n";
+    std::cout << "LIDAR: connected."
+    drv->setMotorSpeed();
+    drv->startScan(0, 1);
+              
     return true;
 }
 
@@ -77,27 +78,20 @@ bool LIDAR::Update() {
 
     memset(scanData, 0, sizeof(scanData));
 
-    drv->setMotorSpeed();   // default speed
-    drv->startScan(false, true);
-
-    // Grab one full revolution of scan data
     sl_lidar_response_measurement_node_hq_t nodes[8192];
     size_t count = sizeof(nodes) / sizeof(nodes[0]);
 
     sl_result op = drv->grabScanDataHq(nodes, count);
     if (!SL_IS_OK(op)) {
-        std::cerr << "LIDAR: grabScanDataHq failed\n";
-        drv->stop();
+        std::cerr << "LIDAR: grabScanDataHq failed: " << op << "\n";
         return false;
     }
 
     drv->ascendScanData(nodes, count);
-    drv->stop();
 
-    // Fill scanData array indexed by integer degree
     for (size_t i = 0; i < count; i++) {
         float angle    = (nodes[i].angle_z_q14 * 90.f) / 16384.f;
-        float distance = nodes[i].dist_mm_q2 / 4.0f;   // in mm
+        float distance = static_cast<float>(nodes[i].dist_mm_q2) / 4.0f;
         int   quality  = nodes[i].quality >> SL_LIDAR_RESP_MEASUREMENT_QUALITY_SHIFT;
 
         int angleIdx = static_cast<int>(angle) % SCAN_SIZE;
@@ -110,7 +104,6 @@ bool LIDAR::Update() {
 
     return true;
 }
-
 int LIDAR::GetDistance(int angle) const {
     if (angle < 0 || angle >= SCAN_SIZE) return 0;
     return scanData[angle];
