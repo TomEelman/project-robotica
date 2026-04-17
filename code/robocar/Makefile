@@ -8,7 +8,7 @@ RPLIDAR_LIB = -L$(RPLIDAR_SDK)/output/Linux/Release -lrplidar_sdk
 TARGET = robocar_pi5
 
 SRCS =  MainPi5.cpp       \
-        LiDAR.cpp         \
+        LIDAR.cpp         \
         Mapper.cpp        \
         GridMap.cpp       \
         Position.cpp      \
