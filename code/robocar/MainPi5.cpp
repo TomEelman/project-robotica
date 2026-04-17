@@ -31,7 +31,7 @@ int main() {
         for (int angle = 0; angle < 360; angle++) {
             int dist = lidar.GetDistance(angle);
             if (dist > 0) {
-                printf("theta: %03d Dist: %08.2f mm\n", angle, (float)dist);
+                printf("Angle: %d Distance: %f mm\n", angle, (float)dist);
             }
         }
 
