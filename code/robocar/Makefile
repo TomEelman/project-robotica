@@ -7,7 +7,6 @@ SRCS =  MainPi5.cpp       \
         LIDAR.cpp         \
         Mapper.cpp        \
         GridMap.cpp       \
-        Localisation.cpp  \
         Position.cpp      \
         ExplorationPlanner.cpp \
         PathPlanner.cpp   \
