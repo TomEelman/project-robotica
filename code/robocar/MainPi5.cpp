@@ -1,4 +1,4 @@
-#include "LiDAR.h"
+#include "LIDAR.h"
 #include "sl_lidar.h" 
 #include "sl_lidar_driver.h"
 

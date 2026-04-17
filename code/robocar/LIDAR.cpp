@@ -1,4 +1,4 @@
-#include "LiDAR.h"
+#include "LIDAR.h"
 #include <iostream>
 #include <cstring>
 #include <cmath>
