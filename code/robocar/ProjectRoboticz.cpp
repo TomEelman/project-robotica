@@ -1,10 +1,8 @@
 #include "pico/stdlib.h"
 #include "Robot.h"
 #include "Drive.h"
+#include <cmath>
 #include <cstdio>
-// ----------------------------------------
-// Test states
-// ----------------------------------------
 enum TestState {
     TURN_RIGHT_90,
     PAUSE_1,
@@ -25,15 +23,22 @@ enum TestState {
     TEST_DONE
 };
 
-static TestState state     = TURN_RIGHT_90;
-static uint32_t  tickCount = 0;
+static TestState state            = TURN_RIGHT_90;
+static uint32_t  tickCount        = 0;
+static float     accumulatedAngle = 0.0f;
+static float     targetAngle      = 90.0f;
+static float     startYaw         = 0.0f;
+static bool      startYawSet      = false;  // zodat we startYaw maar 1x opslaan
 
 static constexpr uint32_t MS(uint32_t ms) { return ms / 10; }
+static constexpr uint32_t PAUSE_TICKS = MS(500);
+static constexpr uint32_t DRIVE_TICKS = MS(2000);
+static constexpr uint32_t CURVE_TICKS = MS(2000);
 
-static constexpr uint32_t TURN_90_TICKS = MS(3000);
-static constexpr uint32_t PAUSE_TICKS   = MS(500);
-static constexpr uint32_t DRIVE_TICKS   = MS(2000);
-static constexpr uint32_t CURVE_TICKS   = MS(2000);
+bool IsTurnState(TestState s)
+{
+    return (s == TURN_RIGHT_90 || s == TURN_LEFT_90);
+}
 
 DriveCommand GetCommand(TestState s)
 {
@@ -55,8 +60,6 @@ uint32_t DurationTicks(TestState s)
 {
     switch (s)
     {
-        case TURN_RIGHT_90:
-        case TURN_LEFT_90:        return TURN_90_TICKS;
         case DRIVE_FORWARD:
         case DRIVE_BACKWARD:      return DRIVE_TICKS;
         case FORWARD_TURN_RIGHT:
@@ -67,9 +70,23 @@ uint32_t DurationTicks(TestState s)
     }
 }
 
-// ----------------------------------------
-// Main
-// ----------------------------------------
+void StartState(TestState newState)
+{
+    state            = newState;
+    tickCount        = 0;
+    accumulatedAngle = 0.0f;
+    startYawSet      = false;  // reset zodat startYaw opnieuw wordt opgeslagen
+
+    switch (newState)
+    {
+        case TURN_RIGHT_90: targetAngle =  90.0f; break;
+        case TURN_LEFT_90:  targetAngle = -90.0f; break;
+        default:            targetAngle =   0.0f; break;
+    }
+
+    printf("==> State %d gestart | target: %.1f graden\n", newState, targetAngle);
+}
+
 int main()
 {
     stdio_init_all();
@@ -79,25 +96,55 @@ int main()
 
     while (true)
     {
-        // 1. Sensoren bijwerken (altijd)
         robot.UpdateSensors();
 
-        // 2. Test state machine
         if (state == TEST_DONE)
         {
             robot.Execute(DriveCommand(0.0f, 0.0f));
         }
         else
         {
-            DriveCommand cmd = GetCommand(state);
-            robot.Execute(cmd);
-
+            robot.Execute(GetCommand(state));
             tickCount++;
-            if (tickCount >= DurationTicks(state))
+
+            bool done = false;
+
+            if (IsTurnState(state))
             {
-                printf("State %d klaar na %lu ticks\n", state, tickCount);
-                state     = static_cast<TestState>(static_cast<int>(state) + 1);
-                tickCount = 0;
+                // startYaw eenmalig opslaan bij begin van deze state
+                if (!startYawSet)
+                {
+                    startYaw    = robot.GetCurrentYaw();
+                    startYawSet = true;
+                }
+
+                float currentYaw = robot.GetCurrentYaw();
+                accumulatedAngle = currentYaw - startYaw;
+
+                // Wrap -180 tot +180
+                while (accumulatedAngle >  180.0f) accumulatedAngle -= 360.0f;
+                while (accumulatedAngle < -180.0f) accumulatedAngle += 360.0f;
+
+                printf("yaw: %.1f | gedraaid: %.1f / %.1f\n",
+                       currentYaw, accumulatedAngle, targetAngle);
+
+                // Positief target: wacht tot accumulatedAngle >= targetAngle
+                // Negatief target: wacht tot accumulatedAngle <= targetAngle
+                if (targetAngle > 0.0f)
+                    done = (accumulatedAngle >= targetAngle);
+                else
+                    done = (accumulatedAngle <= targetAngle);
+            }
+            else
+            {
+                done = (tickCount >= DurationTicks(state));
+            }
+
+            if (done)
+            {
+                printf("State %d klaar | gedraaid: %.1f graden | ticks: %lu\n",
+                       state, accumulatedAngle, tickCount);
+                StartState(static_cast<TestState>(static_cast<int>(state) + 1));
             }
         }
 

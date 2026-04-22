@@ -51,6 +51,17 @@ void Robot::Execute(const DriveCommand& cmd)
     drive.Execute(cmd);
 }
 
+// Robot.cpp
+float Robot::GetAngVelocity() const
+{
+    return sensorHub.GetAngVelocity();
+} 
+
+float Robot::GetCurrentYaw() const
+{
+    return sensorHub.GetCurrentYaw();
+}
+
 void Robot::Update() {
     
 sensorHub.UpdateSensors(); 

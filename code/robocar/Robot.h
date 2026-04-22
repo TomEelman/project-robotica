@@ -18,7 +18,10 @@
         Robot();
             void UpdateSensors();   // alleen sensoren lezen
     void Execute(const DriveCommand& cmd);  // alleen drive aansturen
-    void Update();          
+    void Update();  
+    float GetAngVelocity() const;
+        float GetCurrentYaw() const;
+       
     };
 
     #endif
