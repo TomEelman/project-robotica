@@ -18,54 +18,66 @@ enum Drivemodes {
 class Drive {
 
 private:
-    Motor& motorLeft;
-    Motor& motorRight;
+    Motor&    motorLeft;
+    Motor&    motorRight;
+    SensorHub& sensorHub;
 
     PIDController pIDLeft;
     PIDController pIDRight;
     PIDController pIDYaw;
-    SensorHub& sensorHub;
 
     float wheelbase;
-    int threshold;
+    int   threshold;
 
     bool enableMotorA;
     bool enableMotorB;
 
     Drivemodes motorDirection;
 
-    bool  isTurning     = false;
+    bool  isTurning;
     float turnStartYaw;
-    float targetTurnYaw ;
+    float targetTurnYaw;
 
-    bool onTargetPos;
+    bool  onTargetPos;
 
     float pwmLeft;
-    float pwmRight; 
+    float pwmRight;
 
     float initialYaw;
     float encoderYaw;
     float targetYaw;
-    bool isInitialYawSet;
+    bool  isInitialYawSet;
     float currentAngular;
     float rampedLinear;
     float rampStep;
 
+    // Turn speed limits (graden/s), measured per platform
+    float minAngVel;   // draaisnelheid bij minimum PWM
+    float maxAngVel;   // draaisnelheid bij maximum PWM
+
+    // Motor dead-zone thresholds
+    float minPwmLeft;
+    float minPwmRight;
+
     void  ApplyClamp(float& pwm, float minPwm);
     float ComputeSteerCorrection();
+    float ComputeEncoderAngVel() const;
     void  UpdateDirection(float linear, float angular);
     void  UpdateRamp(float linear);
 
 public:
     Drive(Motor& LeftMotor, Motor& RightMotor,
           SensorHub& Sensors,
-          float Wheelbase, int Threshold);
+          float Wheelbase, int Threshold,
+          float MinAngVel  = 13.0f,
+          float MaxAngVel  = 35.0f,
+          float MinPwmLeft = 23.0f,
+          float MinPwmRight= 22.5f);
 
     bool TurnDegrees(float degrees);
     bool IsTurning() const { return isTurning; }
 
     void Execute(const DriveCommand& Command);
-
     void Stop();
 };
 

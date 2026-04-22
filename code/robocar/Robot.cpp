@@ -40,18 +40,22 @@ Robot::Robot()
 {
 }
 
+// Robot.cpp
+void Robot::UpdateSensors()
+{
+    sensorHub.UpdateSensors();
+}
+
+void Robot::Execute(const DriveCommand& cmd)
+{
+    drive.Execute(cmd);
+}
+
 void Robot::Update() {
     
-motorLeft.SetSpeed(23.0f);
-motorRight.SetSpeed(-23.0f);
-
-// En log:
-printf("angVel: %f\n", sensorHub.GetAngVelocity());
-    /*sensorHub.UpdateSensors(); 
-    drive.Execute(DriveCommand(0.0f, -2.0f));
-    float w = sensorHub.GetAngVelocity();
-    printf("w = %f\n",w);
- 
+sensorHub.UpdateSensors(); 
+    drive.Execute(DriveCommand(0.0f, 35.0f));
+ /*
     float Angvelocity = sensorHub.GetAngVelocity();
     float imuYawRate = Angvelocity* (PI / 180.0f);
     float vLeft = sensorHub.GetSpeedLeft();

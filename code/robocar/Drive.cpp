@@ -2,7 +2,17 @@
 #include <cstdio>
 #include <cmath>
 
-Drive::Drive(Motor& LeftMotor, Motor& RightMotor, SensorHub& Sensors, float Wheelbase, int Threshold)
+// ----------------------------------------
+// CONSTRUCTOR
+// ----------------------------------------
+
+Drive::Drive(Motor& LeftMotor, Motor& RightMotor,
+             SensorHub& Sensors,
+             float Wheelbase, int Threshold,
+             float MinAngVel,
+             float MaxAngVel,
+             float MinPwmLeft,
+             float MinPwmRight)
     : motorLeft(LeftMotor),
       motorRight(RightMotor),
       sensorHub(Sensors),
@@ -14,12 +24,26 @@ Drive::Drive(Motor& LeftMotor, Motor& RightMotor, SensorHub& Sensors, float Whee
       enableMotorA(true),
       enableMotorB(true),
       motorDirection(STOPPED),
+      isTurning(false),
+      turnStartYaw(0.0f),
+      targetTurnYaw(0.0f),
       onTargetPos(false),
       pwmLeft(0.0f),
       pwmRight(0.0f),
-      rampedLinear(0.0f)
+      initialYaw(0.0f),
+      encoderYaw(0.0f),
+      targetYaw(0.0f),
+      isInitialYawSet(false),
+      currentAngular(0.0f),
+      rampedLinear(0.0f),
+      rampStep(2.0f),
+      minAngVel(MinAngVel),
+      maxAngVel(MaxAngVel),
+      minPwmLeft(MinPwmLeft),
+      minPwmRight(MinPwmRight)
 {
 }
+
 // ----------------------------------------
 // PRIVATE HELPERS
 // ----------------------------------------
@@ -39,6 +63,15 @@ void Drive::ApplyClamp(float& pwm, float minPwm)
     }
 }
 
+float Drive::ComputeEncoderAngVel() const
+{
+    float speedL = sensorHub.GetSpeedLeft();
+    float speedR = sensorHub.GetSpeedRight();
+    // wheelbase is in meters, speeds in mm/s → convert wheelbase to mm
+    float wheelbaseMm = wheelbase * 1000.0f;
+    return (speedR - speedL) / wheelbaseMm * (180.0f / M_PI);
+}
+
 void Drive::UpdateDirection(float linear, float angular)
 {
     if (fabs(linear) < 0.001f && fabs(angular) > 0.001f)
@@ -53,21 +86,18 @@ void Drive::UpdateDirection(float linear, float angular)
 
 void Drive::UpdateRamp(float linear)
 {
-    const float rampStep = 2.0f;
-    const float minStart = 23.0f;
-
     switch (motorDirection)
     {
         case FORWARD:
-            if (rampedLinear < minStart)
-                rampedLinear = minStart;
+            if (rampedLinear < minPwmLeft)
+                rampedLinear = minPwmLeft;
             rampedLinear += rampStep;
             if (rampedLinear > linear) rampedLinear = linear;
             break;
 
         case BACKWARD:
-            if (rampedLinear > -minStart)
-                rampedLinear = -minStart;
+            if (rampedLinear > -minPwmLeft)
+                rampedLinear = -minPwmLeft;
             rampedLinear -= rampStep;
             if (rampedLinear < linear) rampedLinear = linear;
             break;
@@ -108,7 +138,7 @@ void Drive::Execute(const DriveCommand& Command)
 {
     float linear  = Command.GetLinVelocity();
     float angular = Command.GetAngVelocity();
-    currentAngular = angular;  // bewaar voor ComputeSteerCorrection
+    currentAngular = angular;
 
     // STOP
     if (fabs(linear) < 0.001f && fabs(angular) < 0.001f)
@@ -132,45 +162,56 @@ void Drive::Execute(const DriveCommand& Command)
 
     switch (motorDirection)
     {
-      case TURN_RIGHT:
-    {
-        float targetAngVel  =  fabs(angular);
-        float currentAngVel = sensorHub.GetAngVelocity();
-        printf("target%f\n,current%f\n",targetAngVel, currentAngVel);
-        float pwmTurn = pIDYaw.Compute(currentAngVel, targetAngVel);
+        case TURN_RIGHT:
+        {
+            float targetAngVel = fabs(angular);
+            if (targetAngVel < minAngVel) targetAngVel = minAngVel;
+            if (targetAngVel > maxAngVel) targetAngVel = maxAngVel;
 
-        float mag = fabs(pwmTurn);
-        if (mag > 255.0f) mag = 255.0f;
-        if (mag <  23.0f) mag =  23.0f;
+            float currentAngVelAbs = fabs(ComputeEncoderAngVel());
 
-        pwmL =  mag;
-        pwmR = -mag;
-        printf("PWML%f\n,PWMR%f\n",pwmL, pwmR);
-        ApplyClamp(pwmL, 23.0f);
-        ApplyClamp(pwmR, 22.5f);
-        break;
-    }
+            float basePwm = minPwmLeft + (targetAngVel - minAngVel)
+                            / (maxAngVel - minAngVel)
+                            * (255.0f - minPwmLeft);
+            float error   = targetAngVel - currentAngVelAbs;
+            float pwmTurn = basePwm + 0.5f * error;
 
-    case TURN_LEFT:
-    {
-        float targetAngVel  = -fabs(angular);
-        float currentAngVel = sensorHub.GetAngVelocity();
-        printf("target%f\n,current%f\n",targetAngVel, currentAngVel);
-        float pwmTurn = pIDYaw.Compute(currentAngVel, targetAngVel);
+            if (pwmTurn > 255.0f)    pwmTurn = 255.0f;
+            if (pwmTurn < minPwmLeft) pwmTurn = minPwmLeft;
 
-        float mag = fabs(pwmTurn);
-        if (mag > 255.0f) mag = 255.0f;
-        if (mag <  23.0f) mag =  23.0f;
+            pwmL =  pwmTurn;
+            pwmR = -pwmTurn;
 
-        pwmL = -mag;
-        pwmR =  mag;
-        printf("PWML%f\n,PWMR%f\n",pwmL, pwmR);
-        ApplyClamp(pwmL, 23.0f);
-        ApplyClamp(pwmR, 22.5f);
-        break;
-    }
+            ApplyClamp(pwmL, minPwmLeft);
+            ApplyClamp(pwmR, minPwmRight);
+            break;
+        }
 
-    
+        case TURN_LEFT:
+        {
+            float targetAngVel = fabs(angular);
+            if (targetAngVel < minAngVel) targetAngVel = minAngVel;
+            if (targetAngVel > maxAngVel) targetAngVel = maxAngVel;
+
+            float currentAngVelAbs = fabs(ComputeEncoderAngVel());
+
+            float basePwm = minPwmLeft + (targetAngVel - minAngVel)
+                            / (maxAngVel - minAngVel)
+                            * (255.0f - minPwmLeft);
+            float error   = targetAngVel - currentAngVelAbs;
+            float pwmTurn = basePwm + 0.5f * error;
+
+            if (pwmTurn > 255.0f)    pwmTurn = 255.0f;
+            if (pwmTurn < minPwmLeft) pwmTurn = minPwmLeft;
+
+            pwmL = -pwmTurn;
+            pwmR =  pwmTurn;
+
+            ApplyClamp(pwmL, minPwmLeft);
+            ApplyClamp(pwmR, minPwmRight);
+            break;
+        }
+
         case FORWARD:
         {
             float targetLeft  = rampedLinear - steerCorrection;
@@ -179,8 +220,8 @@ void Drive::Execute(const DriveCommand& Command)
             pwmL = pIDLeft.Compute(sensorHub.GetSpeedLeft(),  targetLeft);
             pwmR = pIDRight.Compute(sensorHub.GetSpeedRight(), targetRight);
 
-            ApplyClamp(pwmL, 23.0f);
-            ApplyClamp(pwmR, 22.5f);
+            ApplyClamp(pwmL, minPwmLeft);
+            ApplyClamp(pwmR, minPwmRight);
             break;
         }
 
@@ -189,12 +230,11 @@ void Drive::Execute(const DriveCommand& Command)
             float targetLeft  = rampedLinear - steerCorrection;
             float targetRight = rampedLinear + steerCorrection;
 
-            // Encoder unsigned → negatief maken voor correcte PID feedback
             pwmL = pIDLeft.Compute(-sensorHub.GetSpeedLeft(),  targetLeft);
             pwmR = pIDRight.Compute(-sensorHub.GetSpeedRight(), targetRight);
 
-            ApplyClamp(pwmL, 23.0f);
-            ApplyClamp(pwmR, 22.5f);
+            ApplyClamp(pwmL, minPwmLeft);
+            ApplyClamp(pwmR, minPwmRight);
             break;
         }
 
@@ -208,6 +248,10 @@ void Drive::Execute(const DriveCommand& Command)
     if (enableMotorA) motorLeft.SetSpeed(pwmLeft);
     if (enableMotorB) motorRight.SetSpeed(pwmRight);
 }
+
+// ----------------------------------------
+// STOP
+// ----------------------------------------
 
 void Drive::Stop()
 {

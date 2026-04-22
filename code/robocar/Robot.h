@@ -16,8 +16,9 @@
         Localisation localisation;
     public:
         Robot();
-
-        void Update();
+            void UpdateSensors();   // alleen sensoren lezen
+    void Execute(const DriveCommand& cmd);  // alleen drive aansturen
+    void Update();          
     };
 
     #endif
