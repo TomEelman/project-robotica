@@ -1,31 +1,110 @@
 #include "Localisation.h"
 #include <cmath>
 #include <stdio.h>
-Localisation::Localisation(float wheelBase, float dt)
-    : x(0.0f), y(0.0f), theta(0.0f),
-      v(0.0f), omega(0.0f),
-      wheelBase(wheelBase*1000)
+#include "Localisation.h"
+
+Localisation::Localisation(float wheelBase)
+    : x(0.0f), y(0.0f), theta(0.0f), wheelBase(wheelBase)
 {
+    // init covariance
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            P[i][j] = 0.0f;
+            Q[i][j] = 0.0f;
+        }
+    }
+
+    P[0][0] = 0.01f;
+    P[1][1] = 0.01f;
+    P[2][2] = 0.01f;
+
+    // process noise (tune deze!)
+    Q[0][0] = 0.02f;
+    Q[1][1] = 0.02f;
+    Q[2][2] = 0.01f;
+
+    // IMU noise
+    R = 0.01f;
 }
 
-void Localisation::Update(float vLeft, float vRight, float imuYawRate, float dt)
+void Localisation::Predict(float vLeft, float vRight, float dt)
 {
-    // 1. Bereken snelheid en rotatie uit wielen
-    float v_wheels = (vLeft + vRight) * 0.5f;
-    float omega_wheels = (vRight - vLeft) / wheelBase;
+    float v = 0.5f * (vLeft + vRight);
+    float omega = (vRight - vLeft) / wheelBase;
 
-    // 2. Combineer met IMU (simpel: gyro gebruiken)
-    omega = 0.7f * imuYawRate + 0.3f * omega_wheels;
-    v = v_wheels;
-    // 3. Integratie (dead reckoning)
+    float c = cos(theta);
+    float s = sin(theta);
+
+    // state prediction
+    x += v * c * dt;
+    y += v * s * dt;
     theta += omega * dt;
-    printf("dt = %.8f\n", dt);
-    float dx = v * cos(theta) * dt;
-    float dy = v * sin(theta) * dt;
 
-    x += dx;
-    y += dy;
+    // normalize angle
+    if (theta > M_PI) theta -= 2.0f * M_PI;
+    if (theta < -M_PI) theta += 2.0f * M_PI;
+
+    // Jacobian F
+    float F[3][3] = {
+        {1, 0, -v * s * dt},
+        {0, 1,  v * c * dt},
+        {0, 0, 1}
+    };
+
+    // P = FPF^T + Q (simplified expansion)
+    float Pnew[3][3] = {0};
+
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            for (int k = 0; k < 3; k++) {
+                for (int l = 0; l < 3; l++) {
+                    Pnew[i][j] += F[i][k] * P[k][l] * F[j][l];
+                }
+            }
+            Pnew[i][j] += Q[i][j];
+        }
+    }
+
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            P[i][j] = Pnew[i][j];
+        }
+    }
 }
+
+void Localisation::UpdateIMU(float imuYaw, float dt)
+{
+    (void)dt; // niet nodig hier maar kan je loggen
+
+    float z = imuYaw;
+
+    // innovation
+    float y = z - theta;
+
+    // normalize angle error
+    if (y > M_PI) y -= 2.0f * M_PI;
+    if (y < -M_PI) y += 2.0f * M_PI;
+
+    // S = P + R
+    float S = P[2][2] + R;
+
+    // Kalman gain
+    float Kx = P[0][2] / S;
+    float Ky = P[1][2] / S;
+    float Kt = P[2][2] / S;
+
+    // update state
+    x     += Kx * y;
+    y     += Ky * y;
+    theta += Kt * y;
+
+    // update covariance (only theta coupling simplified)
+    P[0][2] -= Kx * P[2][2];
+    P[1][2] -= Ky * P[2][2];
+    P[2][2] -= Kt * P[2][2];
+}
+
+
 
 float Localisation::GetX() const { return x; }
 float Localisation::GetY() const { return y; }

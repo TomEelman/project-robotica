@@ -1,6 +1,6 @@
 // PIDController.cpp
 #include "PIDController.h"
-
+#include <cstdio>
 PIDController::PIDController(float p, float i, float d, float maxIntegral_, float maxOutput_) {
     kp           = p;
     ki           = i;
@@ -15,14 +15,15 @@ PIDController::PIDController(float p, float i, float d, float maxIntegral_, floa
 
 }
 
-float PIDController::Compute(float CurrentValue, float Setpoint, float dt) {
-
+float PIDController::Compute(float CurrentValue, float Setpoint) {
+     uint64_t now = time_us_64();
+    float dt = (now - lastTime) / 1000000.0f;
+     lastTime = now;   
 
     float error = Setpoint - CurrentValue;
 
     // P
     float p = kp * error;
-
     // I met anti-windup
     integral += error * dt;
     if (integral >  maxIntegral) integral =  maxIntegral;

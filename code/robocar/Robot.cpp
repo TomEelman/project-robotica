@@ -1,6 +1,5 @@
 #include "Robot.h"
 #include <cstdio>
-#define PI 3.14159265358979323846f
 
 // GP0/1 bezet door UART
 // Motor A: ENA=GP8, IN1=GP2, IN2=GP3
@@ -36,19 +35,38 @@ Robot::Robot()
                 ENCODER_RIGHT_PULS, ENCODER_RIGHT_PULSRES,
                 IMU_SDA, IMU_SCL),
       drive(motorLeft, motorRight, sensorHub, WHEELBASE, THRESHOLD),
-      localisation(WHEELBASE, THRESHOLD)  
+      localisation(WHEELBASE)  
 
 {
 }
 
-void Robot::Update(float dt) {
-    sensorHub.UpdateSensors(); 
+void Robot::Update() {
+    
+motorLeft.SetSpeed(23.0f);
+motorRight.SetSpeed(-23.0f);
+
+// En log:
+printf("angVel: %f\n", sensorHub.GetAngVelocity());
+    /*sensorHub.UpdateSensors(); 
+    drive.Execute(DriveCommand(0.0f, -2.0f));
+    float w = sensorHub.GetAngVelocity();
+    printf("w = %f\n",w);
+ 
     float Angvelocity = sensorHub.GetAngVelocity();
     float imuYawRate = Angvelocity* (PI / 180.0f);
     float vLeft = sensorHub.GetSpeedLeft();
     float vRight =sensorHub.GetSpeedRight();
-    localisation.Update(vLeft, vRight, imuYawRate, dt);
-    drive.Execute(DriveCommand(378.0f, 0.0f),dt);
-    printf("vL %.2f vR %.2f omega %.3f theta %8f\n",
-       vLeft, vRight, imuYawRate, localisation.GetTheta());
+        printf("before drive\n");
+    localisation.Predict(vLeft, vRight, dt);
+        printf("befodrive\n");
+    localisation.UpdateIMU(imuYawRate, dt);
+        printf("befrive\n");
+
+
+
+printf("after drive\n");
+    printf("vL %.2f vR %.2f omega %.3f theta %8f x:%f Y:%f\n",
+       vLeft, vRight, imuYawRate, localisation.GetTheta(), localisation.GetX(), localisation.GetY());
+        */
+
 }

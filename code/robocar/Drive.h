@@ -40,16 +40,21 @@ private:
 
     bool onTargetPos;
 
-    float pwmLeft;   // huidige PWM waarde links
-    float pwmRight;  // huidige PWM waarde rechts
+    float pwmLeft;
+    float pwmRight; 
 
     float initialYaw;
     float encoderYaw;
     float targetYaw;
     bool isInitialYawSet;
-
+    float currentAngular;
     float rampedLinear;
     float rampStep;
+
+    void  ApplyClamp(float& pwm, float minPwm);
+    float ComputeSteerCorrection();
+    void  UpdateDirection(float linear, float angular);
+    void  UpdateRamp(float linear);
 
 public:
     Drive(Motor& LeftMotor, Motor& RightMotor,
@@ -59,7 +64,7 @@ public:
     bool TurnDegrees(float degrees);
     bool IsTurning() const { return isTurning; }
 
-    void Execute(const DriveCommand& Command, float dt);
+    void Execute(const DriveCommand& Command);
 
     void Stop();
 };

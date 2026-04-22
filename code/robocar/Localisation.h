@@ -4,30 +4,30 @@
 #include "SensorHub.h"
 
 class Localisation {
-
-private:
-
-    // Pose
-    float x;
-    float y;
-    float theta;
-
-    // Velocity (optioneel handig)
-    float v;
-    float omega;
-
-    // Robot parameters
-    float wheelBase;   // afstand tussen wielen
-
 public:
+    Localisation(float wheelBase);
 
-    Localisation(float wheelBase, float dt);
-
-    void Update(float vLeft, float vRight, float imuYawRate, float dt);
+    void Predict(float vLeft, float vRight, float dt);
+    void UpdateIMU(float imuYaw, float dt);
 
     float GetX() const;
     float GetY() const;
     float GetTheta() const;
+
+private:
+    // state
+    float x;
+    float y;
+    float theta;
+
+    // covariance (simplified 3x3)
+    float P[3][3];
+
+    // noise
+    float Q[3][3];
+    float R;
+
+    float wheelBase;
 };
 
 #endif
