@@ -1,45 +1,47 @@
 #ifndef LIDAR_H
 #define LIDAR_H
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+#include "sl_lidar.h"
+#include "sl_lidar_driver.h"
+#pragma GCC diagnostic pop
+
 #include <string>
-#include <cstdint>
 
 #define SCAN_SIZE 360
 
-#ifndef B460800
-#define B460800 460800
-#endif
+using namespace sl;
 
 class LIDAR {
-
-private:
-    std::string  port;
-    int          fd;
-    int          baudRate;
-    int          maxRange;
-    int          minRange;
-    int          scanData[SCAN_SIZE];
-    int          rotationSpeed;
-    int          currentAngle;
-    int          nextAngle;
-    bool         updated;
-
-    bool sendCommand(uint8_t cmd);
-    bool readDescriptor();
-
 public:
+    struct ScanEntry {
+        int   angle;
+        float distance;
+    };
+
     LIDAR(const std::string& port, int baudRate = 460800);
+    ~LIDAR();
 
     bool Connect();
     void Disconnect();
 
     bool Update();
 
-    int  GetDistance(int angle) const;
+    ScanEntry GetDistance(int angle) const;
+    bool      IsObjectInRange(int minAngle, int maxAngle, float threshold) const;
+    void      ApplyMotionCorrection(float currentYaw);
 
-    bool IsObjectInRange(int minAngle, int maxAngle, int threshold) const;
+private:
+    std::string port;
+    int         baudRate;
+    float       maxRange;
+    float       minRange;
 
-    void ApplyMotionCorrection(float currentYaw);
+    ScanEntry   scanData[SCAN_SIZE];
+
+    IChannel*     channel;
+    ILidarDriver* driver;
 };
 
 #endif

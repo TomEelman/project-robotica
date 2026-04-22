@@ -1,38 +1,43 @@
 #include "LIDAR.h"
 #include <iostream>
+#include <csignal>
 #include <unistd.h>
 
+static volatile bool ctrl_c_pressed = false;
+
+static void onSignal(int) {
+    ctrl_c_pressed = true;
+}
+
 int main() {
-    LIDAR lidar("/dev/ttyUSB0");
+    signal(SIGINT, onSignal);
+
+    LIDAR lidar("/dev/ttyUSB0", 460800);
 
     if (!lidar.Connect()) {
-        std::cerr << "Failed to connect to LiDAR on /dev/ttyUSB0\n";
+        std::cerr << "Failed to connect to LIDAR\n";
         return 1;
     }
 
-    std::cout << "Connected. Scanning...\n";
+    std::cout << "LIDAR connected. Starting scan...\n";
 
-    for(int i = 0; i < 10; i++){
-     	if (!lidar.Update()) {
-        	std::cerr << "Scan failed\n";
-        	lidar.Disconnect();
-     	}
+    while (!ctrl_c_pressed) {
+        if (!lidar.Update()) {
+            std::cerr << "LIDAR update failed\n";
+            break;
+        }
 
-    	std::cout << "Scan complete:\n";
-   	std::cout << "Angle(deg)  Distance(mm)\n";
-   	std::cout << "------------------------\n";
-    	
-	for (int angle = 0; angle < 360; angle++) {
-        	int dist = lidar.GetDistance(angle);
-        	
-		if (dist > 0) {
-            		std::cout << angle << "°\t" << dist << " mm\n";
-        	}
-    	}
+        for (int angle = 0; angle < 1; angle++) {
+            LIDAR::ScanEntry entry = lidar.GetDistance(angle);
+            if (entry.distance > 0.0f) {
+                printf("Angle: %d deg  Distance: %f mm\n", entry.angle, entry.distance);
+            }
+        }
 
-	sleep(2);
+        ctrl_c_pressed = true;
     }
 
+    std::cout << "\nStopping, disconnecting LIDAR...\n";
     lidar.Disconnect();
     return 0;
 }
