@@ -35,6 +35,43 @@ static constexpr uint32_t PAUSE_TICKS = MS(500);
 static constexpr uint32_t DRIVE_TICKS = MS(2000);
 static constexpr uint32_t CURVE_TICKS = MS(2000);
 
+
+// Bovenaan toevoegen: ramp parameters
+static constexpr float RAMP_UP_DEG   = 20.0f;   // hoek waarop max snelheid bereikt is
+static constexpr float RAMP_DOWN_DEG = 20.0f;   // hoek voor het einde beginnen te remmen
+static constexpr float TURN_SPEED_MAX =  35.0f;  // jouw huidige snelheid
+static constexpr float TURN_SPEED_MIN =   8.0f;  // langzaamste snelheid (net genoeg om te bewegen)
+
+// Nieuwe helper: berekent de draaisnelheid op basis van hoe ver gedraaid is
+float GetRampedTurnSpeed(float accumulated, float target)
+{
+    float progress = fabsf(accumulated);      // hoeveel graden gedraaid (altijd positief)
+    float remaining = fabsf(target) - progress; // hoeveel nog over
+
+    float speed;
+
+    if (progress < RAMP_UP_DEG)
+    {
+        // Ramp-up fase: lineair van min naar max
+        float t = progress / RAMP_UP_DEG;
+        speed = TURN_SPEED_MIN + t * (TURN_SPEED_MAX - TURN_SPEED_MIN);
+    }
+    else if (remaining < RAMP_DOWN_DEG)
+    {
+        // Ramp-down fase: lineair van max naar min
+        float t = remaining / RAMP_DOWN_DEG;
+        speed = TURN_SPEED_MIN + t * (TURN_SPEED_MAX - TURN_SPEED_MIN);
+    }
+    else
+    {
+        // Plateau: volle snelheid
+        speed = TURN_SPEED_MAX;
+    }
+
+    // Richting behouden (positief = rechts, negatief = links)
+    return (target > 0.0f) ? speed : -speed;
+}
+
 bool IsTurnState(TestState s)
 {
     return (s == TURN_RIGHT_90 || s == TURN_LEFT_90);
@@ -104,7 +141,16 @@ int main()
         }
         else
         {
-            robot.Execute(GetCommand(state));
+            
+            DriveCommand cmd = GetCommand(state);
+
+            if (IsTurnState(state) && startYawSet)
+            {
+                float rampedOmega = GetRampedTurnSpeed(accumulatedAngle, targetAngle);
+                cmd = DriveCommand(0.0f, rampedOmega);
+            }
+
+            robot.Execute(cmd);
             tickCount++;
 
             bool done = false;
