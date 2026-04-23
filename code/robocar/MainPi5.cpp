@@ -27,7 +27,7 @@ int main() {
             break;
         }
 
-        for (int angle = 0; angle < 1; angle++) {
+        for (int angle = 0; angle < 10; angle++) {
             LIDAR::ScanEntry entry = lidar.GetDistance(angle);
             if (entry.distance > 0.0f) {
                 printf("Angle: %d deg  Distance: %f mm\n", entry.angle, entry.distance);
