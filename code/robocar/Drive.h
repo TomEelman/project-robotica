@@ -60,6 +60,7 @@ private:
     float minPwmRight;
 
     void  ApplyClamp(float& pwm, float minPwm);
+    float PercentToPwm(float percent, float minPwm);
     float ComputeSteerCorrection();
     float ComputeEncoderAngVel() const;
     void  UpdateDirection(float linear, float angular);
@@ -71,8 +72,8 @@ public:
           float Wheelbase, int Threshold,
           float MinAngVel  = 13.0f,
           float MaxAngVel  = 35.0f,
-          float MinPwmLeft = 23.0f,
-          float MinPwmRight= 22.5f);
+          float MinPwmLeft = 30.0f,
+          float MinPwmRight= 29.5f);
 
     bool TurnDegrees(float degrees);
     bool IsTurning() const { return isTurning; }

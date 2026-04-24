@@ -15,9 +15,9 @@ static void initPwmPin(int pin) {
 
 static void setDuty(int pin, float procent) {
     // procent: -100.0 t/m 100.0, hier altijd positief meegeven
-    if (procent < 0.0f) procent = 0.0f;
-    if (procent > 100.0f) procent = 100.0f;
-    unsigned short level = (unsigned short)(65535.0f * procent / 100.0f);
+    if (procent < -255.0f) procent = -255.0f;
+    if (procent > 255.0f) procent = 255.0f;
+    unsigned short level = (unsigned short)(65535.0f * procent / 255.0f);
     pwm_set_gpio_level(pin, level);
 }
 

@@ -14,7 +14,7 @@ PIDController::PIDController(float p, float i, float d, float maxIntegral_, floa
     lastTime     = time_us_64();
 
 }
-
+//geeft -100% - +100% terug
 float PIDController::Compute(float CurrentValue, float Setpoint) {
      uint64_t now = time_us_64();
     float dt = (now - lastTime) / 1000000.0f;

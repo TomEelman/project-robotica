@@ -16,9 +16,9 @@ Drive::Drive(Motor& LeftMotor, Motor& RightMotor,
     : motorLeft(LeftMotor),
       motorRight(RightMotor),
       sensorHub(Sensors),
-      pIDLeft(0.145f, 1.763f, 0.0074f, 150.f, 255.0f),
-      pIDRight(0.135f, 1.688f, 0.0074f, 150.f, 255.0f),
-      pIDYaw(4.0f, 0.1f, 0.3f, 400.f, 255.0f),
+      pIDLeft(0.145f, 1.763f, 0.0074f, 150.f, 100.0f),
+      pIDRight(0.135f, 1.688f, 0.0074f, 150.f, 100.0f),
+      pIDYaw(4.0f, 0.1f, 0.3f, 400.f, 100.0f),
       wheelbase(Wheelbase),
       threshold(Threshold),
       enableMotorA(true),
@@ -36,7 +36,7 @@ Drive::Drive(Motor& LeftMotor, Motor& RightMotor,
       isInitialYawSet(false),
       currentAngular(0.0f),
       rampedLinear(0.0f),
-      rampStep(2.0f),
+      rampStep(5.0f),
       minAngVel(MinAngVel),
       maxAngVel(MaxAngVel),
       minPwmLeft(MinPwmLeft),
@@ -61,6 +61,14 @@ void Drive::ApplyClamp(float& pwm, float minPwm)
         if (pwm > 0.0f && pwm <  minPwm) pwm =  minPwm;
         if (pwm < 0.0f && pwm > -minPwm) pwm = -minPwm;
     }
+}
+
+float  Drive::PercentToPwm(float percent, float minPwm)
+{
+    // percent: 0–100  →  pwm: minPwm–255
+    if (percent < -255.0f)   percent = -255.0f;
+    if (percent > 255.0f) percent = 255.0f;
+    return minPwm + (percent / 100.0f) * (255.0f - minPwm);
 }
 
 float Drive::ComputeEncoderAngVel() const
@@ -217,8 +225,13 @@ void Drive::Execute(const DriveCommand& Command)
             float targetLeft  = rampedLinear - steerCorrection;
             float targetRight = rampedLinear + steerCorrection;
 
-            pwmL = pIDLeft.Compute(sensorHub.GetSpeedLeft(),  targetLeft);
-            pwmR = pIDRight.Compute(sensorHub.GetSpeedRight(), targetRight);
+            // geeft -100% tot 100% terug
+            float outLeft  = pIDLeft.Compute(sensorHub.GetSpeedLeft(),  targetLeft);
+            float outRight = pIDRight.Compute(sensorHub.GetSpeedRight(), targetRight);
+
+            // Schaal naar PWM bereik
+            pwmL = PercentToPwm(outLeft,  minPwmLeft);
+            pwmR = PercentToPwm(outRight, minPwmRight);
 
             ApplyClamp(pwmL, minPwmLeft);
             ApplyClamp(pwmR, minPwmRight);
@@ -230,9 +243,15 @@ void Drive::Execute(const DriveCommand& Command)
             float targetLeft  = rampedLinear - steerCorrection;
             float targetRight = rampedLinear + steerCorrection;
 
-            pwmL = pIDLeft.Compute(-sensorHub.GetSpeedLeft(),  targetLeft);
-            pwmR = pIDRight.Compute(-sensorHub.GetSpeedRight(), targetRight);
 
+            // geeft -100% tot 100% terug
+            float outLeft  = pIDLeft.Compute(-sensorHub.GetSpeedLeft(),  targetLeft);
+            float outRight = pIDRight.Compute(-sensorHub.GetSpeedRight(), targetRight);
+            printf("out left%f\n, out right5f\n",outLeft, outRight);
+            // Schaal naar PWM bereik
+            pwmL = PercentToPwm(outLeft,  minPwmLeft);
+            pwmR = PercentToPwm(outRight, minPwmRight);
+            printf("pwm left%f\n, pwm right5f\n",pwmL, pwmR);
             ApplyClamp(pwmL, minPwmLeft);
             ApplyClamp(pwmR, minPwmRight);
             break;
