@@ -5,7 +5,7 @@ Path::Path(Position points[], int size) {
     throw "Not yet implemented";
 }
 
-Position Path::GetNextPoint() {
+Position Path::GetNextPoint() const {
     // TODO - implement Path::GetNextPoint
     throw "Not yet implemented";
 }
