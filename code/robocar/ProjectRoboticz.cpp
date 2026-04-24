@@ -121,19 +121,20 @@ void StartState(TestState newState)
         default:            targetAngle =   0.0f; break;
     }
 
-    printf("==> State %d gestart | target: %.1f graden\n", newState, targetAngle);
+    //printf("==> State %d gestart | target: %.1f graden\n", newState, targetAngle);
 }
 
 int main()
 {
-    stdio_init_all();
-    sleep_ms(2000);
+    //stdio_init_all();
+    //sleep_ms(2000);
 
     Robot robot;
-
+    robot.getSenorHub().InitUart();
     while (true)
     {
         robot.UpdateSensors();
+        robot.getSenorHub().HandleUart();
 
         if (state == TEST_DONE)
         {
@@ -171,8 +172,8 @@ int main()
                 while (accumulatedAngle >  180.0f) accumulatedAngle -= 360.0f;
                 while (accumulatedAngle < -180.0f) accumulatedAngle += 360.0f;
 
-                printf("yaw: %.1f | gedraaid: %.1f / %.1f\n",
-                       currentYaw, accumulatedAngle, targetAngle);
+                //printf("yaw: %.1f | gedraaid: %.1f / %.1f\n",
+                //       currentYaw, accumulatedAngle, targetAngle);
 
                 // Positief target: wacht tot accumulatedAngle >= targetAngle
                 // Negatief target: wacht tot accumulatedAngle <= targetAngle
@@ -188,8 +189,8 @@ int main()
 
             if (done)
             {
-                printf("State %d klaar | gedraaid: %.1f graden | ticks: %lu\n",
-                       state, accumulatedAngle, tickCount);
+                //printf("State %d klaar | gedraaid: %.1f graden | ticks: %lu\n",
+                 //      state, accumulatedAngle, tickCount);
                 StartState(static_cast<TestState>(static_cast<int>(state) + 1));
             }
         }

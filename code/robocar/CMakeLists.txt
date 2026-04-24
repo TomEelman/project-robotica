@@ -51,9 +51,14 @@ add_executable(ProjectRoboticz
 pico_set_program_name(ProjectRoboticz "ProjectRoboticz")
 pico_set_program_version(ProjectRoboticz "0.1")
 
-# Modify the below lines to enable/disable output over UART/USB
-pico_enable_stdio_uart(ProjectRoboticz 1)
-pico_enable_stdio_usb(ProjectRoboticz 0)
+# voor uitlezen op mijn laptop
+#pico_enable_stdio_uart(ProjectRoboticz 1)
+#pico_enable_stdio_usb(ProjectRoboticz 0)
+
+
+# voor samen met RPI5
+pico_enable_stdio_uart(ProjectRoboticz 0)
+pico_enable_stdio_usb(ProjectRoboticz 1)
 
 # Add the standard library to the build
 target_link_libraries(ProjectRoboticz

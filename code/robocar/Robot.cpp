@@ -35,7 +35,9 @@ Robot::Robot()
                 ENCODER_RIGHT_PULS, ENCODER_RIGHT_PULSRES,
                 IMU_SDA, IMU_SCL),
       drive(motorLeft, motorRight, sensorHub, WHEELBASE, THRESHOLD),
-      localisation(WHEELBASE)  
+      localisation(WHEELBASE)
+      
+      
 
 {
 }

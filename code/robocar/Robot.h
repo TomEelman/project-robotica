@@ -21,6 +21,7 @@
     void Update();  
     float GetAngVelocity() const;
         float GetCurrentYaw() const;
+    SensorHub& getSenorHub() {return sensorHub;}
        
     };
 
