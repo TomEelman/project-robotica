@@ -4,7 +4,6 @@
 #include "Path.h"
 #include "Position.h"
 #include "DriveCommand.h"
-#include "Pathfinder.h"
 #include "GridMap.h"
 
 class Navigator {
