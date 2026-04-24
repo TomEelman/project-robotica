@@ -2,6 +2,96 @@
 
 #include <cmath>
 #include <iostream>
+#include <queue>
+#include <algorithm>
+#include <climits>
+
+// ════════════════════════════════════════════════════════════
+//  Node implementatie
+// ════════════════════════════════════════════════════════════
+
+Node::Node(int _x, int _y)
+    : x(_x), y(_y), f(0), g(0), h(0)
+{
+}
+
+bool Node::operator>(const Node& other) const {
+    return f > other.f;
+}
+
+bool Node::operator==(const Node& other) const {
+    return x == other.x && y == other.y;
+}
+
+// ════════════════════════════════════════════════════════════
+//  A* algoritme
+// ════════════════════════════════════════════════════════════
+
+std::vector<Node> Navigator::FindPath(const std::vector<std::vector<int>>& grid,
+                                      const Node& start,
+                                      const Node& goal)
+{
+    const int dirX[] = {-1, 0, 1, 0};
+    const int dirY[] = { 0, 1, 0,-1};
+
+    int rows = static_cast<int>(grid.size());
+    int cols = static_cast<int>(grid[0].size());
+
+    // Min-heap: laagste f-waarde bovenaan
+    std::priority_queue<Node, std::vector<Node>, std::greater<Node>> openList;
+
+    std::vector<std::vector<bool>> closedList(rows, std::vector<bool>(cols, false));
+    std::vector<std::vector<int>>  gScore    (rows, std::vector<int> (cols, INT_MAX));
+    std::vector<std::vector<Node>> parent    (rows, std::vector<Node>(cols));
+
+    gScore[start.x][start.y] = 0;
+    openList.push(start);
+
+    while (!openList.empty()) {
+        Node current = openList.top();
+        openList.pop();
+
+        // Doel bereikt → reconstrueer pad
+        if (current == goal) {
+            std::vector<Node> pad;
+            while (!(current == start)) {
+                pad.push_back(current);
+                current = parent[current.x][current.y];
+            }
+            pad.push_back(start);
+            std::reverse(pad.begin(), pad.end());
+            return pad;
+        }
+
+        closedList[current.x][current.y] = true;
+
+        for (int i = 0; i < 4; ++i) {
+            int nx = current.x + dirX[i];
+            int ny = current.y + dirY[i];
+
+            // Grenzen en loopbaarheid checken
+            if (nx < 0 || nx >= rows || ny < 0 || ny >= cols) continue;
+            if (grid[nx][ny] != 0)                             continue;
+            if (closedList[nx][ny])                            continue;
+
+            int newG = gScore[current.x][current.y] + 1;
+
+            if (newG < gScore[nx][ny]) {
+                gScore[nx][ny] = newG;
+
+                Node neighbor(nx, ny);
+                neighbor.g = newG;
+                neighbor.h = std::abs(nx - goal.x) + std::abs(ny - goal.y); // Manhattan
+                neighbor.f = neighbor.g + neighbor.h;
+
+                parent[nx][ny] = current;
+                openList.push(neighbor);
+            }
+        }
+    }
+
+    return {};  // Geen pad gevonden
+}
 
 // ════════════════════════════════════════════════════════════
 //  Constructor
@@ -16,12 +106,10 @@ Navigator::Navigator()
 }
 
 // ════════════════════════════════════════════════════════════
-//  PlanPath: Gebruik A* om een pad te berekenen
+//  PlanPath
 // ════════════════════════════════════════════════════════════
 
 bool Navigator::PlanPath(const GridMap& map, Position start, Position goal) {
-    // Zet de GridMap om naar het 2D grid dat Pathfinder verwacht
-    // 0 = vrij, 1 = geblokkeerd
     const auto& grid = map.GetGrid();
 
     Node startNode(static_cast<int>(start.x), static_cast<int>(start.y));
@@ -43,24 +131,24 @@ bool Navigator::PlanPath(const GridMap& map, Position start, Position goal) {
                                static_cast<float>(node.y));
     }
 
-    path      = Path(waypoints, static_cast<int>(waypoints.size()));
-    isUpdated = true;
-    saved     = false;
+    path          = Path(waypoints, static_cast<int>(waypoints.size()));
+    currentTarget = path.GetNextPoint();
+    isUpdated     = true;
+    saved         = false;
 
     std::cout << "Navigator: pad gevonden met " << waypoints.size() << " waypoints\n";
     return true;
 }
 
 // ════════════════════════════════════════════════════════════
-//  Update: stel het volgende doelwaypoint in
+//  Update
 // ════════════════════════════════════════════════════════════
 
 void Navigator::Update(Position current) {
     if (path.IsEmpty()) return;
 
-    // Ga naar het volgende waypoint als het huidige bereikt is
     if (ReachedPoint(current)) {
-        path.Advance();  // Stap naar volgend punt
+        path.Advance();
 
         if (!path.IsEmpty()) {
             currentTarget = path.GetNextPoint();
@@ -75,27 +163,25 @@ void Navigator::Update(Position current) {
 }
 
 // ════════════════════════════════════════════════════════════
-//  GetNextCommand: bereken rijcommando richting currentTarget
+//  GetNextCommand
 // ════════════════════════════════════════════════════════════
 
 DriveCommand Navigator::GetNextCommand(Position current) {
     if (path.IsEmpty()) {
-        return DriveCommand(0.0f, 0.0f);  // Stilstaan
+        return DriveCommand(0.0f, 0.0f);
     }
 
     float distance = CalculateDistance(current, currentTarget);
     float angle    = CalculateAngle   (current, currentTarget);
 
     if (distance < REACHED_THRESHOLD_MM) {
-        return DriveCommand(0.0f, 0.0f);  // Waypoint bereikt, wacht op Update()
+        return DriveCommand(0.0f, 0.0f);
     }
 
-    // Proportioneel bijsturen op hoekfout
-    // angle in radialen: positief = links, negatief = rechts
-    float angular  = ANGULAR_GAIN * angle;
-    float linear   = LINEAR_SPEED;
+    float angular = ANGULAR_GAIN * angle;
+    float linear  = LINEAR_SPEED;
 
-    // Bij grote hoekfout: eerst draaien, dan rijden
+    // Bij grote hoekfout: eerst draaien dan rijden
     if (fabsf(angle) > 0.5f) {
         linear = 0.0f;
     }
@@ -116,7 +202,6 @@ bool Navigator::ReachedPoint(Position current) {
 // ════════════════════════════════════════════════════════════
 
 bool Navigator::SaveWaypoints() {
-    // TODO: schrijf waypoints naar bestand als dat later nodig is
     saved = true;
     return saved;
 }
@@ -139,21 +224,18 @@ float Navigator::CalculateDistance(Position current, Position target) {
     return sqrtf(dx * dx + dy * dy);
 }
 
-// Geeft de hoekfout in radialen tussen rijrichting en doel
-// Vereist dat Position ook een 'theta' (rijrichting) veld heeft
-// Als dat niet bestaat, geef dan alleen de absolute hoek terug
 float Navigator::CalculateAngle(Position current, Position target) {
     float dx = target.x - current.x;
     float dy = target.y - current.y;
 
-    float targetAngle  = atan2f(dy, dx);       // hoek naar doel
-    float currentAngle = current.theta;         // huidige rijrichting in radialen
+    float targetAngle  = atan2f(dy, dx);
+    float currentAngle = current.theta;
 
     float error = targetAngle - currentAngle;
 
     // Normaliseer naar [-π, π]
-    while (error >  M_PI) error -= 2.0f * static_cast<float>(M_PI);
-    while (error < -M_PI) error += 2.0f * static_cast<float>(M_PI);
+    while (error >  static_cast<float>(M_PI)) error -= 2.0f * static_cast<float>(M_PI);
+    while (error < -static_cast<float>(M_PI)) error += 2.0f * static_cast<float>(M_PI);
 
     return error;
 }
