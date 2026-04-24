@@ -34,6 +34,7 @@ private:
     float       leftWheelDistance;
     float       rightWheelDistance;
     float       minRange;
+    float       maxRange;
 
     ScanEntry   scanData[SCAN_SIZE];
 

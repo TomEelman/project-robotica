@@ -6,11 +6,11 @@
 
 using namespace sl;
 
-LIDAR::LIDAR(const std::string& port, int baudRate)
+LIDAR::LIDAR(const std::string& port, int baudrate)
     : port(port),
-      baudRate(baudRate),
-      maxRange(4000.0f),
-      minRange(0.0f),
+      baudrate(baudrate),
+      minRange(100.0f),
+      maxRange(14000.0f),
       channel(nullptr),
       driver(nullptr)
 {
