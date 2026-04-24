@@ -1,13 +1,7 @@
 #ifndef LIDAR_H
 #define LIDAR_H
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wpedantic"
-#include "sl_lidar.h"
-#include "sl_lidar_driver.h"
-#pragma GCC diagnostic pop
-
-#include <string>
+#include <rplidar.h>
 
 #define SCAN_SIZE 360
 
@@ -35,7 +29,10 @@ public:
 private:
     std::string port;
     int         baudRate;
-    float       maxRange;
+    int         frontBumperDistance;
+    int         backBumperDistance;
+    float       leftWheelDistance;
+    float       rightWheelDistance;
     float       minRange;
 
     ScanEntry   scanData[SCAN_SIZE];

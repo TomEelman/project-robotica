@@ -2,6 +2,7 @@
 #include <iostream>
 #include <cstring>
 #include <unistd.h>
+#include <string>
 
 using namespace sl;
 
@@ -17,6 +18,12 @@ LIDAR::LIDAR(const std::string& port, int baudRate)
         scanData[i].angle    = i;
         scanData[i].distance = 0.0f;
     }
+
+    // in mm the distance of the end for the collision detection
+    frontBumperDistance = 120;
+    backBumperDistance = 80;
+    leftWheelDistance = 110;
+    rightWheelDistance = 110;
 }
 
 LIDAR::~LIDAR() {
@@ -54,9 +61,11 @@ bool LIDAR::Connect() {
         return false;
     }
 
+    LidarScanMode scanMode;
+
     driver->setMotorSpeed();
-    driver->startScan(0, 1);
-    usleep(2000000); // 2s for motor spin-up
+    driver->startScan(false, true, 0, &scanMode);
+    usleep(1000000); // 1s for motor spin-up
 
     return true;
 }
@@ -80,7 +89,7 @@ bool LIDAR::Update() {
     }
 
     sl_lidar_response_measurement_node_hq_t nodes[8192];
-    size_t count = sizeof(nodes) / sizeof(nodes[0]);
+    size_t count = sizeof(nodes) / sizeof(sl_lidar_response_measurement_node_hq_t);
 
     sl_result op = driver->grabScanDataHq(nodes, count);
     if (!SL_IS_OK(op)) {
