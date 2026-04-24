@@ -8,12 +8,12 @@ struct SensorData {
     std::vector<float> waarden;
 };
 
-// ── UART ─────────────────────────────────────────────────────
+// UART 
 int         openSerial   (const char* port);
 std::string vraag_sensor (int fd, const std::string& sensor);
-// ── Parser ───────────────────────────────────────────────
+// Parser 
 SensorData  parseResponse  (const std::string& response);
 void        printSensorData(const SensorData& data);
 
-// ── LIDAR scan ───────────────────────────────────────────────
+// LIDAR scan
 void doLidarScan(const std::string& port, int baudrate);

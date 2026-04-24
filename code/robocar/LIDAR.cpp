@@ -9,7 +9,7 @@ using namespace sl;
 LIDAR::LIDAR(const std::string& port, int baudrate)
     : port(port),
       baudRate(baudrate),
-      minRange(1.0f),
+      minRange(50.0f),
       maxRange(14000.0f),
       channel(nullptr),
       driver(nullptr)
