@@ -7,16 +7,11 @@ RPLIDAR_LIB = -L$(RPLIDAR_SDK)/output/Linux/Release -lsl_lidar_sdk
 
 TARGET = robocar_pi5
 
-SRCS =  MainPi5.cpp       \
-        LIDAR.cpp         \
-        Mapper.cpp        \
-        GridMap.cpp       \
-        Position.cpp      \
-        ExplorationPlanner.cpp \
-        PathPlanner.cpp   \
-        Navigator.cpp     \
-        Path.cpp
-
+# Zorg dat DriveCommand.cpp erin staat, bijv:
+SRCS = MainPi5.cpp LIDAR.cpp Mapper.cpp GridMap.cpp Position.cpp \
+       ExplorationPlanner.cpp PathPlanner.cpp Navigator.cpp \
+       Path.cpp DriveCommand.cpp  # ← deze twee nieuw
+       
 OBJS = $(SRCS:.cpp=.o)
 
 all: $(TARGET)
