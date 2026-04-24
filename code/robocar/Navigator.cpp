@@ -1,5 +1,4 @@
 #include "Navigator.h"
-#include "Pathfinder.h"
 
 #include <cmath>
 #include <iostream>
