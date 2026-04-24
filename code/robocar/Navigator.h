@@ -13,8 +13,8 @@
 // ════════════════════════════════════════════════════════════
 
 struct Node {
-    int x, y;   // Gridcoordinaten
-    int f, g, h; // A* kosten: f = g + h
+    int x, y;
+    int f, g, h;
 
     Node(int _x = 0, int _y = 0);
     bool operator>(const Node& other) const;
@@ -53,16 +53,14 @@ private:
     bool     isUpdated;
     bool     saved;
 
-    static constexpr float REACHED_THRESHOLD_MM = 50.0f;  // binnen 50mm = waypoint bereikt
-    static constexpr float LINEAR_SPEED         = 200.0f; // mm/s vooruit
-    static constexpr float ANGULAR_GAIN         = 2.0f;   // hoe hard bijsturen op hoekfout
+    static constexpr float REACHED_THRESHOLD_MM = 50.0f;
+    static constexpr float LINEAR_SPEED         = 200.0f;
+    static constexpr float ANGULAR_GAIN         = 2.0f;
 
-    // ── A* algoritme (intern) ────────────────────────────────
     std::vector<Node> FindPath(const std::vector<std::vector<int>>& grid,
                                const Node& start,
                                const Node& goal);
 
-    // ── Hulpfuncties ─────────────────────────────────────────
     float CalculateDistance(Position current, Position target);
     float CalculateAngle   (Position current, Position target);
 };

@@ -4,20 +4,23 @@
 #include "Position.h"
 
 class Path {
-
 private:
     Position* wayPoints;
-    int currentIndex;
-    int length;
+    int       currentIndex;
+    int       length;
 
 public:
     Path(Position points[], int size);
 
-    Position GetNextPoint();
+    Position GetNextPoint() const;
+    int      GetCurrentIndex() const;
+    bool     HasNext() const;
 
-    int GetCurrentIndex() const;
+    // Stap naar het volgende waypoint
+    void Advance();
 
-    bool HasNext() const;
+    // True als er geen waypoints meer zijn
+    bool IsEmpty() const;
 };
 
 #endif
