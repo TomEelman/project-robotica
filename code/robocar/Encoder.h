@@ -22,7 +22,7 @@ public:
     void Reset();
 
     float GetLinVelocity() const;
-    float GetDistanceMm()  const;   // nieuw
+    float GetDistanceMm()  const;
     int   GetGpio()        const;
     int   GetGpioPinRes()  const;
 };

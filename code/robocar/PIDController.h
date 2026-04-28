@@ -14,13 +14,12 @@ private:
     float integral;
     float minOutput;
     float maxOutput;
-    float maxIntegral;  // apart instelbaar per controller
+    float maxIntegral;
     uint64_t lastTime;
     float dt;
 
 public:
     PIDController(float p, float i, float d, float maxIntegral = 100.0f, float maxOutput = 255.0f);
-	float GetIntegral() const { return integral; }
     float Compute(float CurrentValue, float Setpoint);
 
     void Reset();

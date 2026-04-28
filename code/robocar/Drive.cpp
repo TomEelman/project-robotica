@@ -24,14 +24,9 @@ Drive::Drive(Motor& LeftMotor, Motor& RightMotor,
       enableMotorA(true),
       enableMotorB(true),
       motorDirection(STOPPED),
-      isTurning(false),
-      turnStartYaw(0.0f),
-      targetTurnYaw(0.0f),
-      onTargetPos(false),
       pwmLeft(0.0f),
       pwmRight(0.0f),
       initialYaw(0.0f),
-      encoderYaw(0.0f),
       targetYaw(0.0f),
       isInitialYawSet(false),
       currentAngular(0.0f),
@@ -275,7 +270,6 @@ void Drive::Execute(const DriveCommand& Command)
 void Drive::Stop()
 {
     motorDirection = STOPPED;
-    onTargetPos    = true;
     pwmLeft        = 0.0f;
     pwmRight       = 0.0f;
     motorLeft.Stop();

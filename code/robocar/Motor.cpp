@@ -2,19 +2,19 @@
 #include "hardware/pwm.h"
 #include "hardware/gpio.h"
 
-// ── Hulpfunctie (intern) ─────────────────────────────────────────
-static void initPwmPin(int pin) {
+
+void Motor::initPwmPin(int pin) {
     gpio_set_function(pin, GPIO_FUNC_PWM);
     uint slice = pwm_gpio_to_slice_num(pin);
 
     pwm_config cfg = pwm_get_default_config();
-    pwm_config_set_clkdiv(&cfg, 1.907f);  // ~1 kHz bij wrap=65535
+    pwm_config_set_clkdiv(&cfg, 1.907f);
     pwm_config_set_wrap(&cfg, 65535);
     pwm_init(slice, &cfg, true);
 }
 
-static void setDuty(int pin, float procent) {
-    // procent: -100.0 t/m 100.0, hier altijd positief meegeven
+void Motor::setDuty(int pin, float procent) {
+
     if (procent < -255.0f) procent = -255.0f;
     if (procent > 255.0f) procent = 255.0f;
     unsigned short level = (unsigned short)(65535.0f * procent / 255.0f);

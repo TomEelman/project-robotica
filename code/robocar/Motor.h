@@ -8,6 +8,8 @@ private:
     int forwardPin;
     int backwardPin;
     float speed;
+    void initPwmPin(int pin);
+    void setDuty(int pin, float procent);
 
 public:
     Motor(int PWMPin, int ForwardPin, int BackwardPin);

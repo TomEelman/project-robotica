@@ -34,28 +34,19 @@ private:
 
     Drivemodes motorDirection;
 
-    bool  isTurning;
-    float turnStartYaw;
-    float targetTurnYaw;
-
-    bool  onTargetPos;
-
     float pwmLeft;
     float pwmRight;
 
     float initialYaw;
-    float encoderYaw;
     float targetYaw;
     bool  isInitialYawSet;
     float currentAngular;
     float rampedLinear;
     float rampStep;
 
-    // Turn speed limits (graden/s), measured per platform
-    float minAngVel;   // draaisnelheid bij minimum PWM
-    float maxAngVel;   // draaisnelheid bij maximum PWM
-
-    // Motor dead-zone thresholds
+    float minAngVel;
+    float maxAngVel;
+ 
     float minPwmLeft;
     float minPwmRight;
 
@@ -74,9 +65,6 @@ public:
           float MaxAngVel  = 35.0f,
           float MinPwmLeft = 30.0f,
           float MinPwmRight= 29.5f);
-
-    bool TurnDegrees(float degrees);
-    bool IsTurning() const { return isTurning; }
 
     void Execute(const DriveCommand& Command);
     void Stop();
