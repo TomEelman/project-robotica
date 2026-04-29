@@ -2,9 +2,6 @@
 #include <cstdio>
 #include <cmath>
 
-// ----------------------------------------
-// CONSTRUCTOR
-// ----------------------------------------
 
 Drive::Drive(Motor& LeftMotor, Motor& RightMotor,
              SensorHub& Sensors,
@@ -39,9 +36,6 @@ Drive::Drive(Motor& LeftMotor, Motor& RightMotor,
 {
 }
 
-// ----------------------------------------
-// PRIVATE HELPERS
-// ----------------------------------------
 
 void Drive::ApplyClamp(float& pwm, float minPwm)
 {
@@ -60,7 +54,6 @@ void Drive::ApplyClamp(float& pwm, float minPwm)
 
 float  Drive::PercentToPwm(float percent, float minPwm)
 {
-    // percent: 0–100  →  pwm: minPwm–255
     if (percent < -255.0f)   percent = -255.0f;
     if (percent > 255.0f) percent = 255.0f;
     return minPwm + (percent / 100.0f) * (255.0f - minPwm);
@@ -70,7 +63,7 @@ float Drive::ComputeEncoderAngVel() const
 {
     float speedL = sensorHub.GetSpeedLeft();
     float speedR = sensorHub.GetSpeedRight();
-    // wheelbase is in meters, speeds in mm/s → convert wheelbase to mm
+    // wheelbase is in meters, speed in mm/s omzetten naar mm
     float wheelbaseMm = wheelbase * 1000.0f;
     return (speedR - speedL) / wheelbaseMm * (180.0f / M_PI);
 }
@@ -133,9 +126,6 @@ float Drive::ComputeSteerCorrection()
     return pIDYaw.Compute(0.0f, -yawError);
 }
 
-// ----------------------------------------
-// EXECUTE
-// ----------------------------------------
 
 void Drive::Execute(const DriveCommand& Command)
 {
