@@ -21,7 +21,6 @@ private:
 public:
     PIDController(float p, float i, float d, float maxIntegral = 100.0f, float maxOutput = 255.0f);
     float Compute(float CurrentValue, float Setpoint);
-
     void Reset();
 };
 
