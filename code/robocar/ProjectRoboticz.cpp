@@ -123,34 +123,29 @@ void StartState(TestState newState)
 
     //printf("==> State %d gestart | target: %.1f graden\n", newState, targetAngle);
 }
-
 int main()
 {
-    //stdio_init_all();
-    //sleep_ms(2000);
+    stdio_init_all();
+    sleep_ms(2000);
 
     Robot robot;
-    robot.getSenorHub().InitUart();
+
     while (true)
     {
         robot.UpdateSensors();
-        robot.getSenorHub().HandleUart();
 
         if (state == TEST_DONE)
         {
+            // Altijd een expliciete stop sturen
             robot.Execute(DriveCommand(0.0f, 0.0f));
         }
         else
         {
-            
+            // Haal de standaard command op (bijv. 0.0f lineair, 35.0f angular)
             DriveCommand cmd = GetCommand(state);
 
-            if (IsTurnState(state) && startYawSet)
-            {
-                float rampedOmega = GetRampedTurnSpeed(accumulatedAngle, targetAngle);
-                cmd = DriveCommand(0.0f, rampedOmega);
-            }
-
+            // Stuur het commando direct naar de robot. 
+            // De PID-regelaars in Drive::Execute zorgen voor de constante snelheid.
             robot.Execute(cmd);
             tickCount++;
 
@@ -158,7 +153,7 @@ int main()
 
             if (IsTurnState(state))
             {
-                // startYaw eenmalig opslaan bij begin van deze state
+                // Initialiseer de startYaw bij de eerste tick van de nieuwe state
                 if (!startYawSet)
                 {
                     startYaw    = robot.GetCurrentYaw();
@@ -168,15 +163,14 @@ int main()
                 float currentYaw = robot.GetCurrentYaw();
                 accumulatedAngle = currentYaw - startYaw;
 
-                // Wrap -180 tot +180
+                // Normaliseer de hoek tussen -180 en +180 graden
                 while (accumulatedAngle >  180.0f) accumulatedAngle -= 360.0f;
                 while (accumulatedAngle < -180.0f) accumulatedAngle += 360.0f;
 
-                //printf("yaw: %.1f | gedraaid: %.1f / %.1f\n",
-                //       currentYaw, accumulatedAngle, targetAngle);
+                printf("Yaw: %.1f | Gedraaid: %.1f / %.1f\n",
+                       currentYaw, accumulatedAngle, targetAngle);
 
-                // Positief target: wacht tot accumulatedAngle >= targetAngle
-                // Negatief target: wacht tot accumulatedAngle <= targetAngle
+                // Controleer of de doelhoek bereikt is
                 if (targetAngle > 0.0f)
                     done = (accumulatedAngle >= targetAngle);
                 else
@@ -184,17 +178,22 @@ int main()
             }
             else
             {
+                // Voor rijden op tijd (FORWARD/BACKWARD/PAUSE)
                 done = (tickCount >= DurationTicks(state));
             }
 
             if (done)
             {
-                //printf("State %d klaar | gedraaid: %.1f graden | ticks: %lu\n",
-                 //      state, accumulatedAngle, tickCount);
+                // Belangrijk: De Drive::Execute moet pID.Reset() aanroepen bij 0,0 
+                // zodat de volgende state met een schone lei begint.
+                robot.Execute(DriveCommand(0.0f, 0.0f)); 
+                
+                // Ga naar de volgende state
                 StartState(static_cast<TestState>(static_cast<int>(state) + 1));
             }
         }
 
+        // 100Hz loop (overeenkomend met MS(10))
         sleep_ms(10);
     }
 }

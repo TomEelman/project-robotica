@@ -156,54 +156,29 @@ void Drive::Execute(const DriveCommand& Command)
     switch (motorDirection)
     {
         case TURN_RIGHT:
-        {
-            float targetAngVel = fabs(angular);
-            if (targetAngVel < minAngVel) targetAngVel = minAngVel;
-            if (targetAngVel > maxAngVel) targetAngVel = maxAngVel;
-
-            float currentAngVelAbs = fabs(ComputeEncoderAngVel());
-
-            float basePwm = minPwmLeft + (targetAngVel - minAngVel)
-                            / (maxAngVel - minAngVel)
-                            * (255.0f - minPwmLeft);
-            float error   = targetAngVel - currentAngVelAbs;
-            float pwmTurn = basePwm + 0.5f * error;
-
-            if (pwmTurn > 255.0f)    pwmTurn = 255.0f;
-            if (pwmTurn < minPwmLeft) pwmTurn = minPwmLeft;
-
-            pwmL =  pwmTurn;
-            pwmR = -pwmTurn;
-
-            ApplyClamp(pwmL, minPwmLeft);
-            ApplyClamp(pwmR, minPwmRight);
-            break;
-        }
-
-        case TURN_LEFT:
-        {
-            float targetAngVel = fabs(angular);
-            if (targetAngVel < minAngVel) targetAngVel = minAngVel;
-            if (targetAngVel > maxAngVel) targetAngVel = maxAngVel;
-
-            float currentAngVelAbs = fabs(ComputeEncoderAngVel());
-
-            float basePwm = minPwmLeft + (targetAngVel - minAngVel)
-                            / (maxAngVel - minAngVel)
-                            * (255.0f - minPwmLeft);
-            float error   = targetAngVel - currentAngVelAbs;
-            float pwmTurn = basePwm + 0.5f * error;
-
-            if (pwmTurn > 255.0f)    pwmTurn = 255.0f;
-            if (pwmTurn < minPwmLeft) pwmTurn = minPwmLeft;
-
-            pwmL = -pwmTurn;
-            pwmR =  pwmTurn;
-
-            ApplyClamp(pwmL, minPwmLeft);
-            ApplyClamp(pwmR, minPwmRight);
-            break;
-        }
+{
+    float currentAngVel = ComputeEncoderAngVel();  // gesigneerd
+    float error = angular - currentAngVel;         // target - current, beide gesigneerd
+    float pwmTurn = pIDYaw.Compute(currentAngVel, angular);
+    
+    pwmL =  pwmTurn;
+    pwmR = -pwmTurn;
+    ApplyClamp(pwmL, minPwmLeft);
+    ApplyClamp(pwmR, minPwmRight);
+    break;
+}
+case TURN_LEFT:
+{
+    float currentAngVel = ComputeEncoderAngVel();  // gesigneerd
+    float error = angular - currentAngVel;         // target - current, beide gesigneerd
+    float pwmTurn = pIDYaw.Compute(currentAngVel, angular);
+    
+    pwmL =  -pwmTurn;
+    pwmR = pwmTurn;
+    ApplyClamp(pwmL, minPwmLeft);
+    ApplyClamp(pwmR, minPwmRight);
+    break;
+}
 
         case FORWARD:
         {
@@ -232,11 +207,11 @@ void Drive::Execute(const DriveCommand& Command)
             // geeft -100% tot 100% terug
             float outLeft  = pIDLeft.Compute(-sensorHub.GetSpeedLeft(),  targetLeft);
             float outRight = pIDRight.Compute(-sensorHub.GetSpeedRight(), targetRight);
-            printf("out left%f\n, out right5f\n",outLeft, outRight);
+            printf("out left%f\n, out right%f\n",outLeft, outRight);
             // Schaal naar PWM bereik
             pwmL = PercentToPwm(outLeft,  minPwmLeft);
             pwmR = PercentToPwm(outRight, minPwmRight);
-            printf("pwm left%f\n, pwm right5f\n",pwmL, pwmR);
+            printf("pwm left%f\n, pwm right%f\n",pwmL, pwmR);
             ApplyClamp(pwmL, minPwmLeft);
             ApplyClamp(pwmR, minPwmRight);
             break;
@@ -248,7 +223,7 @@ void Drive::Execute(const DriveCommand& Command)
 
     pwmLeft  = pwmL;
     pwmRight = pwmR;
-
+    printf("pwm left%f\n, pwm right%f\n",pwmL, pwmR);
     if (enableMotorA) motorLeft.SetSpeed(pwmLeft);
     if (enableMotorB) motorRight.SetSpeed(pwmRight);
 }

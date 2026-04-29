@@ -104,7 +104,7 @@ bool IMU::Update() {
     // Kalibratiestatus uitlezen
     uint8_t calib = bno_read8(communicationAdress, REG_CALIB_STAT);
     calibrationStatus = ((calib & 0xC0) == 0xC0);  // sys calib bits
-
+    
     Updated = true;
     return true;
 }
