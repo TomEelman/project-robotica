@@ -22,6 +22,10 @@
     float GetAngVelocity() const;
         float GetCurrentYaw() const;
     SensorHub& getSenorHub() {return sensorHub;}
+    // Robot.h — toevoegen aan public:
+void  SetMotors(float pwmL, float pwmR);
+float GetSpeedLeft()  const;
+float GetSpeedRight() const;
        
     };
 

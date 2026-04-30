@@ -99,7 +99,6 @@ bool SensorHub::UpdateSensors() {
     bool leftOk  = encoderLeft.Update();
     bool rightOk = encoderRight.Update();
     sensorsUpdated = imuOk && leftOk && rightOk;
-    printf("gecalibreert: %d\n", imu.GetCalibrationStatus());
     return sensorsUpdated;
 }
 

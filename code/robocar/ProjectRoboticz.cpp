@@ -83,12 +83,12 @@ DriveCommand GetCommand(TestState s)
     {
         case TURN_RIGHT_90:       return DriveCommand(   0.0f,  35.0f);
         case TURN_LEFT_90:        return DriveCommand(   0.0f, -35.0f);
-        case DRIVE_FORWARD:       return DriveCommand( 378.0f,   0.0f);
-        case DRIVE_BACKWARD:      return DriveCommand(-378.0f,   0.0f);
-        case FORWARD_TURN_RIGHT:  return DriveCommand( 378.0f,  18.0f);
-        case FORWARD_TURN_LEFT:   return DriveCommand( 378.0f, -18.0f);
-        case BACKWARD_TURN_RIGHT: return DriveCommand(-378.0f,  18.0f);
-        case BACKWARD_TURN_LEFT:  return DriveCommand(-378.0f, -18.0f);
+        case DRIVE_FORWARD:       return DriveCommand( 178.0f,   0.0f);
+        case DRIVE_BACKWARD:      return DriveCommand(-178.0f,   0.0f);
+        case FORWARD_TURN_RIGHT:  return DriveCommand( 178.0f,  18.0f);
+        case FORWARD_TURN_LEFT:   return DriveCommand( 178.0f, -18.0f);
+        case BACKWARD_TURN_RIGHT: return DriveCommand(-178.0f,  18.0f);
+        case BACKWARD_TURN_LEFT:  return DriveCommand(-178.0f, -18.0f);
         default:                  return DriveCommand(   0.0f,   0.0f);
     }
 }

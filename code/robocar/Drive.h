@@ -64,8 +64,8 @@ public:
           float Wheelbase, int Threshold,
           float MinAngVel  = 13.0f,
           float MaxAngVel  = 35.0f,
-          float MinPwmLeft = 30.0f,
-          float MinPwmRight= 29.5f);
+          float MinPwmLeft = 80.0f,
+          float MinPwmRight= 80.0f);
 
     void Execute(const DriveCommand& Command);
     void Stop();
