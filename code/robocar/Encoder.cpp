@@ -5,8 +5,8 @@
 // ── Constanten ───────────────────────────────────────────────────
 #define PULSES_PER_ROT    330
 #define WHEEL_CIRC_MM     204.2f
-#define UPDATE_US         10000    // 10ms ipv 100ms 
-#define TIMEOUT_US        50000    // 50ms stilstand ipv 300ms
+#define UPDATE_US         50000    // 500ms ipv 100ms 
+#define TIMEOUT_US        300000    // 300ms stilstand ipv 50ms
 
 // ── Globals ──────────────────────────────────────────────────────
 static volatile int pulseCounts[32] = {0};
@@ -56,6 +56,10 @@ bool Encoder::Update() {
     uint64_t elapsed = now - lastTime;
 
     if (elapsed < UPDATE_US) return false;
+    // ... berekening ...
+    freshData = true; 
+
+    if (elapsed < UPDATE_US) return false;
     lastTime = now;
 
     int current = pulseCounts[GPIOPinRes];
@@ -66,7 +70,7 @@ bool Encoder::Update() {
 
     if ((now - lastPulseTime) > TIMEOUT_US) {
         LinearVelocity = 0.0f;
-        Updated = false;
+        Updated = true;
         return false;
     }
 

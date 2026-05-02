@@ -46,6 +46,13 @@ public:
     float GetCurrentYaw()    const;
     float GetAngVelocity()   const;
     DateTime GetLastUpdate() const;
+    // In SensorHub.h
+bool HasFreshLeft()  const { return encoderLeft.HasFreshData(); }
+bool HasFreshRight() const { return encoderRight.HasFreshData(); }
+void ConsumeFreshFlags() {
+    encoderLeft.ConsumeFreshFlag();
+    encoderRight.ConsumeFreshFlag();
+}
 };
 
 #endif

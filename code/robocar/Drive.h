@@ -35,6 +35,12 @@ private:
 
     Drivemodes motorDirection;
 
+    float speedLFilt = 0.0f;
+    float speedRFilt = 0.0f;
+    float lastOutLeft = 0.0f;
+    float lastOutRight = 0.0f;
+    bool  filtInit = false;
+
     float pwmLeft;
     float pwmRight;
 

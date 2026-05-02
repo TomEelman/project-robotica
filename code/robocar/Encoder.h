@@ -14,6 +14,7 @@ private:
     uint64_t lastTime;
     int lastPulseCount;
     uint64_t lastPulseTime;
+    bool freshData;
 
 public:
     Encoder(int GPIOPin, int GPIOPinRes);
@@ -25,6 +26,9 @@ public:
     float GetDistanceMm()  const;
     int   GetGpio()        const;
     int   GetGpioPinRes()  const;
+    // In Encoder.h
+    bool HasFreshData() const { return freshData; }
+    void ConsumeFreshFlag() { freshData = false; }
 };
 
 #endif
