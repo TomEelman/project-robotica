@@ -173,33 +173,75 @@ void Drive::Execute(const DriveCommand& Command)
 {
     isInitialYawSet = false;
 
-    // Vaste turn-pwm. Hoger = sneller draaien. Tunen tot het lekker voelt.
-    const float turnPwm = 160.0f;
+    // ----- Doel-wielsnelheid berekenen uit gewenste yawrate -----
+    // Pure rotatie: v_wiel = omega * wheelbase / 2
+    // omega in graden/s -> rad/s
+    float wheelbaseMm     = wheelbase * 1000.0f;
+    float angularRad      = fabs(angular) * (M_PI / 180.0f);
+    float targetWheelSpd  = angularRad * wheelbaseMm * 0.5f;  // mm/s, positief
 
-    // Lees encoder distances voor balans (geen filter, geen PID nodig)
-    float spdL = sensorHub.GetSpeedLeft();
-    float spdR = sensorHub.GetSpeedRight();
+    // ----- Feedforward zodat hij vanuit stilstand begint -----
+    // Jouw oude formule mapt yawrate -> pwm. Hou hem als basis.
+    float targetAngVel   = fabs(angular);
+    float feedforwardPwm = (targetAngVel + 52.2f) / 1.34f;
+    if (feedforwardPwm < minPwmLeft) feedforwardPwm = minPwmLeft;
+    if (feedforwardPwm > 255.0f)     feedforwardPwm = 255.0f;
 
-    // P-correctie op het snelheidsverschil. Als links sneller dan rechts:
-    // links iets minder, rechts iets meer. Dat is alles.
-    const float kBalance = 0.4f;
-    float trim = kBalance * (spdL - spdR);
+    // ----- Lees encoders met fresh-flags + EMA -----
+    float rawL = sensorHub.GetSpeedLeft();
+    float rawR = sensorHub.GetSpeedRight();
 
-    float magL = turnPwm - trim;
-    float magR = turnPwm + trim;
+    bool freshL = sensorHub.HasFreshLeft();
+    bool freshR = sensorHub.HasFreshRight();
+    sensorHub.ConsumeFreshFlags();
 
-    // Niet onder een minimum zakken (anders valt motor stil)
-    if (magL < 100.0f) magL = 100.0f;
-    if (magR < 100.0f) magR = 100.0f;
-    if (magL > 255.0f) magL = 255.0f;
-    if (magR > 255.0f) magR = 255.0f;
+    if (!filtInit)
+    {
+        speedLFilt = rawL;
+        speedRFilt = rawR;
+        filtInit   = true;
+    }
 
-    if (motorDirection == TURN_LEFT)  { pwmL = -magL; pwmR = +magR; }
-    else                              { pwmL = +magL; pwmR = -magR; }
+    const float alpha = 0.5f;
+    if (freshL) speedLFilt = alpha * rawL + (1.0f - alpha) * speedLFilt;
+    if (freshR) speedRFilt = alpha * rawR + (1.0f - alpha) * speedRFilt;
 
-    printf("[TURN] dir=%s spdL=%.1f spdR=%.1f trim=%.1f pwmL=%.0f pwmR=%.0f\n",
+    // ----- PID per wiel naar dezelfde targetWheelSpd -----
+    float outLeft  = freshL ? pIDLeft .Compute(speedLFilt, targetWheelSpd) : lastOutLeft;
+    float outRight = freshR ? pIDRight.Compute(speedRFilt, targetWheelSpd) : lastOutRight;
+    lastOutLeft  = outLeft;
+    lastOutRight = outRight;
+
+    // PID-output (in %) is hier een TRIM bovenop feedforward, geen volledige pwm.
+    // Bij output = 50% (mid-range) is trim = 0. Onder = afremmen, boven = bijgeven.
+    // Schaal: 100% trim-range = ±(255-minPwm) pwm.
+    float trimL = (outLeft  - 50.0f) / 50.0f * (255.0f - minPwmLeft);
+    float trimR = (outRight - 50.0f) / 50.0f * (255.0f - minPwmRight);
+
+    float magL = feedforwardPwm + trimL;
+    float magR = feedforwardPwm + trimR;
+
+    // Clamp magnitudes
+    if (magL < minPwmLeft)  magL = minPwmLeft;
+    if (magL > 255.0f)      magL = 255.0f;
+    if (magR < minPwmRight) magR = minPwmRight;
+    if (magR > 255.0f)      magR = 255.0f;
+
+    // Tekens: TURN_LEFT = links achteruit, rechts vooruit
+    if (motorDirection == TURN_LEFT)
+    {
+        pwmL = -magL;
+        pwmR = +magR;
+    }
+    else // TURN_RIGHT
+    {
+        pwmL = +magL;
+        pwmR = -magR;
+    }
+
+    printf("[TURN] dir=%s tgtSpd=%.1f spdL=%.1f spdR=%.1f outL=%.1f outR=%.1f pwmL=%.0f pwmR=%.0f\n",
         motorDirection == TURN_LEFT ? "LEFT" : "RIGHT",
-        spdL, spdR, trim, pwmL, pwmR);
+        targetWheelSpd, speedLFilt, speedRFilt, outLeft, outRight, pwmL, pwmR);
 }
     // ----------------------------------------
     // Rechtdoor of bocht (linear != 0)
