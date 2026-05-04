@@ -61,7 +61,6 @@ int main() {
     std::cout << "Mapping gestart. Motor spin-up...\n";
     usleep(1200000);
 
-    // ── Hoofd-loop ────────────────────────────────────────────────
     while (running) {
         auto tStart = std::chrono::steady_clock::now();
 
@@ -101,6 +100,8 @@ int main() {
                loc.GetX(), loc.GetY(),
                loc.GetTheta() * 180.0f / 3.14159265f);
 
+        mapper.PrintMap(loc.GetX(), loc.GetY(), scanCount, mapper.GetCoverage());
+
         // 6. Loop timing
         auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
                            std::chrono::steady_clock::now() - tStart).count();
@@ -108,7 +109,6 @@ int main() {
         if (rest > 0) usleep(static_cast<useconds_t>(rest));
     }
 
-    // ── Opruimen ─────────────────────────────────────────────────
     std::cout << "\nStoppen...\n";
     lidar.Disconnect();
     uart.Close();
