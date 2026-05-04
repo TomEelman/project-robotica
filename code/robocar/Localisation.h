@@ -1,8 +1,6 @@
 #ifndef LOCALISATION_H
 #define LOCALISATION_H
 
-#include "SensorHub.h"
-
 class Localisation {
 public:
     Localisation(float wheelBase);

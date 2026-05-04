@@ -4,10 +4,6 @@
 #include <fstream>
 #include <stdexcept>
 
-// ═══════════════════════════════════════════════════════════════════
-//  Constructor
-// ═══════════════════════════════════════════════════════════════════
-
 GridMap::GridMap(int w, int h, float res)
     : width(w)
     , height(h)
@@ -19,10 +15,6 @@ GridMap::GridMap(int w, int h, float res)
     , binaryDirty(false)
 {
 }
-
-// ═══════════════════════════════════════════════════════════════════
-//  Hulpfuncties
-// ═══════════════════════════════════════════════════════════════════
 
 void GridMap::ClampLogOdds(int8_t& val) const {
     if (val < L_MIN) val = L_MIN;
@@ -43,10 +35,6 @@ void GridMap::CellToWorld(int cx, int cy, float& wx, float& wy) const {
     wy = originY + (cy + 0.5f) * resolution;
 }
 
-// ═══════════════════════════════════════════════════════════════════
-//  UpdateCell  –  enkele cel aanpassen
-// ═══════════════════════════════════════════════════════════════════
-
 bool GridMap::UpdateCell(int cx, int cy, bool occupied) {
     if (!InBounds(cx, cy)) return false;
 
@@ -56,10 +44,6 @@ bool GridMap::UpdateCell(int cx, int cy, bool occupied) {
     binaryDirty = true;
     return true;
 }
-
-// ═══════════════════════════════════════════════════════════════════
-//  Bresenham ray-cast
-// ═══════════════════════════════════════════════════════════════════
 
 void GridMap::BresenhamLine(int x0, int y0, int x1, int y1,
                              std::vector<std::pair<int,int>>& cells) const
@@ -80,10 +64,6 @@ void GridMap::BresenhamLine(int x0, int y0, int x1, int y1,
         if (e2 <= dx) { err += dx; y0 += sy; }
     }
 }
-
-// ═══════════════════════════════════════════════════════════════════
-//  RaycastUpdate  –  straal van robot naar meetpunt
-// ═══════════════════════════════════════════════════════════════════
 
 void GridMap::RaycastUpdate(int x0, int y0, int x1, int y1) {
     static thread_local std::vector<std::pair<int,int>> cells;
@@ -110,14 +90,6 @@ void GridMap::RaycastUpdate(int x0, int y0, int x1, int y1) {
 
     binaryDirty = true;
 }
-
-// ═══════════════════════════════════════════════════════════════════
-//  IntegrateScan  –  volledige LIDAR-scan verwerken
-//
-//  angles[]  in graden  (0..359)
-//  ranges[]  in mm
-//  maxRange  in mm
-// ═══════════════════════════════════════════════════════════════════
 
 void GridMap::IntegrateScan(float robotX, float robotY, float robotTheta,
                              const float angles[], const float ranges[], int count,
@@ -151,10 +123,6 @@ void GridMap::IntegrateScan(float robotX, float robotY, float robotTheta,
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════
-//  Celstatus queries
-// ═══════════════════════════════════════════════════════════════════
-
 bool GridMap::IsOccupied(int cx, int cy) const {
     if (!InBounds(cx, cy)) return false;
     return logOdds[cy][cx] >= CELL_OCCUPIED;
@@ -171,10 +139,6 @@ bool GridMap::IsUnknown(int cx, int cy) const {
     return (v > CELL_FREE && v < CELL_OCCUPIED);
 }
 
-// ═══════════════════════════════════════════════════════════════════
-//  IsPathValid  (compatibel met origineel Path-interface)
-// ═══════════════════════════════════════════════════════════════════
-
 bool GridMap::IsPathValid(Path path) const {
     while (!path.IsEmpty()) {
         Position p = path.GetNextPoint();
@@ -189,10 +153,6 @@ bool GridMap::IsPathValid(Path path) const {
     return true;
 }
 
-// ═══════════════════════════════════════════════════════════════════
-//  Coverage
-// ═══════════════════════════════════════════════════════════════════
-
 float GridMap::GetCoveragePercent() const {
     int known = 0;
     int total = width * height;
@@ -201,10 +161,6 @@ float GridMap::GetCoveragePercent() const {
             if (!IsUnknown(x, y)) ++known;
     return total > 0 ? 100.0f * known / total : 0.0f;
 }
-
-// ═══════════════════════════════════════════════════════════════════
-//  Grid-accessors
-// ═══════════════════════════════════════════════════════════════════
 
 const std::vector<std::vector<int8_t>>& GridMap::GetLogOddsGrid() const {
     return logOdds;
@@ -222,20 +178,14 @@ const std::vector<std::vector<int>>& GridMap::GetGrid() const {
     return binaryGrid;
 }
 
-// ═══════════════════════════════════════════════════════════════════
-//  Clear
-// ═══════════════════════════════════════════════════════════════════
-
 void GridMap::Clear() {
     for (auto& row : logOdds)
         std::fill(row.begin(), row.end(), CELL_UNKNOWN);
     binaryDirty = true;
 }
 
-// ═══════════════════════════════════════════════════════════════════
 //  SavePGM  –  debug visualisatie
 //  wit=vrij, zwart=bezet, grijs=onbekend
-// ═══════════════════════════════════════════════════════════════════
 
 bool GridMap::SavePGM(const std::string& filename) const {
     std::ofstream f(filename, std::ios::binary);
