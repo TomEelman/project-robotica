@@ -8,8 +8,8 @@ GridMap::GridMap(int w, int h, float res)
     : width(w)
     , height(h)
     , resolution(res)
-    , originX(-w * res * 0.5f)   // midden van het grid = (0,0) in de wereld
-    , originY(-h * res * 0.5f)
+    , originX(-static_cast<float>(w) * res * 0.5f)   // midden van het grid = (0,0) in de wereld
+    , originY(-static_cast<float>(h) * res * 0.5f)
     , logOdds(h, std::vector<int8_t>(w, CELL_UNKNOWN))
     , binaryGrid(h, std::vector<int>(w, 0))
     , binaryDirty(false)
@@ -31,8 +31,8 @@ void GridMap::WorldToCell(float wx, float wy, int& cx, int& cy) const {
 }
 
 void GridMap::CellToWorld(int cx, int cy, float& wx, float& wy) const {
-    wx = originX + (cx + 0.5f) * resolution;
-    wy = originY + (cy + 0.5f) * resolution;
+    wx = originX + (static_cast<float>(cx) + 0.5f) * resolution;
+    wy = originY + (static_cast<float>(cy) + 0.5f) * resolution;
 }
 
 bool GridMap::UpdateCell(int cx, int cy, bool occupied) {
@@ -159,7 +159,7 @@ float GridMap::GetCoveragePercent() const {
     for (int y = 0; y < height; ++y)
         for (int x = 0; x < width; ++x)
             if (!IsUnknown(x, y)) ++known;
-    return total > 0 ? 100.0f * known / total : 0.0f;
+    return total > 0 ? 100.0f * static_cast<float>(known) / static_cast<float>(total) : 0.0f;
 }
 
 const std::vector<std::vector<int8_t>>& GridMap::GetLogOddsGrid() const {
