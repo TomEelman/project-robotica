@@ -86,7 +86,7 @@ int main() {
             ranges[angle] = lidar.GetDistance(angle).distance;
             
             // Lidar draait met de klok mee intern
-            int mirrored = (360 - a) % 360;
+            int mirrored = (360 - angle) % 360;
             angles[angle]    = static_cast<float>(mirrored);
         }
 
