@@ -1,26 +1,33 @@
 #ifndef PATH_H
 #define PATH_H
 
+#include <vector>
 #include "Position.h"
 
+// Path bezit zijn eigen waypoints (geen raw pointer meer).
+// Waypoints zijn in wereldcoordinaten (mm).
 class Path {
 private:
-    Position* wayPoints;
-    int       currentIndex;
-    int       length;
+    std::vector<Position> wayPoints;
+    int                   currentIndex;
 
 public:
-    Path(Position points[], int size);
+    Path();
+    explicit Path(const std::vector<Position>& points);
 
-    Position GetNextPoint() const;
-    int      GetCurrentIndex() const;
-    bool     HasNext() const;
+    // Huidige (= eerstvolgende nog te bereiken) waypoint.
+    Position GetCurrentWaypoint() const;
 
-    // Stap naar het volgende waypoint
+    // Het waypoint NA de huidige (voor look-ahead). Als er geen volgende is,
+    // returnt hij het huidige waypoint.
+    Position PeekNextWaypoint() const;
+
+    int  GetCurrentIndex() const;
+    int  GetSize()         const;
+    bool HasNext()         const;
+    bool IsEmpty()         const;
     void Advance();
-
-    // True als er geen waypoints meer zijn
-    bool IsEmpty() const;
+    void Reset();
 };
 
 #endif

@@ -1,68 +1,103 @@
-#ifndef NAVIGATOR_H
-#define NAVIGATOR_H
+#include "Navigator.h"
 
-#include "Path.h"
-#include "Position.h"
-#include "DriveCommand.h"
-#include "GridMap.h"
+#include <cmath>
+#include <iostream>
 
-#include <vector>
+Navigator::Navigator()
+    : path()
+    , currentTarget(0.0f, 0.0f, 0.0f)
+    , isUpdated(false)
+    , hasPath(false)
+{
+}
 
-// ════════════════════════════════════════════════════════════
-//  Node - intern gebruikt door het A* algoritme
-// ════════════════════════════════════════════════════════════
+void Navigator::SetPath(const Path& newPath) {
+    path = newPath;
+    path.Reset();
+    hasPath = !path.IsEmpty();
+    if (hasPath) {
+        currentTarget = path.GetCurrentWaypoint();
+        std::cout << "Navigator: nieuw pad geladen, eerste waypoint ("
+                  << currentTarget.GetX() << ", "
+                  << currentTarget.GetY() << ")\n";
+    }
+    isUpdated = true;
+}
 
-struct Node {
-    int x, y;
-    int f, g, h;
+void Navigator::Update(Position current) {
+    if (!hasPath || path.IsEmpty()) return;
 
-    Node(int _x = 0, int _y = 0);
-    bool operator>(const Node& other) const;
-    bool operator==(const Node& other) const;
-};
+    while (ReachedPoint(current) && !path.IsEmpty()) {
+        path.Advance();
+        if (!path.IsEmpty()) {
+            currentTarget = path.GetCurrentWaypoint();
+            std::cout << "Navigator: volgend waypoint ("
+                      << currentTarget.GetX() << ", "
+                      << currentTarget.GetY() << ")\n";
+        } else {
+            std::cout << "Navigator: doel bereikt!\n";
+            hasPath = false;
+        }
+    }
 
-// ════════════════════════════════════════════════════════════
-//  Navigator
-// ════════════════════════════════════════════════════════════
+    isUpdated = true;
+}
 
-class Navigator {
-public:
-    Navigator();
+DriveCommand Navigator::GetNextCommand(Position current) {
+    if (!hasPath || path.IsEmpty()) {
+        return DriveCommand(0.0f, 0.0f);
+    }
 
-    // Bereken een pad via A* van start naar doel op de gegeven gridmap
-    bool PlanPath(const GridMap& map, Position start, Position goal);
+    float dist     = CalculateDistance(current, currentTarget);
+    float angleErr = CalculateAngleError(current, currentTarget);  // radians
 
-    // Update de navigator met de huidige positie
-    void Update(Position current);
+    if (dist < REACHED_THRESHOLD_MM) {
+        return DriveCommand(0.0f, 0.0f);
+    }
 
-    // Geeft het volgende rijcommando richting het huidige waypoint
-    DriveCommand GetNextCommand(Position current);
+    // graden/s = gain * radians (gain heeft eenheid graden/s per radian)
+    float angularDegS = ANGULAR_GAIN * angleErr;
+    if (angularDegS >  MAX_ANGULAR_DEG_S) angularDegS =  MAX_ANGULAR_DEG_S;
+    if (angularDegS < -MAX_ANGULAR_DEG_S) angularDegS = -MAX_ANGULAR_DEG_S;
 
-    // True als het huidige waypoint bereikt is
-    bool ReachedPoint(Position current);
+    float linearMmS = LINEAR_SPEED_MM_S;
+    // Bij grote hoekfout: eerst draaien, niet rijden
+    if (std::fabs(angleErr) > ANGLE_THRESHOLD_RAD) {
+        linearMmS = 0.0f;
+    }
 
-    // Sla de waypoints op (voor logging/debug)
-    bool SaveWaypoints();
+    return DriveCommand(linearMmS, angularDegS);
+}
 
-    // True als het pad bijgewerkt is
-    bool IsUpdated() const;
+bool Navigator::ReachedPoint(Position current) const {
+    if (path.IsEmpty()) return false;
+    return CalculateDistance(current, currentTarget) < REACHED_THRESHOLD_MM;
+}
 
-private:
-    Path     path;
-    Position currentTarget;
-    bool     isUpdated;
-    bool     saved;
+bool Navigator::IsFinished() const { return !hasPath || path.IsEmpty(); }
+bool Navigator::IsUpdated()  const { return isUpdated; }
 
-    static constexpr float REACHED_THRESHOLD_MM = 50.0f;
-    static constexpr float LINEAR_SPEED         = 200.0f;
-    static constexpr float ANGULAR_GAIN         = 2.0f;
+Position Navigator::GetCurrentTarget() const { return currentTarget; }
+Path     Navigator::GetPath()          const { return path; }
 
-    std::vector<Node> FindPath(const std::vector<std::vector<int>>& grid,
-                               const Node& start,
-                               const Node& goal);
+float Navigator::CalculateDistance(Position a, Position b) {
+    float dx = b.GetX() - a.GetX();
+    float dy = b.GetY() - a.GetY();
+    return std::sqrt(dx * dx + dy * dy);
+}
 
-    float CalculateDistance(Position current, Position target);
-    float CalculateAngle   (Position current, Position target);
-};
+float Navigator::CalculateAngleError(Position current, Position target) {
+    float dx = target.GetX() - current.GetX();
+    float dy = target.GetY() - current.GetY();
 
-#endif
+    float desired = std::atan2(dy, dx);
+    float err     = desired - current.GetTheta();
+    return NormalizeRad(err);
+}
+
+float Navigator::NormalizeRad(float a) {
+    const float PI = static_cast<float>(M_PI);
+    while (a >  PI) a -= 2.0f * PI;
+    while (a < -PI) a += 2.0f * PI;
+    return a;
+}
