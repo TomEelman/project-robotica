@@ -72,7 +72,7 @@ bool Navigator::IsUpdated()  const { return isUpdated; }
 Position Navigator::GetCurrentTarget() const { return currentTarget; }
 Path     Navigator::GetPath()          const { return path; }
 
-float Navigator::CalculateDistance(Position a, Position b) {
+float Navigator::CalculateDistance(Position a, Position b) const {
     float dx = b.GetX() - a.GetX();
     float dy = b.GetY() - a.GetY();
     return std::sqrt(dx * dx + dy * dy);

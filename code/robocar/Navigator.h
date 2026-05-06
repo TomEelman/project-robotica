@@ -32,7 +32,7 @@ private:
     bool     hasPath;
 
     bool  ReachedPoint(Position current) const;
-    float CalculateDistance (Position a, Position b);
+    float CalculateDistance (Position a, Position b) const;
     float CalculateAngleError(Position current, Position target);
     float NormalizeRad(float a);
 };
