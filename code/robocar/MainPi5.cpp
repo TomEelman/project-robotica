@@ -437,49 +437,50 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
         }
 
         // ── 3. Fase-logica ────────────────────────────────────────
+        fase     = Fase::AUTONOOM;
 
         // --- Fase 1: rechtdoor ---
-        if (fase == Fase::RECHTDOOR) {
-            auto verstreken = std::chrono::duration_cast<std::chrono::seconds>(
-                                  std::chrono::steady_clock::now() - faseStart).count();
+        // if (fase == Fase::RECHTDOOR) {
+        //     auto verstreken = std::chrono::duration_cast<std::chrono::seconds>(
+        //                           std::chrono::steady_clock::now() - faseStart).count();
 
-            if (verstreken >= RIJD_SECONDEN) {
-                printf("\nFase 2: 90 graden draaien...\n");
-                ka.Stop();
-                usleep(300000);
-                fase     = Fase::DRAAIEN;
-                yawGezet = false;
-            }
-        }
+        //     if (verstreken >= RIJD_SECONDEN) {
+        //         printf("\nFase 2: 90 graden draaien...\n");
+        //         ka.Stop();
+        //         usleep(300000);
+        //         fase     = Fase::DRAAIEN;
+        //         yawGezet = false;
+        //     }
+        // }
 
         // --- Fase 2: draaien ---
-        else if (fase == Fase::DRAAIEN) {
-            if (!yawGezet) {
-                IMUData ref = uart.LeesIMU();
-                startYaw    = ref.geldig ? ref.yawGraden : 0.0f;
-                yawGezet    = true;
-                ka.SetCommand(0.0f, TURN_SPEED);
-                printf("Startyaw: %.1f graden\n", startYaw);
-            }
+        // else if (fase == Fase::DRAAIEN) {
+        //     if (!yawGezet) {
+        //         IMUData ref = uart.LeesIMU();
+        //         startYaw    = ref.geldig ? ref.yawGraden : 0.0f;
+        //         yawGezet    = true;
+        //         ka.SetCommand(0.0f, TURN_SPEED);
+        //         printf("Startyaw: %.1f graden\n", startYaw);
+        //     }
 
-            IMUData cur = uart.LeesIMU();
-            if (cur.geldig) {
-                float gedraaid = cur.yawGraden - startYaw;
-                while (gedraaid >  180.0f) gedraaid -= 360.0f;
-                while (gedraaid < -180.0f) gedraaid += 360.0f;
+        //     IMUData cur = uart.LeesIMU();
+        //     if (cur.geldig) {
+        //         float gedraaid = cur.yawGraden - startYaw;
+        //         while (gedraaid >  180.0f) gedraaid -= 360.0f;
+        //         while (gedraaid < -180.0f) gedraaid += 360.0f;
 
-                printf("  Gedraaid: %.1f / %.0f graden\r", gedraaid, TURN_TARGET);
-                fflush(stdout);
+        //         printf("  Gedraaid: %.1f / %.0f graden\r", gedraaid, TURN_TARGET);
+        //         fflush(stdout);
 
-                if (gedraaid >= TURN_TARGET) {
-                    ka.Stop();
-                    usleep(300000);
-                    printf("\nDraai klaar. Autonome fase gestart.\n");
-                    scansSindsHerplan = HERPLAN_SCANS;
-                    fase = Fase::AUTONOOM;
-                }
-            }
-        }
+        //         if (gedraaid >= TURN_TARGET) {
+        //             ka.Stop();
+        //             usleep(300000);
+        //             printf("\nDraai klaar. Autonome fase gestart.\n");
+        //             scansSindsHerplan = HERPLAN_SCANS;
+        //             fase = Fase::AUTONOOM;
+        //         }
+        //     }
+        // }
 
         // --- Fase 3: autonoom pathfinding ---
         else if (fase == Fase::AUTONOOM) {
