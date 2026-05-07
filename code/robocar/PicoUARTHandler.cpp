@@ -2,6 +2,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
+#include "hardware/watchdog.h"
 
 // ── Statische variabelen ─────────────────────────────────────
 volatile char    PicoUARTHandler::rx_buffer[64] = {0};
@@ -91,6 +92,14 @@ bool PicoUARTHandler::ConsumePendingCmd(DriveCommand& out)
 // ── HandleLine ───────────────────────────────────────────────
 void PicoUARTHandler::HandleLine(const char* line)
 {
+    // reboot commando
+    if (strcmp(line, "REBOOT") == 0) {
+        Send("ACK:REBOOT\n");
+        sleep_ms(100);  // even wachten zodat ACK verstuurd wordt
+        watchdog_reboot(0, 0, 0);
+        return;
+    }
+
     if (strncmp(line, "GET:", 4) == 0) {
         const char* sensor = line + 4;
         if      (strcmp(sensor, "ENCODER") == 0) SendEncoder();

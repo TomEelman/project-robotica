@@ -90,7 +90,7 @@ private:
     int         fd;
 
     bool ConfigureerPoort();
-
+    bool RebootPico();
     // Parse "ACK:lin,ang" → CommandAck
     CommandAck ParseAck(const std::string& antwoord);
 };

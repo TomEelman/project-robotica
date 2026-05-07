@@ -144,6 +144,24 @@ CommandAck Pi5UARTHandler::StuurStop() {
     return StuurCommand(0.0f, 0.0f);
 }
 
+bool Pi5UARTHandler::RebootPico() {
+    if (!IsOpen()) return false;
+
+    tcflush(fd, TCIOFLUSH);
+    StuurRegel("REBOOT\n");
+
+    // Wacht op ACK:REBOOT
+    std::string antwoord = LeesRegel();
+    if (antwoord == "ACK:REBOOT") {
+        std::cout << "Pi5UARTHandler: Pico reboot bevestigd\n";
+        return true;
+    }
+
+    std::cerr << "Pi5UARTHandler: geen reboot ACK ontvangen (kreeg: " 
+              << antwoord << ")\n";
+    return false;
+}
+
 // ─────────────────────────────────────────────────────────────────
 //  ParseAck  –  verwerk "ACK:lin,ang" van de Pico
 // ─────────────────────────────────────────────────────────────────
