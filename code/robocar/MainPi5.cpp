@@ -483,7 +483,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
         // }
 
         // --- Fase 3: autonoom pathfinding ---
-        else if (fase == Fase::AUTONOOM) {
+        if (fase == Fase::AUTONOOM) {
 
             // ── 3a. Obstakel recht vooruit? Herplan direct ────────
             if (ObstakelVooruit(mapper, pos)) {
