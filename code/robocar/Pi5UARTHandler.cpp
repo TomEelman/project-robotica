@@ -137,9 +137,6 @@ CommandAck Pi5UARTHandler::StuurCommand(float lin, float ang) {
     return ParseAck(antwoord);
 }
 
-// ─────────────────────────────────────────────────────────────────
-//  StuurStop  –  snelkoppeling voor een directe stop
-// ─────────────────────────────────────────────────────────────────
 CommandAck Pi5UARTHandler::StuurStop() {
     return StuurCommand(0.0f, 0.0f);
 }
@@ -183,9 +180,6 @@ CommandAck Pi5UARTHandler::ParseAck(const std::string& antwoord) {
     return result;
 }
 
-// ─────────────────────────────────────────────────────────────────
-//  LeesEncoder  (ongewijzigd)
-// ─────────────────────────────────────────────────────────────────
 EncoderData Pi5UARTHandler::LeesEncoder() {
     EncoderData data{};
     data.geldig = false;
@@ -215,9 +209,6 @@ EncoderData Pi5UARTHandler::LeesEncoder() {
     return data;
 }
 
-// ─────────────────────────────────────────────────────────────────
-//  LeesIMU  (ongewijzigd)
-// ─────────────────────────────────────────────────────────────────
 IMUData Pi5UARTHandler::LeesIMU() {
     IMUData data{};
     data.geldig = false;

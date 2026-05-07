@@ -51,12 +51,25 @@ DriveCommand Navigator::GetNextCommand(Position current) {
     if (dist < REACHED_THRESHOLD_MM)
         return DriveCommand(0.0f, 0.0f);
 
-    float angularDegS = ANGULAR_GAIN * angleErr;
-    if (angularDegS >  MAX_ANGULAR_DEG_S) angularDegS =  MAX_ANGULAR_DEG_S;
-    if (angularDegS < -MAX_ANGULAR_DEG_S) angularDegS = -MAX_ANGULAR_DEG_S;
+    // Schaal angular velocity af naarmate de hoekfout kleiner wordt.
+    // BRAKE_ZONE_RAD is de zone waarin we beginnen af te remmen.
+    // Buiten die zone: volle snelheid. Binnen: lineair afschalen naar MIN.
+    float absErr = std::fabs(angleErr);
+    float angularDegS;
 
-    float linearMmS = (std::fabs(angleErr) > ANGLE_THRESHOLD_RAD)
-                      ? 0.0f : LINEAR_SPEED_MM_S;
+    if (absErr > BRAKE_ZONE_RAD) {
+        // Buiten remzone: volle snelheid
+        angularDegS = MAX_ANGULAR_DEG_S;
+    } else {
+        // Binnen remzone: lineair afschalen tussen MIN en MAX
+        float scale = absErr / BRAKE_ZONE_RAD;
+        angularDegS = MIN_ANGULAR_DEG_S + scale * (MAX_ANGULAR_DEG_S - MIN_ANGULAR_DEG_S);
+    }
+
+    // Teken bewaren
+    if (angleErr < 0.0f) angularDegS = -angularDegS;
+
+    float linearMmS = (absErr > ANGLE_THRESHOLD_RAD) ? 0.0f : LINEAR_SPEED_MM_S;
 
     return DriveCommand(linearMmS, angularDegS);
 }
