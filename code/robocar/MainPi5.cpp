@@ -2,17 +2,62 @@
 #include "LIDAR.h"
 #include "Mapper.h"
 #include "Localisation.h"
+#include "Pi5UARTHandler.h"
 #include <csignal>
 #include <chrono>
 #include <unistd.h>
 #include <cstdio>
 #include <cmath>
+#include <iostream>
+#include <string>
+#include <limits>
 
 static volatile bool running = true;
 static void onSignal(int) { running = false; }
 
 
-bool initUartHandler(Pi5UARTHandler& uart) {
+// ════════════════════════════════════════════════════════════════
+//  Menu
+// ════════════════════════════════════════════════════════════════
+
+enum class MenuKeuze {
+    MAPPEN,
+    PICO_COMMUNICATIE,
+    STOPPEN
+};
+
+static void PrintMenu() {
+    std::cout << "\n";
+    std::cout << "╔══════════════════════════════════════╗\n";
+    std::cout << "║        ROBOT CONTROLLER  Pi5         ║\n";
+    std::cout << "╠══════════════════════════════════════╣\n";
+    std::cout << "║  1. Mappen                           ║\n";
+    std::cout << "║  2. Pico communiceren                ║\n";
+    std::cout << "║  3. Stoppen                          ║\n";
+    std::cout << "╚══════════════════════════════════════╝\n";
+    std::cout << "Keuze: ";
+}
+
+static MenuKeuze VraagMenuKeuze() {
+    while (true) {
+        PrintMenu();
+        std::string invoer;
+        std::getline(std::cin, invoer);
+
+        if (invoer == "1") return MenuKeuze::MAPPEN;
+        if (invoer == "2") return MenuKeuze::PICO_COMMUNICATIE;
+        if (invoer == "3") return MenuKeuze::STOPPEN;
+
+        std::cout << "Ongeldige keuze. Probeer opnieuw.\n";
+    }
+}
+
+
+// ════════════════════════════════════════════════════════════════
+//  Init helpers
+// ════════════════════════════════════════════════════════════════
+
+static bool initUartHandler(Pi5UARTHandler& uart) {
     if (!uart.Open()) {
         std::cerr << "UART niet beschikbaar - rijdt zonder sensor-correctie.\n";
         return false;
@@ -20,7 +65,7 @@ bool initUartHandler(Pi5UARTHandler& uart) {
     return true;
 }
 
-bool initLidar(LIDAR& lidar) {
+static bool initLidar(LIDAR& lidar) {
     if (!lidar.Connect()) {
         std::cerr << "Kan niet verbinden met LIDAR. Programma gestopt.\n";
         return false;
@@ -28,34 +73,16 @@ bool initLidar(LIDAR& lidar) {
     return true;
 }
 
-bool initLocalisation(Localisation& loc) {
-    (void)loc;
-    return true;
-}
 
-bool initMapper(Mapper& mapper) {
-    (void)mapper;
-    return true;
-}
+// ════════════════════════════════════════════════════════════════
+//  Modus 1: Mappen
+// ════════════════════════════════════════════════════════════════
 
-int main() {
-    signal(SIGINT, onSignal);
+static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
+    Localisation loc(0.235f);
+    Mapper       mapper(1200, 1200, 0.04f);   // 15×15 m @ 4 cm/cel
 
-    // Objecten aanmaken
-    Pi5UARTHandler uart("/dev/ttyAMA10");
-    LIDAR          lidar("/dev/ttyUSB0", 460800);
-    Localisation   loc(0.235f);
-
-    // 15×15 m @ 5 cm/cel
-    Mapper         mapper(1200, 1200, 0.04f);
-
-    // Initialiseren
-    initUartHandler(uart);
-    if (!initLidar(lidar)) return 1;
-    initLocalisation(loc);
-    initMapper(mapper);
-
-    constexpr float DT      = 0.1f;       // 10 Hz
+    constexpr float DT      = 0.1f;
     constexpr long  LOOP_US = 100000;
     int scanCount = 0;
 
@@ -85,8 +112,6 @@ int main() {
         float ranges[360], angles[360];
         for (int angle = 0; angle < 360; ++angle) {
             ranges[angle] = lidar.GetDistance(angle).distance;
-            
-            // Geen hoekconversie — LIDAR output direct gebruiken
             angles[angle] = static_cast<float>(angle);
         }
 
@@ -112,10 +137,126 @@ int main() {
 
     std::cout << "\nStoppen...\n";
     lidar.Disconnect();
-    uart.Close();
 
     if (mapper.SaveDebugMap("kaart.pgm"))
         printf("Kaart opgeslagen: kaart.pgm  (dekking: %d%%)\n", mapper.GetCoverage());
+
+    return 0;
+}
+
+
+// ════════════════════════════════════════════════════════════════
+//  Modus 2: Pico communicatie
+//  Submenu: sturen of ontvangen
+// ════════════════════════════════════════════════════════════════
+
+static void PrintPicoMenu() {
+    std::cout << "\n";
+    std::cout << "╔══════════════════════════════════════╗\n";
+    std::cout << "║        PICO COMMUNICATIE             ║\n";
+    std::cout << "╠══════════════════════════════════════╣\n";
+    std::cout << "║  1. DriveCommand sturen              ║\n";
+    std::cout << "║  2. Sensordata ontvangen (live)      ║\n";
+    std::cout << "║  3. Noodstop sturen                  ║\n";
+    std::cout << "║  4. Terug naar hoofdmenu             ║\n";
+    std::cout << "╚══════════════════════════════════════╝\n";
+    std::cout << "Keuze: ";
+}
+
+static void RunStuurCommand(Pi5UARTHandler& uart) {
+    float lin = 0.0f, ang = 0.0f;
+
+    std::cout << "Lineaire snelheid (mm/s, positief=vooruit): ";
+    std::cin >> lin;
+    std::cout << "Hoeksnelheid (deg/s, positief=rechts):      ";
+    std::cin >> ang;
+    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+
+    CommandAck ack = uart.StuurCommand(lin, ang);
+    if (ack.geldig)
+        printf("  ACK ontvangen: lin=%.2f  ang=%.2f\n", ack.lin, ack.ang);
+    else
+        std::cout << "  Geen ACK van Pico.\n";
+}
+
+static void RunLeesLive(Pi5UARTHandler& uart) {
+    std::cout << "Live sensordata (Ctrl+C om te stoppen)...\n\n";
+
+    running = true;
+    while (running) {
+        EncoderData enc = uart.LeesEncoder();
+        IMUData     imu = uart.LeesIMU();
+
+        if (enc.geldig)
+            printf("ENC  sL=%7.2f mm/s  dL=%7.1f mm  sR=%7.2f mm/s  dR=%7.1f mm\n",
+                   enc.speedLinks, enc.afstandLinks,
+                   enc.speedRechts, enc.afstandRechts);
+        else
+            std::cout << "ENC  [geen data]\n";
+
+        if (imu.geldig)
+            printf("IMU  yaw=%7.2f deg  omega=%6.3f rad/s\n",
+                   imu.yawGraden, imu.hoeksnelheid);
+        else
+            std::cout << "IMU  [geen data]\n";
+
+        std::cout << "─────────────────────────────────────────\n";
+        usleep(200000);   // 5 Hz
+    }
+    running = true;   // reset voor volgende modus
+}
+
+static int RunPicoCommunicatie(Pi5UARTHandler& uart) {
+    while (true) {
+        PrintPicoMenu();
+        std::string invoer;
+        std::getline(std::cin, invoer);
+
+        if (invoer == "1") {
+            RunStuurCommand(uart);
+        } else if (invoer == "2") {
+            RunLeesLive(uart);
+        } else if (invoer == "3") {
+            CommandAck ack = uart.StuurStop();
+            std::cout << (ack.geldig ? "  Noodstop ACK ontvangen.\n"
+                                     : "  Noodstop verstuurd (geen ACK).\n");
+        } else if (invoer == "4") {
+            break;
+        } else {
+            std::cout << "Ongeldige keuze.\n";
+        }
+    }
+    return 0;
+}
+
+
+// ════════════════════════════════════════════════════════════════
+//  main
+// ════════════════════════════════════════════════════════════════
+
+int main() {
+    signal(SIGINT, onSignal);
+
+    Pi5UARTHandler uart("/dev/ttyAMA10");
+    LIDAR          lidar("/dev/ttyUSB0", 460800);
+
+    // UART altijd proberen te openen; LIDAR alleen bij mappen
+    initUartHandler(uart);
+
+    MenuKeuze keuze = VraagMenuKeuze();
+
+    switch (keuze) {
+        case MenuKeuze::MAPPEN:
+            if (!initLidar(lidar)) return 1;
+            return RunMappen(uart, lidar);
+
+        case MenuKeuze::PICO_COMMUNICATIE:
+            return RunPicoCommunicatie(uart);
+
+        case MenuKeuze::STOPPEN:
+            std::cout << "Programma afgesloten.\n";
+            return 0;
+    }
 
     return 0;
 }

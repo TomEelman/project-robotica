@@ -1,8 +1,40 @@
+// ═══════════════════════════════════════════════════════════════════
+//  ProjectRoboticz.cpp  –  Pico main
+//
+//  Twee modi (schakelbaar via USE_UART_CONTROL):
+//    true  → Pico wacht op CMD-berichten van de RPi5
+//    false → lokale testreeks (TURN/DRIVE/CURVE sequence)
+// ═══════════════════════════════════════════════════════════════════
+
 #include "pico/stdlib.h"
 #include "Robot.h"
 #include "Drive.h"
+#include "UARTCommandHandler.h"
 #include <cmath>
 #include <cstdio>
+
+// ── Schakel hier tussen de twee modi ────────────────────────────
+static constexpr bool USE_UART_CONTROL = true;
+
+// ════════════════════════════════════════════════════════════════
+//  MODUS 1: UART-gestuurd (RPi5 stuurt CMD-berichten)
+// ════════════════════════════════════════════════════════════════
+
+static void RunUartMode(Robot& robot, UARTCommandHandler& uartCmd)
+{
+    // Poll verwerkt binnenkomende bytes en roept robot.Execute() aan.
+    // Hier hoeven we niets extra's te doen – de handler zorgt voor:
+    //   • GET:ENCODER / GET:IMU → sensordata terugsturen
+    //   • CMD:lin,ang           → robot.Execute() aanroepen
+    //   • timeout               → automatische noodstop
+    uartCmd.Poll();
+}
+
+
+// ════════════════════════════════════════════════════════════════
+//  MODUS 2: Lokale testreeks (ongewijzigd t.o.v. origineel)
+// ════════════════════════════════════════════════════════════════
+
 enum TestState {
     TURN_RIGHT_90,
     PAUSE_1,
@@ -28,59 +60,19 @@ static uint32_t  tickCount        = 0;
 static float     accumulatedAngle = 0.0f;
 static float     targetAngle      = 90.0f;
 static float     startYaw         = 0.0f;
-static bool      startYawSet      = false;  // zodat we startYaw maar 1x opslaan
+static bool      startYawSet      = false;
 
 static constexpr uint32_t MS(uint32_t ms) { return ms / 10; }
 static constexpr uint32_t PAUSE_TICKS = MS(500);
 static constexpr uint32_t DRIVE_TICKS = MS(2000);
 static constexpr uint32_t CURVE_TICKS = MS(2000);
 
-
-// Bovenaan toevoegen: ramp parameters
-static constexpr float RAMP_UP_DEG   = 20.0f;   // hoek waarop max snelheid bereikt is
-static constexpr float RAMP_DOWN_DEG = 20.0f;   // hoek voor het einde beginnen te remmen
-static constexpr float TURN_SPEED_MAX =  35.0f;  // jouw huidige snelheid
-static constexpr float TURN_SPEED_MIN =   8.0f;  // langzaamste snelheid (net genoeg om te bewegen)
-
-// Nieuwe helper: berekent de draaisnelheid op basis van hoe ver gedraaid is
-float GetRampedTurnSpeed(float accumulated, float target)
-{
-    float progress = fabsf(accumulated);      // hoeveel graden gedraaid (altijd positief)
-    float remaining = fabsf(target) - progress; // hoeveel nog over
-
-    float speed;
-
-    if (progress < RAMP_UP_DEG)
-    {
-        // Ramp-up fase: lineair van min naar max
-        float t = progress / RAMP_UP_DEG;
-        speed = TURN_SPEED_MIN + t * (TURN_SPEED_MAX - TURN_SPEED_MIN);
-    }
-    else if (remaining < RAMP_DOWN_DEG)
-    {
-        // Ramp-down fase: lineair van max naar min
-        float t = remaining / RAMP_DOWN_DEG;
-        speed = TURN_SPEED_MIN + t * (TURN_SPEED_MAX - TURN_SPEED_MIN);
-    }
-    else
-    {
-        // Plateau: volle snelheid
-        speed = TURN_SPEED_MAX;
-    }
-
-    // Richting behouden (positief = rechts, negatief = links)
-    return (target > 0.0f) ? speed : -speed;
-}
-
-bool IsTurnState(TestState s)
-{
+bool IsTurnState(TestState s) {
     return (s == TURN_RIGHT_90 || s == TURN_LEFT_90);
 }
 
-DriveCommand GetCommand(TestState s)
-{
-    switch (s)
-    {
+DriveCommand GetCommand(TestState s) {
+    switch (s) {
         case TURN_RIGHT_90:       return DriveCommand(   0.0f,  50.0f);
         case TURN_LEFT_90:        return DriveCommand(   0.0f, -50.0f);
         case DRIVE_FORWARD:       return DriveCommand( 478.0f,   0.0f);
@@ -93,10 +85,8 @@ DriveCommand GetCommand(TestState s)
     }
 }
 
-uint32_t DurationTicks(TestState s)
-{
-    switch (s)
-    {
+uint32_t DurationTicks(TestState s) {
+    switch (s) {
         case DRIVE_FORWARD:
         case DRIVE_BACKWARD:      return DRIVE_TICKS;
         case FORWARD_TURN_RIGHT:
@@ -107,93 +97,87 @@ uint32_t DurationTicks(TestState s)
     }
 }
 
-void StartState(TestState newState)
-{
+void StartState(TestState newState) {
     state            = newState;
     tickCount        = 0;
     accumulatedAngle = 0.0f;
-    startYawSet      = false;  // reset zodat startYaw opnieuw wordt opgeslagen
+    startYawSet      = false;
 
-    switch (newState)
-    {
+    switch (newState) {
         case TURN_RIGHT_90: targetAngle =  90.0f; break;
         case TURN_LEFT_90:  targetAngle = -90.0f; break;
         default:            targetAngle =   0.0f; break;
     }
-
-    //printf("==> State %d gestart | target: %.1f graden\n", newState, targetAngle);
 }
+
+static void RunTestMode(Robot& robot)
+{
+    robot.UpdateSensors();
+
+    if (state == TEST_DONE) {
+        robot.Execute(DriveCommand(0.0f, 0.0f));
+        return;
+    }
+
+    DriveCommand cmd = GetCommand(state);
+    robot.Execute(cmd);
+    tickCount++;
+
+    bool done = false;
+
+    if (IsTurnState(state)) {
+        if (!startYawSet) {
+            startYaw    = robot.GetCurrentYaw();
+            startYawSet = true;
+        }
+
+        float currentYaw = robot.GetCurrentYaw();
+        accumulatedAngle = currentYaw - startYaw;
+
+        while (accumulatedAngle >  180.0f) accumulatedAngle -= 360.0f;
+        while (accumulatedAngle < -180.0f) accumulatedAngle += 360.0f;
+
+        printf("Yaw: %.1f | Gedraaid: %.1f / %.1f\n",
+               currentYaw, accumulatedAngle, targetAngle);
+
+        if (targetAngle > 0.0f)
+            done = (accumulatedAngle >= targetAngle);
+        else
+            done = (accumulatedAngle <= targetAngle);
+    } else {
+        done = (tickCount >= DurationTicks(state));
+    }
+
+    if (done) {
+        robot.Execute(DriveCommand(0.0f, 0.0f));
+        StartState(static_cast<TestState>(static_cast<int>(state) + 1));
+    }
+}
+
+
+// ════════════════════════════════════════════════════════════════
+//  main
+// ════════════════════════════════════════════════════════════════
 int main()
 {
     stdio_init_all();
     sleep_ms(2000);
 
     Robot robot;
+    UARTCommandHandler uartCmd(robot, robot.getSenorHub());
+
+    printf("Robot gestart | modus: %s\n",
+           USE_UART_CONTROL ? "UART (RPi5-gestuurd)" : "LOKALE TESTREEKS");
 
     while (true)
     {
         robot.UpdateSensors();
 
-        if (state == TEST_DONE)
-        {
-            // Altijd een expliciete stop sturen
-            robot.Execute(DriveCommand(0.0f, 0.0f));
-        }
+        if (USE_UART_CONTROL)
+            RunUartMode(robot, uartCmd);
         else
-        {
-            // Haal de standaard command op (bijv. 0.0f lineair, 35.0f angular)
-            DriveCommand cmd = GetCommand(state);
+            RunTestMode(robot);
 
-            // Stuur het commando direct naar de robot. 
-            // De PID-regelaars in Drive::Execute zorgen voor de constante snelheid.
-            robot.Execute(cmd);
-            tickCount++;
-
-            bool done = false;
-
-            if (IsTurnState(state))
-            {
-                // Initialiseer de startYaw bij de eerste tick van de nieuwe state
-                if (!startYawSet)
-                {
-                    startYaw    = robot.GetCurrentYaw();
-                    startYawSet = true;
-                }
-
-                float currentYaw = robot.GetCurrentYaw();
-                accumulatedAngle = currentYaw - startYaw;
-
-                // Normaliseer de hoek tussen -180 en +180 graden
-                while (accumulatedAngle >  180.0f) accumulatedAngle -= 360.0f;
-                while (accumulatedAngle < -180.0f) accumulatedAngle += 360.0f;
-
-                printf("Yaw: %.1f | Gedraaid: %.1f / %.1f\n",
-                       currentYaw, accumulatedAngle, targetAngle);
-
-                // Controleer of de doelhoek bereikt is
-                if (targetAngle > 0.0f)
-                    done = (accumulatedAngle >= targetAngle);
-                else
-                    done = (accumulatedAngle <= targetAngle);
-            }
-            else
-            {
-                // Voor rijden op tijd (FORWARD/BACKWARD/PAUSE)
-                done = (tickCount >= DurationTicks(state));
-            }
-
-            if (done)
-            {
-                // Belangrijk: De Drive::Execute moet pID.Reset() aanroepen bij 0,0 
-                // zodat de volgende state met een schone lei begint.
-                robot.Execute(DriveCommand(0.0f, 0.0f)); 
-                
-                // Ga naar de volgende state
-                StartState(static_cast<TestState>(static_cast<int>(state) + 1));
-            }
-        }
-
-        // 100Hz loop (overeenkomend met MS(10))
-        sleep_ms(10);
+        sleep_ms(10);  // 100 Hz
     }
 }
