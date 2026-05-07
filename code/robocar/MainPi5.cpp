@@ -608,6 +608,8 @@ int main() {
 
     MenuKeuze keuze = VraagMenuKeuze();
 
+    uart.RebootPico();
+
     switch (keuze) {
         case MenuKeuze::MAPPEN:
             if (!initLidar(lidar)) return 1;
