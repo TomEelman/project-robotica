@@ -490,31 +490,47 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
                 ka.Stop();
                 usleep(200000);
                 heeftPad          = false;
-                scansSindsHerplan = HERPLAN_SCANS;   // forceer herplan
+                scansSindsHerplan = HERPLAN_SCANS;
             }
 
             // ── 3b. Herplan elke HERPLAN_SCANS scans ─────────────
             if (nieuweScan && scansSindsHerplan >= HERPLAN_SCANS) {
                 scansSindsHerplan = 0;
 
+                // Debug: robotpositie in wereldcoördinaten en gridcel
+                int robotCx = 0, robotCy = 0;
+                mapper.GetGridMap().WorldToCell(pos.GetX(), pos.GetY(), robotCx, robotCy);
+                bool robotCelVrij = mapper.GetGridMap().InBounds(robotCx, robotCy) &&
+                                    mapper.GetGridMap().IsFree(robotCx, robotCy);
+                printf("[AUTO] pos=(%.0f,%.0f)mm  cel=(%d,%d)  vrij=%s  dekking=%d%%\n",
+                       pos.GetX(), pos.GetY(), robotCx, robotCy,
+                       robotCelVrij ? "ja" : "NEE", mapper.GetCoverage());
+
                 Position doel = KiesFrontierDoel(mapper, pos);
 
                 if (doel.GetX() == pos.GetX() && doel.GetY() == pos.GetY()) {
-                    printf("\nGeen frontier meer — ruimte volledig verkend!\n");
-                    ka.Stop();
-                    break;
-                }
-
-                Path pad = planner.PlanPath(pos, doel, mapper.GetGridMap());
-
-                if (!pad.IsEmpty()) {
-                    navigator.SetPath(pad);
-                    heeftPad = true;
-                    printf("Nieuw pad: %d waypoints naar (%.0f, %.0f mm)\n",
-                           pad.GetSize(), doel.GetX(), doel.GetY());
+                    printf("[AUTO] Geen frontier gevonden — dekking=%d%%\n",
+                           mapper.GetCoverage());
+                    // Nog niet klaar: te weinig kaart — rijd even vooruit en herplan
+                    ka.SetCommand(LIN_SPEED, 0.0f);
+                    scansSindsHerplan = HERPLAN_SCANS;  // herplan volgende scan
                 } else {
-                    printf("Geen pad gevonden naar frontier, wacht...\n");
-                    heeftPad = false;
+                    printf("[AUTO] Frontier doel=(%.0f,%.0f)mm\n",
+                           doel.GetX(), doel.GetY());
+
+                    Path pad = planner.PlanPath(pos, doel, mapper.GetGridMap());
+
+                    if (!pad.IsEmpty()) {
+                        navigator.SetPath(pad);
+                        heeftPad = true;
+                        printf("[AUTO] Pad gevonden: %d waypoints\n", pad.GetSize());
+                    } else {
+                        printf("[AUTO] Geen pad naar frontier — rijd vooruit\n");
+                        heeftPad = false;
+                        // Geen pad: rijd gewoon vooruit i.p.v. rondjes draaien
+                        ka.SetCommand(LIN_SPEED, 0.0f);
+                        scansSindsHerplan = HERPLAN_SCANS;
+                    }
                 }
             }
 
@@ -523,10 +539,13 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
                 navigator.Update(pos);
                 DriveCommand cmd = navigator.GetNextCommand(pos);
                 ka.SetCommand(cmd.GetLinVelocity(), cmd.GetAngVelocity());
-            } else if (!heeftPad) {
-                // Geen pad beschikbaar: langzaam draaien om omgeving te scannen
-                ka.SetCommand(0.0f, 30.0f);
+            } else if (heeftPad && navigator.IsFinished()) {
+                // Waypoint bereikt, wacht op volgende herplan
+                printf("[AUTO] Doel bereikt, wacht op volgende scan...\n");
+                heeftPad = false;
+                ka.Stop();
             }
+            // Geen else meer voor draaien — vooruit rijden wordt hierboven gezet
         }
 
         // ── 4. Status printen ─────────────────────────────────────
