@@ -45,7 +45,9 @@ int main() {
     Pi5UARTHandler uart("/dev/ttyAMA10");
     LIDAR          lidar("/dev/ttyUSB0", 460800);
     Localisation   loc(0.235f);
-    Mapper         mapper(300, 300, 0.05f);
+
+    // 15×15 m @ 5 cm/cel
+    Mapper         mapper(1200, 1200, 0.04f);
 
     // Initialiseren
     initUartHandler(uart);
