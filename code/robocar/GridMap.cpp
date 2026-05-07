@@ -140,13 +140,16 @@ bool GridMap::IsUnknown(int cx, int cy) const {
 }
 
 bool GridMap::IsPathValid(Path path) const {
-    while (!path.IsEmpty()) {
-        Position p = path.GetNextPoint();
-        int cx, cy;
-        WorldToCell(p.GetX(), p.GetY(), cx, cy);
+    // Waypoints zijn in mm (zie Path.h) → omzetten naar meter voor WorldToCell
+    constexpr float MM2M = 0.001f;
 
-        if (!InBounds(cx, cy))   return false;
-        if (IsOccupied(cx, cy))  return false;
+    while (!path.IsEmpty()) {
+        Position wp = path.GetCurrentWaypoint();
+        int cx, cy;
+        WorldToCell(wp.GetX() * MM2M, wp.GetY() * MM2M, cx, cy);
+
+        if (!InBounds(cx, cy))  return false;
+        if (IsOccupied(cx, cy)) return false;
 
         path.Advance();
     }
