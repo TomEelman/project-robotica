@@ -67,6 +67,7 @@ target_link_libraries(ProjectRoboticz
         hardware_gpio
         hardware_i2c
         hardware_irq 
+        hardware_watchdog
     )
 
 # Add the standard include files to the build
