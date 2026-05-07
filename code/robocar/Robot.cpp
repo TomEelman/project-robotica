@@ -68,22 +68,4 @@ void Robot::Update() {
     
 sensorHub.UpdateSensors(); 
     drive.Execute(DriveCommand(0.0f, 35.0f));
- /*
-    float Angvelocity = sensorHub.GetAngVelocity();
-    float imuYawRate = Angvelocity* (PI / 180.0f);
-    float vLeft = sensorHub.GetSpeedLeft();
-    float vRight =sensorHub.GetSpeedRight();
-        printf("before drive\n");
-    localisation.Predict(vLeft, vRight, dt);
-        printf("befodrive\n");
-    localisation.UpdateIMU(imuYawRate, dt);
-        printf("befrive\n");
-
-
-
-printf("after drive\n");
-    printf("vL %.2f vR %.2f omega %.3f theta %8f x:%f Y:%f\n",
-       vLeft, vRight, imuYawRate, localisation.GetTheta(), localisation.GetX(), localisation.GetY());
-        */
-
 }
