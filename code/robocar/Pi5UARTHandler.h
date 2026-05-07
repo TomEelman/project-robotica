@@ -71,6 +71,9 @@ public:
     //  Snelkoppeling voor een directe stop
     CommandAck StuurStop();
 
+    //  Herstart de Pico via watchdog
+    bool RebootPico();
+
     // ── Laag-niveau ──────────────────────────────────────────
     //  Stuur een vrij verzoek en wacht op antwoord-regel
     std::string StuurVerzoek(const std::string& sensor);
@@ -90,7 +93,6 @@ private:
     int         fd;
 
     bool ConfigureerPoort();
-    bool RebootPico();
     // Parse "ACK:lin,ang" → CommandAck
     CommandAck ParseAck(const std::string& antwoord);
 };

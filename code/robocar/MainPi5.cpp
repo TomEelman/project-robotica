@@ -374,18 +374,18 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
     Mapper       mapper(1200, 1200, 0.04f);   // 48×48 m @ 4 cm/cel
 
     constexpr float DT             = 0.1f;
-    constexpr long  LOOP_US        = 100000;   // 10 Hz
-    constexpr float LIN_SPEED      = 278.0f;   // mm/s vooruit (fase 1 + autonoom)
-    constexpr float TURN_SPEED     =  50.0f;   // deg/s rechts (fase 2)
-    constexpr float TURN_TARGET    =  90.0f;   // graden
-    constexpr int   RIJD_SECONDEN  =  10;      // seconden rechtdoor in fase 1
-    constexpr int   HERPLAN_SCANS  =  15;      // herplan elke N scans
+    constexpr long  LOOP_US        = 100000;
+    constexpr float LIN_SPEED      = 278.0f;
+    constexpr float TURN_SPEED     =  50.0f;
+    constexpr float TURN_TARGET    =  90.0f;
+    constexpr int   RIJD_SECONDEN  =  10;
+    constexpr int   HERPLAN_SCANS  =  15;
 
     enum class Fase { RECHTDOOR, DRAAIEN, AUTONOOM };
-    Fase     fase          = Fase::RECHTDOOR;
-    float    startYaw      = 0.0f;
-    bool     yawGezet      = false;
-    int      scanCount     = 0;
+    Fase     fase              = Fase::RECHTDOOR;
+    float    startYaw          = 0.0f;
+    bool     yawGezet          = false;
+    int      scanCount         = 0;
     int      scansSindsHerplan = 0;
 
     // Pathfinding objecten
@@ -439,47 +439,47 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
         // ── 3. Fase-logica ────────────────────────────────────────
 
         // --- Fase 1: rechtdoor ---
-        // if (fase == Fase::RECHTDOOR) {
-        //     auto verstreken = std::chrono::duration_cast<std::chrono::seconds>(
-        //                           std::chrono::steady_clock::now() - faseStart).count();
+        if (fase == Fase::RECHTDOOR) {
+            auto verstreken = std::chrono::duration_cast<std::chrono::seconds>(
+                                  std::chrono::steady_clock::now() - faseStart).count();
 
-        //     if (verstreken >= RIJD_SECONDEN) {
-        //         printf("\nFase 2: 90 graden draaien...\n");
-        //         ka.Stop();
-        //         usleep(300000);
-        //         fase     = Fase::DRAAIEN;
-        //         yawGezet = false;
-        //     }
-        // }
+            if (verstreken >= RIJD_SECONDEN) {
+                printf("\nFase 2: 90 graden draaien...\n");
+                ka.Stop();
+                usleep(300000);
+                fase     = Fase::DRAAIEN;
+                yawGezet = false;
+            }
+        }
 
-        // // --- Fase 2: draaien ---
-        // else if (fase == Fase::DRAAIEN) {
-        //     if (!yawGezet) {
-        //         IMUData ref = uart.LeesIMU();
-        //         startYaw    = ref.geldig ? ref.yawGraden : 0.0f;
-        //         yawGezet    = true;
-        //         ka.SetCommand(0.0f, TURN_SPEED);
-        //         printf("Startyaw: %.1f graden\n", startYaw);
-        //     }
+        // --- Fase 2: draaien ---
+        else if (fase == Fase::DRAAIEN) {
+            if (!yawGezet) {
+                IMUData ref = uart.LeesIMU();
+                startYaw    = ref.geldig ? ref.yawGraden : 0.0f;
+                yawGezet    = true;
+                ka.SetCommand(0.0f, TURN_SPEED);
+                printf("Startyaw: %.1f graden\n", startYaw);
+            }
 
-        //     IMUData cur = uart.LeesIMU();
-        //     if (cur.geldig) {
-        //         float gedraaid = cur.yawGraden - startYaw;
-        //         while (gedraaid >  180.0f) gedraaid -= 360.0f;
-        //         while (gedraaid < -180.0f) gedraaid += 360.0f;
+            IMUData cur = uart.LeesIMU();
+            if (cur.geldig) {
+                float gedraaid = cur.yawGraden - startYaw;
+                while (gedraaid >  180.0f) gedraaid -= 360.0f;
+                while (gedraaid < -180.0f) gedraaid += 360.0f;
 
-        //         printf("  Gedraaid: %.1f / %.0f graden\r", gedraaid, TURN_TARGET);
-        //         fflush(stdout);
+                printf("  Gedraaid: %.1f / %.0f graden\r", gedraaid, TURN_TARGET);
+                fflush(stdout);
 
-        //         if (gedraaid >= TURN_TARGET) {
-        //             ka.Stop();
-        //             usleep(300000);
-        //             printf("\nDraai klaar. Autonome fase gestart.\n");
-        //             scansSindsHerplan = HERPLAN_SCANS;  // forceer direct herplan
-        //             fase = Fase::AUTONOOM;
-        //         }
-        //     }
-        // }
+                if (gedraaid >= TURN_TARGET) {
+                    ka.Stop();
+                    usleep(300000);
+                    printf("\nDraai klaar. Autonome fase gestart.\n");
+                    scansSindsHerplan = HERPLAN_SCANS;
+                    fase = Fase::AUTONOOM;
+                }
+            }
+        }
 
         // --- Fase 3: autonoom pathfinding ---
         else if (fase == Fase::AUTONOOM) {
