@@ -1,105 +1,106 @@
 #include "Encoder.h"
 #include "hardware/gpio.h"
 #include "hardware/timer.h"
-#include <stdio.h>
 
-// ── Constanten ───────────────────────────────────────────────────
-#define PULSES_PER_ROT   330
-#define WHEEL_CIRC_MM    204.2f
-#define UPDATE_US        50000     // 50 ms → 20 Hz update
-#define TIMEOUT_US       300000    // 300 ms zonder pulsen → v = 0
+// Encoder hardware constants — specific to the motor/wheel combination in use.
+static constexpr int   PULSES_PER_ROTATION  = 330;
+static constexpr float WHEEL_CIRCUMFERENCE_MM = 204.2f;
 
-// ── Globals ──────────────────────────────────────────────────────
-static volatile int  pulseCounts[32] = {0};
-static bool          irqInitialized  = false;
+// Update rate: encoder velocity is recalculated every 50 ms (20 Hz).
+// Lower values give faster response but more noise; higher values smooth noise
+// but increase lag. 50 ms is a reasonable trade-off for this wheel size.
+static constexpr uint64_t UPDATE_INTERVAL_US = 50'000;
 
-// ── ISR ──────────────────────────────────────────────────────────
-static void encoderISR(uint gpio, uint32_t events) {
+// If no pulse arrives within this window the wheel is considered stopped.
+// 300 ms at the minimum detectable speed (~0.7 mm/s at 330 ppr, 204 mm circ)
+// avoids falsely reporting zero at very low speeds.
+static constexpr uint64_t PULSE_TIMEOUT_US = 300'000;
+
+static volatile int pulseCounts[32] = {0};
+static bool         irqInitialized  = false;
+
+static void EncoderISR(uint gpio, uint32_t /*events*/)
+{
     if (gpio < 32) pulseCounts[gpio]++;
 }
 
-// ── Constructor ──────────────────────────────────────────────────
-Encoder::Encoder(int GPIOPin, int GPIOPinResolution) {
-    GPIO                 = GPIOPin;
-    GPIOPinRes           = GPIOPinResolution;
-    pulsesWithResolution = PULSES_PER_ROT;
+Encoder::Encoder(int gpioPin, int gpioPinRes)
+    : gpio(gpioPin),
+      gpioPinRes(gpioPinRes),
+      pulsesPerRotation(PULSES_PER_ROTATION),
+      linearVelocity(0.0f),
+      distanceMm(0.0f),
+      lastPulseCount(0),
+      lastTime(time_us_64()),
+      lastPulseTime(time_us_64()),
+      updated(false),
+      freshData(false)
+{
+    gpio_init(gpioPinRes);
+    gpio_set_dir(gpioPinRes, GPIO_IN);
+    gpio_pull_up(gpioPinRes);
 
-    LinearVelocity = 0.0f;
-    DistanceMm     = 0.0f;
-    lastPulseCount = 0;
-    lastTime       = time_us_64();
-    lastPulseTime  = lastTime;
-    Updated        = false;
-    freshData      = false;
-
-    gpio_init(GPIOPinRes);
-    gpio_set_dir(GPIOPinRes, GPIO_IN);
-    gpio_pull_up(GPIOPinRes);
-
+    // The Pico SDK allows only one global IRQ callback. The first encoder
+    // registers it; subsequent encoders just enable the IRQ on their pin.
     if (!irqInitialized) {
         gpio_set_irq_enabled_with_callback(
-            GPIOPinRes, GPIO_IRQ_EDGE_RISE, true, &encoderISR);
+            gpioPinRes, GPIO_IRQ_EDGE_RISE, true, &EncoderISR);
         irqInitialized = true;
     } else {
-        gpio_set_irq_enabled(GPIOPinRes, GPIO_IRQ_EDGE_RISE, true);
+        gpio_set_irq_enabled(gpioPinRes, GPIO_IRQ_EDGE_RISE, true);
     }
 }
 
-// ── Update ───────────────────────────────────────────────────────
-// Returnt true als er een nieuw sample is geproduceerd.
-bool Encoder::Update() {
+bool Encoder::Update()
+{
     uint64_t now     = time_us_64();
     uint64_t elapsed = now - lastTime;
 
-    if (elapsed < UPDATE_US) {
+    if (elapsed < UPDATE_INTERVAL_US)
         return false;
-    }
+
     lastTime = now;
 
-    int current = pulseCounts[GPIOPinRes];
+    int current = pulseCounts[gpioPinRes];
     int delta   = current - lastPulseCount;
     lastPulseCount = current;
 
-    if (delta > 0) {
+    if (delta > 0)
         lastPulseTime = now;
-    }
 
-    // Te lang geen pulsen → wiel staat stil
-    if ((now - lastPulseTime) > TIMEOUT_US) {
-        LinearVelocity = 0.0f;
-        Updated        = true;
+    if ((now - lastPulseTime) > PULSE_TIMEOUT_US) {
+        linearVelocity = 0.0f;
+        updated        = true;
         freshData      = true;
         return true;
     }
 
-    // Snelheid berekenen (delta == 0 levert netjes 0 mm/s op)
-    float rotations  = (float)delta / (float)pulsesWithResolution;
-    float distanceMm = rotations * WHEEL_CIRC_MM;
-    float timeSec    = elapsed / 1000000.0f;
+    // Convert pulse count to mm/s.
+    // rotations = delta / ppr;  distance = rotations * circumference;  speed = distance / dt
+    float rotations  = static_cast<float>(delta) / static_cast<float>(pulsesPerRotation);
+    float distanceDelta = rotations * WHEEL_CIRCUMFERENCE_MM;
+    float dtSeconds  = static_cast<float>(elapsed) / 1'000'000.0f;
 
-    LinearVelocity = distanceMm / timeSec;
-    DistanceMm    += distanceMm;
-    Updated        = true;
-    freshData      = true;
+    linearVelocity  = distanceDelta / dtSeconds;
+    distanceMm     += distanceDelta;
+    updated         = true;
+    freshData       = true;
     return true;
 }
 
-// ── Reset ────────────────────────────────────────────────────────
-void Encoder::Reset() {
-    pulseCounts[GPIOPinRes] = 0;
+void Encoder::Reset()
+{
+    pulseCounts[gpioPinRes] = 0;
     lastPulseCount          = 0;
-    LinearVelocity          = 0.0f;
-    DistanceMm              = 0.0f;
-    Updated                 = false;
+    linearVelocity          = 0.0f;
+    distanceMm              = 0.0f;
+    updated                 = false;
     freshData               = false;
     lastTime                = time_us_64();
     lastPulseTime           = lastTime;
 }
 
-// ── Getters ──────────────────────────────────────────────────────
-float Encoder::GetLinVelocity() const { return LinearVelocity; }
-float Encoder::GetDistanceMm()  const { return DistanceMm;     }
-int   Encoder::GetGpio()        const { return GPIO;           }
-int   Encoder::GetGpioPinRes()  const { return GPIOPinRes;     }
-
-// HasFreshData() / ConsumeFreshFlag() zijn inline in de header.
+float Encoder::GetLinVelocity() const { return linearVelocity; }
+float Encoder::GetDistanceMm()  const { return distanceMm;     }
+int   Encoder::GetGpio()        const { return gpio;           }
+int   Encoder::GetGpioPinRes()  const { return gpioPinRes;     }

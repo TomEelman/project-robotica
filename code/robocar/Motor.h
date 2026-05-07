@@ -2,32 +2,29 @@
 #define MOTOR_H
 
 class Motor {
-
-private:
-    int pwmPin;
-    int forwardPin;
-    int backwardPin;
-    float speed;
-    void initPwmPin(int pin);
-    void setDuty(int pin, float procent);
-
 public:
-    Motor(int PWMPin, int ForwardPin, int BackwardPin);
+    Motor(int pwmPin, int forwardPin, int backwardPin);
 
-    void SetSpeed(float Speed);
-    float GetSpeed();
-
-    int GetPwmPin();
-    void SetPwmPin(int PwmPin);
-
-    int GetForwardPin();
-    void SetForwardPin(int ForwardPin);
-
-    int GetBackwardPin();
-    void SetBackwardPin(int BackwardPin);
+    void  SetSpeed(float speed);
+    float GetSpeed() const;
 
     void Stop();
 
-};
+    int GetPwmPin()      const;
+    int GetForwardPin()  const;
+    int GetBackwardPin() const;
 
+    void SetPwmPin     (int pin);
+    void SetForwardPin (int pin);
+    void SetBackwardPin(int pin);
+
+private:
+    int   pwmPin;
+    int   forwardPin;
+    int   backwardPin;
+    float speed;
+
+    void InitPwmPin(int pin);
+    void SetDutyCycle(int pin, float pwm);
+};
 #endif

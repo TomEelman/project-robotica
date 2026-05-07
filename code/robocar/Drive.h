@@ -6,75 +6,85 @@
 #include "SensorHub.h"
 #include "DriveCommand.h"
 
-
-enum Drivemodes {
-    FORWARD,
-    BACKWARD,
-    TURN_LEFT,
-    TURN_RIGHT,
-    STOPPED
+enum class DriveMode {
+    Stopped,
+    Forward,
+    Backward,
+    TurnLeft,
+    TurnRight
 };
 
 class Drive {
+public:
+    Drive(Motor&     leftMotor,
+          Motor&     rightMotor,
+          SensorHub& sensors,
+          float      wheelbaseMeters,
+          float      minAngVel   = 13.0f,
+          float      maxAngVel   = 35.0f,
+          float      minPwmLeft  = 30.0f,
+          float      minPwmRight = 30.0f);
+
+    void Execute(const DriveCommand& command);
+    void Stop();
 
 private:
-    Motor&    motorLeft;
-    Motor&    motorRight;
+    Motor&     motorLeft;
+    Motor&     motorRight;
     SensorHub& sensorHub;
 
-    PIDController pIDLeft;
-    PIDController pIDRight;
-    PIDController pIDYaw;
-    
+    PIDController pidLeft;
+    PIDController pidRight;
+    PIDController pidYaw;
 
-    float wheelbase;
-    int   threshold;
+    float wheelbaseMeters;
 
-    bool enableMotorA;
-    bool enableMotorB;
+    bool  enableMotorLeft;
+    bool  enableMotorRight;
 
-    Drivemodes motorDirection;
+    DriveMode driveMode;
 
-    float speedLFilt = 0.0f;
-    float speedRFilt = 0.0f;
-    float lastOutLeft = 0.0f;
-    float lastOutRight = 0.0f;
-    bool  filtInit = false;
+    float speedLeftFiltered;
+    float speedRightFiltered;
+    float lastOutputLeft;
+    float lastOutputRight;
+    bool  filterInitialized;
 
     float pwmLeft;
     float pwmRight;
 
-    float initialYaw;
     float targetYaw;
-    bool  isInitialYawSet;
-    float currentAngular;
+    bool  yawInitialized;
+
     float rampedLinear;
     float rampStep;
 
     float minAngVel;
     float maxAngVel;
- 
     float minPwmLeft;
     float minPwmRight;
+    int rampTick = 0;
+    
+    // Clamps |pwm| to [minPwm, 255]. Values below minPwm are zeroed to avoid
+    // stalling the motor driver in a region where no movement occurs.
+    void  ClampPwm(float& pwm, float minPwm);
 
-    void  ApplyClamp(float& pwm, float minPwm);
-    float PercentToPwm(float percent, float minPwm);
-    float ComputeSteerCorrection();
-    float ComputeEncoderAngVel() const;
-    void  UpdateDirection(float linear, float angular);
-    void  UpdateRamp(float linear);
+    // Maps a percentage [-100, 100] to a PWM value [-255, 255].
+    float PercentToPwm(float percent);
 
-public:
-    Drive(Motor& LeftMotor, Motor& RightMotor,
-          SensorHub& Sensors,
-          float Wheelbase, int Threshold,
-          float MinAngVel  = 13.0f,
-          float MaxAngVel  = 35.0f,
-          float MinPwmLeft = 30.0f,
-          float MinPwmRight= 30.0f);
+    // Smoothly accelerates rampedLinear toward the requested linear setpoint.
+    // Prevents large inrush currents and wheel slip on hard starts.
+    void UpdateRamp(float linearTarget);
 
-    void Execute(const DriveCommand& Command);
-    void Stop();
+    void UpdateDriveMode(float linear, float angular);
+
+    // Computes a yaw-correction delta for straight-line driving.
+    // Latches the target yaw on first call after a direction change and
+    // uses the yaw PID to null out drift.
+    float ComputeYawCorrection();
+
+    void ExecuteTurn(float angular);
+    void ExecuteLinear(float linear, float angular);
 };
 
 #endif

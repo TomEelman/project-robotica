@@ -2,33 +2,22 @@
 #include "hardware/pwm.h"
 #include "hardware/gpio.h"
 
+// PWM wrap value determines resolution. 65535 gives 16-bit resolution at the
+// clock divider below, which results in ~490 Hz PWM — well within the range
+// that avoids audible whine and keeps motor driver switching losses low.
+static constexpr float PWM_CLOCK_DIV = 1.907f;
+static constexpr uint  PWM_WRAP      = 65535;
 
-void Motor::initPwmPin(int pin) {
-    gpio_set_function(pin, GPIO_FUNC_PWM);
-    uint slice = pwm_gpio_to_slice_num(pin);
+// PWM input range: the motor driver accepts 0–255 (matching an 8-bit DAC
+// convention used throughout the codebase), which we map linearly to 0–65535.
+static constexpr float PWM_INPUT_MAX = 255.0f;
 
-    pwm_config cfg = pwm_get_default_config();
-    pwm_config_set_clkdiv(&cfg, 1.907f);
-    pwm_config_set_wrap(&cfg, 65535);
-    pwm_init(slice, &cfg, true);
-}
-
-void Motor::setDuty(int pin, float procent) {
-
-    if (procent < -255.0f) procent = -255.0f;
-    if (procent > 255.0f) procent = 255.0f;
-    unsigned short level = (unsigned short)(65535.0f * procent / 255.0f);
-    pwm_set_gpio_level(pin, level);
-}
-
-// ── Constructor ──────────────────────────────────────────────────
-Motor::Motor(int PWMPin, int ForwardPin, int BackwardPin) {
-    pwmPin      = PWMPin;
-    forwardPin  = ForwardPin;
-    backwardPin = BackwardPin;
-    speed       = 0.0f;
-
-    // Richting-pinnen als output, standaard laag
+Motor::Motor(int pwmPin, int forwardPin, int backwardPin)
+    : pwmPin(pwmPin),
+      forwardPin(forwardPin),
+      backwardPin(backwardPin),
+      speed(0.0f)
+{
     gpio_init(forwardPin);
     gpio_set_dir(forwardPin, GPIO_OUT);
     gpio_put(forwardPin, 0);
@@ -37,69 +26,78 @@ Motor::Motor(int PWMPin, int ForwardPin, int BackwardPin) {
     gpio_set_dir(backwardPin, GPIO_OUT);
     gpio_put(backwardPin, 0);
 
-    // PWM initialiseren
-    initPwmPin(pwmPin);
-    setDuty(pwmPin, 0.0f);
+    InitPwmPin(pwmPin);
+    SetDutyCycle(pwmPin, 0.0f);
 }
 
-// ── Getters / Setters ────────────────────────────────────────────
-float Motor::GetSpeed() {
-    return speed;
+void Motor::InitPwmPin(int pin)
+{
+    gpio_set_function(pin, GPIO_FUNC_PWM);
+    uint       slice = pwm_gpio_to_slice_num(pin);
+    pwm_config cfg   = pwm_get_default_config();
+    pwm_config_set_clkdiv(&cfg, PWM_CLOCK_DIV);
+    pwm_config_set_wrap(&cfg, PWM_WRAP);
+    pwm_init(slice, &cfg, true);
 }
 
-void Motor::SetSpeed(float Speed) {
-    speed = Speed;
+void Motor::SetDutyCycle(int pin, float pwm)
+{
+    if (pwm < -PWM_INPUT_MAX) pwm = -PWM_INPUT_MAX;
+    if (pwm >  PWM_INPUT_MAX) pwm =  PWM_INPUT_MAX;
 
-    if (Speed > 0.0f) {
-        // Vooruit
+    // Scale 0–255 linearly to 0–65535.
+    auto level = static_cast<uint16_t>(PWM_WRAP * pwm / PWM_INPUT_MAX);
+    pwm_set_gpio_level(pin, level);
+}
+
+void Motor::SetSpeed(float newSpeed)
+{
+    speed = newSpeed;
+
+    if (newSpeed > 0.0f) {
         gpio_put(forwardPin,  1);
         gpio_put(backwardPin, 0);
-        setDuty(pwmPin, Speed);
-    } else if (Speed < 0.0f) {
-        // Achteruit (negatieve waarde → richting omdraaien)
+        SetDutyCycle(pwmPin,  newSpeed);
+    } else if (newSpeed < 0.0f) {
         gpio_put(forwardPin,  0);
         gpio_put(backwardPin, 1);
-        setDuty(pwmPin, -Speed);
+        SetDutyCycle(pwmPin, -newSpeed);
     } else {
         Stop();
     }
 }
 
-int Motor::GetPwmPin() {
-    return pwmPin;
+void Motor::Stop()
+{
+    speed = 0.0f;
+    gpio_put(forwardPin,  0);
+    gpio_put(backwardPin, 0);
+    SetDutyCycle(pwmPin, 0.0f);
 }
 
-void Motor::SetPwmPin(int PwmPin) {
-    pwmPin = PwmPin;
-    initPwmPin(pwmPin);
+float Motor::GetSpeed()        const { return speed;       }
+int   Motor::GetPwmPin()       const { return pwmPin;      }
+int   Motor::GetForwardPin()   const { return forwardPin;  }
+int   Motor::GetBackwardPin()  const { return backwardPin; }
+
+void Motor::SetPwmPin(int pin)
+{
+    pwmPin = pin;
+    InitPwmPin(pwmPin);
 }
 
-int Motor::GetForwardPin() {
-    return forwardPin;
-}
-
-void Motor::SetForwardPin(int ForwardPin) {
-    forwardPin = ForwardPin;
+void Motor::SetForwardPin(int pin)
+{
+    forwardPin = pin;
     gpio_init(forwardPin);
     gpio_set_dir(forwardPin, GPIO_OUT);
     gpio_put(forwardPin, 0);
 }
 
-int Motor::GetBackwardPin() {
-    return backwardPin;
-}
-
-void Motor::SetBackwardPin(int BackwardPin) {
-    backwardPin = BackwardPin;
+void Motor::SetBackwardPin(int pin)
+{
+    backwardPin = pin;
     gpio_init(backwardPin);
     gpio_set_dir(backwardPin, GPIO_OUT);
     gpio_put(backwardPin, 0);
-}
-
-// ── Stop ─────────────────────────────────────────────────────────
-void Motor::Stop() {
-    speed = 0.0f;
-    gpio_put(forwardPin,  0);
-    gpio_put(backwardPin, 0);
-    setDuty(pwmPin, 0.0f);
 }

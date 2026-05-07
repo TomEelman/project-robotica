@@ -1,71 +1,48 @@
 #include "Robot.h"
-#include <cstdio>
 
-// GP0/1 bezet door UART
-// Motor A: ENA=GP8, IN1=GP2, IN2=GP3
-// Motor B: ENB=GP9, IN3=GP6, IN4=GP7
-constexpr int MOTOR_LEFT_PWM      = 8;
-constexpr int MOTOR_LEFT_FORWARD  = 2;
-constexpr int MOTOR_LEFT_BACKWARD = 3;
+// GPIO pin assignments — Pico hardware layout.
+// GP0/GP1 are reserved for UART (SensorHub), so motor and encoder signals
+// start from GP2 onwards.
+static constexpr int MOTOR_LEFT_PWM       = 8;
+static constexpr int MOTOR_LEFT_FORWARD   = 2;
+static constexpr int MOTOR_LEFT_BACKWARD  = 3;
 
-constexpr int ENCODER_LEFT_PULS    = 11;
-constexpr int ENCODER_LEFT_PULSRES = 10;
+static constexpr int ENCODER_LEFT_PULSE   = 11;
+static constexpr int ENCODER_LEFT_RES     = 10;
 
-constexpr int MOTOR_RIGHT_PWM      = 9;
-constexpr int MOTOR_RIGHT_FORWARD  = 6;
-constexpr int MOTOR_RIGHT_BACKWARD = 7;
+static constexpr int MOTOR_RIGHT_PWM      = 9;
+static constexpr int MOTOR_RIGHT_FORWARD  = 6;
+static constexpr int MOTOR_RIGHT_BACKWARD = 7;
 
-constexpr int ENCODER_RIGHT_PULS    = 14;
-constexpr int ENCODER_RIGHT_PULSRES = 15;
+static constexpr int ENCODER_RIGHT_PULSE  = 14;
+static constexpr int ENCODER_RIGHT_RES    = 15;
 
-constexpr int IMU_SDA  = 4;
-constexpr int IMU_SCL  = 5;
+static constexpr int IMU_SDA = 4;
+static constexpr int IMU_SCL = 5;
 
-
-constexpr int LIDAR_BAUD = 115200;
-
-constexpr float WHEELBASE = 0.219f;  // afstand tussen wielen in meters
-constexpr int   THRESHOLD = 0.01;    
-
+// Physical robot dimensions.
+static constexpr float WHEELBASE_M = 0.219f; // distance between wheel contact points [m]
 
 Robot::Robot()
     : motorLeft (MOTOR_LEFT_PWM,  MOTOR_LEFT_FORWARD,  MOTOR_LEFT_BACKWARD),
       motorRight(MOTOR_RIGHT_PWM, MOTOR_RIGHT_FORWARD, MOTOR_RIGHT_BACKWARD),
-      sensorHub(ENCODER_LEFT_PULS, ENCODER_LEFT_PULSRES,
-                ENCODER_RIGHT_PULS, ENCODER_RIGHT_PULSRES,
+      sensorHub(ENCODER_LEFT_PULSE,  ENCODER_LEFT_RES,
+                ENCODER_RIGHT_PULSE, ENCODER_RIGHT_RES,
                 IMU_SDA, IMU_SCL),
-      drive(motorLeft, motorRight, sensorHub, WHEELBASE, THRESHOLD),
-      localisation(WHEELBASE)
-      
-      
-
+      drive(motorLeft, motorRight, sensorHub, WHEELBASE_M),
+      localisation(WHEELBASE_M)
 {
 }
 
-// Robot.cpp
 void Robot::UpdateSensors()
 {
     sensorHub.UpdateSensors();
 }
 
-void Robot::Execute(const DriveCommand& cmd)
+void Robot::Execute(const DriveCommand& command)
 {
-    drive.Execute(cmd);
+    drive.Execute(command);
 }
 
-// Robot.cpp
-float Robot::GetAngVelocity() const
-{
-    return sensorHub.GetAngVelocity();
-} 
-
-float Robot::GetCurrentYaw() const
-{
-    return sensorHub.GetCurrentYaw();
-}
-
-void Robot::Update() {
-    
-sensorHub.UpdateSensors(); 
-    drive.Execute(DriveCommand(0.0f, 35.0f));
-}
+float Robot::GetAngVelocity() const { return sensorHub.GetAngVelocity(); }
+float Robot::GetCurrentYaw()  const { return sensorHub.GetCurrentYaw();  }
