@@ -19,6 +19,7 @@ public:
     int            GetCoverage()  const;
     GridMap&       GetMap();
     const GridMap& GetMap()       const;
+    const GridMap& GetGridMap() const;
     bool           SaveDebugMap(const std::string& filename) const;
 
 private:
