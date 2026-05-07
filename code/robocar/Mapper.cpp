@@ -67,6 +67,7 @@ int Mapper::GetCoverage() const {
 
 GridMap&       Mapper::GetMap()       { return map; }
 const GridMap& Mapper::GetMap() const { return map; }
+const GridMap& Mapper::GetGridMap() const { return map; }
 
 bool Mapper::SaveDebugMap(const std::string& filename) const {
     return map.SavePGM(filename);
