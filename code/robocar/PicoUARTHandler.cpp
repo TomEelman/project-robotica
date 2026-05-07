@@ -1,179 +1,163 @@
 #include "PicoUARTHandler.h"
-#include "pico/stdlib.h"
-#include "hardware/uart.h"
-#include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <cstdio>
 
-// UART0 is GP0/GP1 – dezelfde UART die al gebruikt wordt voor communicatie
-#define UART_ID   uart0
-#define UART_BAUD 115200
+// ── Statische variabelen ─────────────────────────────────────
+volatile char    PicoUARTHandler::rx_buffer[64] = {0};
+volatile int     PicoUARTHandler::rx_pos        = 0;
+volatile bool    PicoUARTHandler::bericht_klaar = false;
+PicoUARTHandler* PicoUARTHandler::instance      = nullptr;
 
-UARTCommandHandler::UARTCommandHandler(Robot& robot, SensorHub& sensorHub)
-    : robot(robot)
-    , sensorHub(sensorHub)
-    , rxLen(0)
-    , lastCmd(0.0f, 0.0f)
-    , hasCmd(false)
+// ── Constructor ──────────────────────────────────────────────
+PicoUARTHandler::PicoUARTHandler(SensorHub& sensorHub)
+    : sensorHub(sensorHub)
+    , pendingCmd(0.0f, 0.0f)
+    , hasPendingCmd(false)
     , lastCmdTimeMs(0)
 {
-    memset(rxBuf, 0, sizeof(rxBuf));
+    instance = this;
 }
 
-// ─────────────────────────────────────────────
-//  Poll  –  aanroepen elke ~10 ms
-// ─────────────────────────────────────────────
-void UARTCommandHandler::Poll()
+// ── Init: UART0 + IRQ ────────────────────────────────────────
+void PicoUARTHandler::Init()
 {
-    // 1) Lees alle beschikbare bytes uit de UART FIFO
-    while (uart_is_readable(UART_ID))
-    {
-        char c = uart_getc(UART_ID);
+    uart_init(PICO_UART_ID, PICO_UART_BAUD);
+    gpio_set_function(PICO_UART_TX_PIN, GPIO_FUNC_UART);
+    gpio_set_function(PICO_UART_RX_PIN, GPIO_FUNC_UART);
+    uart_set_hw_flow(PICO_UART_ID, false, false);
+    uart_set_format(PICO_UART_ID, 8, 1, UART_PARITY_NONE);
+    uart_set_fifo_enabled(PICO_UART_ID, false);  // byte-voor-byte IRQ
 
-        if (c == '\n' || c == '\r')
-        {
-            if (rxLen > 0)
-            {
-                rxBuf[rxLen] = '\0';
-                HandleLine(rxBuf);
-                rxLen = 0;
-            }
-        }
-        else
-        {
-            if (rxLen < (int)sizeof(rxBuf) - 1)
-                rxBuf[rxLen++] = c;
-            else
-                rxLen = 0;   // overflow → reset
+    int uart_irq = (PICO_UART_ID == uart0) ? UART0_IRQ : UART1_IRQ;
+    irq_set_exclusive_handler(uart_irq, UartRxIrqHandler);
+    irq_set_enabled(uart_irq, true);
+    uart_set_irq_enables(PICO_UART_ID, true, false);
+}
+
+// ── IRQ handler ──────────────────────────────────────────────
+// Identiek aan de oude SensorHub::UartRxIrqHandler —
+// verzamelt bytes tot '\n', zet dan bericht_klaar.
+void PicoUARTHandler::UartRxIrqHandler()
+{
+    while (uart_is_readable(PICO_UART_ID)) {
+        char c = uart_getc(PICO_UART_ID);
+
+        if (c == '\r') continue;
+
+        if (c == '\n') {
+            rx_buffer[rx_pos] = '\0';
+            rx_pos = 0;
+            bericht_klaar = true;
+        } else if (rx_pos < (int)sizeof(rx_buffer) - 1) {
+            rx_buffer[rx_pos++] = c;
         }
     }
+}
 
-    // 2) Timeout-bewaking: geen CMD ontvangen → stop robot
-    if (hasCmd)
-    {
+// ── ConsumePendingCmd ────────────────────────────────────────
+// Aanroepen elke loop-iteratie.
+// Verwerkt een klaarstaand bericht en geeft CMD door als nodig.
+bool PicoUARTHandler::ConsumePendingCmd(DriveCommand& out)
+{
+    // 1) Verwerk bericht als de IRQ er één klaar heeft gezet
+    if (bericht_klaar) {
+        char regel[64];
+        strncpy(regel, (const char*)rx_buffer, sizeof(regel));
+        bericht_klaar = false;
+        HandleLine(regel);
+    }
+
+    // 2) Geef pending CMD door
+    if (hasPendingCmd) {
+        out           = pendingCmd;
+        hasPendingCmd = false;
+        return true;
+    }
+
+    // 3) Timeout: geen CMD ontvangen → stuur stop
+    if (lastCmdTimeMs > 0) {
         uint32_t now = to_ms_since_boot(get_absolute_time());
-        if ((now - lastCmdTimeMs) > CMD_TIMEOUT_MS)
-        {
-            hasCmd  = false;
-            lastCmd = DriveCommand(0.0f, 0.0f);
-            // Stuur een expliciete stop zodat de robot niet blijft rijden
-            robot.Execute(DriveCommand(0.0f, 0.0f));
+        if ((now - lastCmdTimeMs) > PICO_CMD_TIMEOUT_MS) {
+            lastCmdTimeMs = 0;
+            out = DriveCommand(0.0f, 0.0f);
+            return true;
         }
     }
+
+    return false;
 }
 
-// ─────────────────────────────────────────────
-//  HandleLine  –  verwerk één volledige regel
-// ─────────────────────────────────────────────
-void UARTCommandHandler::HandleLine(const char* line)
+// ── HandleLine ───────────────────────────────────────────────
+void PicoUARTHandler::HandleLine(const char* line)
 {
-    // ── GET-verzoeken (sensordata terugsturen) ──────────────
-    if (strncmp(line, "GET:", 4) == 0)
-    {
+    if (strncmp(line, "GET:", 4) == 0) {
         const char* sensor = line + 4;
-
-        if (strcmp(sensor, "ENCODER") == 0)
-            SendEncoder();
-        else if (strcmp(sensor, "IMU") == 0)
-            SendIMU();
-        else
-        {
-            // Onbekende sensor → foutmelding
-            uart_puts(UART_ID, "ERR:UNKNOWN_SENSOR\n");
-        }
+        if      (strcmp(sensor, "ENCODER") == 0) SendEncoder();
+        else if (strcmp(sensor, "IMU")     == 0) SendIMU();
+        else                                     Send("ERR:UNKNOWN_SENSOR\n");
         return;
     }
 
-    // ── CMD-berichten (DriveCommand ontvangen) ──────────────
-    if (strncmp(line, "CMD:", 4) == 0)
-    {
+    if (strncmp(line, "CMD:", 4) == 0) {
         float lin = 0.0f, ang = 0.0f;
-        if (ParseCmd(line, lin, ang))
-        {
-            lastCmd        = DriveCommand(lin, ang);
-            hasCmd         = true;
-            lastCmdTimeMs  = to_ms_since_boot(get_absolute_time());
+        if (ParseCmd(line, lin, ang)) {
+            pendingCmd    = DriveCommand(lin, ang);
+            hasPendingCmd = true;
+            lastCmdTimeMs = to_ms_since_boot(get_absolute_time());
 
-            // Voer het commando direct uit
-            robot.Execute(lastCmd);
-
-            // Stuur een bevestiging terug (optioneel, handig voor debugging)
             char ack[64];
             snprintf(ack, sizeof(ack), "ACK:%.2f,%.2f\n", lin, ang);
-            uart_puts(UART_ID, ack);
-        }
-        else
-        {
-            uart_puts(UART_ID, "ERR:BAD_CMD\n");
+            Send(ack);
+        } else {
+            Send("ERR:BAD_CMD\n");
         }
         return;
     }
 
-    // Onbekend bericht
-    uart_puts(UART_ID, "ERR:UNKNOWN\n");
+    Send("ERR:UNKNOWN\n");
 }
 
-// ─────────────────────────────────────────────
-//  SendEncoder
-// ─────────────────────────────────────────────
-void UARTCommandHandler::SendEncoder()
+// ── SendEncoder ──────────────────────────────────────────────
+void PicoUARTHandler::SendEncoder()
 {
-    // SensorHub levert snelheid (mm/s) en afstand (mm) per wiel
-    float sL = sensorHub.GetSpeedLeft();
-    float dL = sensorHub.GetDistanceLeft();
-    float sR = sensorHub.GetSpeedRight();
-    float dR = sensorHub.GetDistanceRight();
-
     char buf[96];
-    snprintf(buf, sizeof(buf), "ENCODER:%.3f,%.3f,%.3f,%.3f\n", sL, dL, sR, dR);
-    uart_puts(UART_ID, buf);
+    snprintf(buf, sizeof(buf), "ENCODER:%.2f,%.2f,%.2f,%.2f\n",
+        sensorHub.GetSpeedLeft(),
+        sensorHub.GetDistanceLeft(),
+        sensorHub.GetSpeedRight(),
+        sensorHub.GetDistanceRight());
+    Send(buf);
 }
 
-// ─────────────────────────────────────────────
-//  SendIMU
-// ─────────────────────────────────────────────
-void UARTCommandHandler::SendIMU()
+// ── SendIMU ──────────────────────────────────────────────────
+void PicoUARTHandler::SendIMU()
 {
-    float yawDeg = sensorHub.GetCurrentYaw();
-    float omega  = sensorHub.GetAngVelocity();   // graden/s
-
     char buf[64];
-    snprintf(buf, sizeof(buf), "IMU:%.3f,%.3f\n", yawDeg, omega);
-    uart_puts(UART_ID, buf);
+    snprintf(buf, sizeof(buf), "IMU:%.4f,%.4f\n",
+        sensorHub.GetCurrentYaw(),
+        sensorHub.GetAngVelocity());
+    Send(buf);
 }
 
-// ─────────────────────────────────────────────
-//  ParseCmd  –  "CMD:lin,ang"
-// ─────────────────────────────────────────────
-bool UARTCommandHandler::ParseCmd(const char* line, float& lin, float& ang)
+// ── ParseCmd ─────────────────────────────────────────────────
+bool PicoUARTHandler::ParseCmd(const char* line, float& lin, float& ang)
 {
-    // Verwacht formaat: "CMD:lin,ang"
     const char* data = line + 4;   // sla "CMD:" over
-
     char* endPtr = nullptr;
-    lin = strtof(data, &endPtr);
 
-    if (endPtr == data || *endPtr != ',')
-        return false;
+    lin = strtof(data, &endPtr);
+    if (endPtr == data || *endPtr != ',') return false;
 
     const char* angStart = endPtr + 1;
     ang = strtof(angStart, &endPtr);
-
-    if (endPtr == angStart)
-        return false;
+    if (endPtr == angStart) return false;
 
     return true;
 }
 
-// ─────────────────────────────────────────────
-//  Getters
-// ─────────────────────────────────────────────
-bool UARTCommandHandler::HasActiveCommand() const
+// ── Send ─────────────────────────────────────────────────────
+void PicoUARTHandler::Send(const char* msg)
 {
-    return hasCmd;
-}
-
-DriveCommand UARTCommandHandler::GetLastCommand() const
-{
-    return lastCmd;
+    uart_puts(PICO_UART_ID, msg);
 }

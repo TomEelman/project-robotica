@@ -1,57 +1,82 @@
 #pragma once
 
 // ═══════════════════════════════════════════════════════════════════
-//  UARTCommandHandler  –  Pico-kant UART communicatie
+//  PicoUARTHandler  –  Pico-kant, eigenaar van UART0 + IRQ
 //
-//  Verwerkt twee soorten berichten van de RPi5:
-//    1) "GET:ENCODER\n"  → antwoord met "ENCODER:sL,dL,sR,dR\n"
-//    2) "GET:IMU\n"      → antwoord met "IMU:yawDeg,omega\n"
-//    3) "CMD:lin,ang\n"  → DriveCommand doorsturen naar robot
+//  Vervangt de InitUart() + IRQ die voorheen in SensorHub zaten.
+//  SensorHub blijft ongewijzigd en weet niets van UART.
 //
-//  Gebruik in main-loop (Pico):
-//    UARTCommandHandler uart(robot, sensorHub);
-//    uart.Poll();   // elke 10ms aanroepen
+//  Verwerkt:
+//    "GET:ENCODER\n"  → stuurt "ENCODER:sL,dL,sR,dR\n" terug
+//    "GET:IMU\n"      → stuurt "IMU:yaw,omega\n" terug
+//    "CMD:lin,ang\n"  → slaat DriveCommand op, stuurt "ACK:lin,ang\n"
+//
+//  Gebruik in main (Pico):
+//    PicoUARTHandler uartHandler(sensorHub);
+//    uartHandler.Init();           // één keer, vóór de loop
+//
+//    // In de loop:
+//    DriveCommand cmd(0,0);
+//    if (uartHandler.ConsumePendingCmd(cmd))
+//        robot.Execute(cmd);
 // ═══════════════════════════════════════════════════════════════════
 
-#include "Robot.h"
+#include "hardware/uart.h"
+#include "hardware/irq.h"
+#include "hardware/gpio.h"
+#include "pico/stdlib.h"
 #include "SensorHub.h"
 #include "DriveCommand.h"
 
-// Timeout in ms: als er langer geen CMD binnenkomt → stop robot
-static constexpr uint32_t CMD_TIMEOUT_MS = 500;
+#define PICO_UART_ID     uart0
+#define PICO_UART_BAUD   115200
+#define PICO_UART_TX_PIN 0
+#define PICO_UART_RX_PIN 1
 
-class UARTCommandHandler {
+// Timeout: geen CMD ontvangen binnen deze tijd → stop-commando
+static constexpr uint32_t PICO_CMD_TIMEOUT_MS = 500;
+
+class PicoUARTHandler {
 public:
-    UARTCommandHandler(Robot& robot, SensorHub& sensorHub);
+    explicit PicoUARTHandler(SensorHub& sensorHub);
 
-    // Aanroepen elke loop-iteratie (~10ms).
-    // Leest UART, dispatcht GET-verzoeken en CMD-commando's.
-    void Poll();
+    // Initialiseer UART0 en installeer de IRQ.
+    // Aanroepen vóór de main-loop, NA constructie van SensorHub.
+    void Init();
 
-    // Geeft true als er recentelijk een geldig CMD ontvangen is
-    bool HasActiveCommand() const;
+    // Aanroepen elke loop-iteratie (~10 ms).
+    // Verwerkt een bericht als de IRQ er één klaar heeft gezet.
+    // Geeft een stop-commando als de CMD-timeout verstreken is.
+    // Geeft true + vult 'out' als er actie nodig is.
+    bool ConsumePendingCmd(DriveCommand& out);
 
-    // Geeft het laatste ontvangen DriveCommand terug
-    DriveCommand GetLastCommand() const;
+    // Statische IRQ-handler (public: vereist door irq_set_exclusive_handler)
+    static void UartRxIrqHandler();
 
 private:
-    Robot&      robot;
-    SensorHub&  sensorHub;
+    SensorHub& sensorHub;
 
-    char        rxBuf[128];
-    int         rxLen;
-
-    DriveCommand lastCmd;
-    bool         hasCmd;
+    // Gepend commando
+    DriveCommand pendingCmd;
+    bool         hasPendingCmd;
     uint32_t     lastCmdTimeMs;
 
-    // Parse een volledige regel en reageer
+    // IRQ-gedeelde ontvangstbuffer (static zodat de IRQ erbij kan)
+    static volatile char rx_buffer[64];
+    static volatile int  rx_pos;
+    static volatile bool bericht_klaar;
+    static PicoUARTHandler* instance;
+
+    // Verwerk één volledige regel
     void HandleLine(const char* line);
 
-    // Stuur sensor-antwoorden terug over UART0
+    // Stuur sensor-antwoorden
     void SendEncoder();
     void SendIMU();
 
     // Parse "CMD:lin,ang"
     bool ParseCmd(const char* line, float& lin, float& ang);
+
+    // Stuur een string terug over UART
+    void Send(const char* msg);
 };
