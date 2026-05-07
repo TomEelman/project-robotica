@@ -342,7 +342,7 @@ static Position KiesFrontierDoel(const Mapper& mapper, const Position& huidig)
 // Kijkt in een kegel van ±HOEK_DEG graden voor de robot,
 // binnen AFSTAND_MM mm. Geeft true als er een OCCUPIED cel in zit.
 static bool ObstakelVooruit(const Mapper& mapper, const Position& pos,
-                             float afstandMm = 400.0f, float hoekDeg = 25.0f)
+                             float afstandMm = 600.0f, float hoekDeg = 30.0f)
 {
     float theta   = pos.GetTheta();   // radialen
     float hoekRad = hoekDeg * (3.14159265f / 180.0f);
