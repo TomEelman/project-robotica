@@ -224,8 +224,10 @@ bool GridMap::SavePGMCropped(const std::string& filename, float margin_m) const 
     for (int y = 0; y < height; ++y)
         for (int x = 0; x < width; ++x)
             if (!IsUnknown(x, y)) {
-                if (x < minX) minX = x;  if (x > maxX) maxX = x;
-                if (y < minY) minY = y;  if (y > maxY) maxY = y;
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
             }
 
     if (maxX < 0) return SavePGM(filename);  // niets gescand
@@ -780,4 +782,3 @@ bool GridMap::SavePGMCropped(const std::string& filename, float margin_m) const 
              static_cast<std::streamsize>(img.size()));
 
     return true;
-}
