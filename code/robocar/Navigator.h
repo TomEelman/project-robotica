@@ -35,8 +35,8 @@ private:
     // Hoekfout waarbij we beginnen af te remmen (in radialen).
     // 20 graden is een goede startwaarde — verhoog als je nog overshoot hebt,
     // verlaag als hij te vroeg afzwakt en traag naar de heading kruipt.
-    static const float PI             = 3.14159265358979f;
-    static const float BRAKE_ZONE_RAD = 20.0f * (PI / 180.0f);
+    static constexpr float PI             = 3.14159265358979f;
+    static constexpr float BRAKE_ZONE_RAD = 20.0f * (PI / 180.0f);
 
 
     // Minimale angular velocity in de remzone — moet groot genoeg zijn om de
