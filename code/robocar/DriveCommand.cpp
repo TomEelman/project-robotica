@@ -1,17 +1,10 @@
 #include "DriveCommand.h"
 
-DriveCommand::DriveCommand(float L, float A)
+DriveCommand::DriveCommand(float linearVelocity, float angularVelocity)
+    : linearVelocity(linearVelocity),
+      angularVelocity(angularVelocity)
 {
-    linearVelocity = L;
-    angularVelocity = A;
 }
 
-float DriveCommand::GetLinVelocity() const
-{
-    return linearVelocity;
-}
-
-float DriveCommand::GetAngVelocity() const
-{
-    return angularVelocity;
-}
+float DriveCommand::GetLinVelocity() const { return linearVelocity;  }
+float DriveCommand::GetAngVelocity() const { return angularVelocity; }

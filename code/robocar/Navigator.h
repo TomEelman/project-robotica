@@ -4,7 +4,6 @@
 #include "Position.h"
 #include "GridMap.h"
 #include "DriveCommand.h"
-
 class Navigator {
 public:
     Navigator();
@@ -32,6 +31,18 @@ private:
 
     // Maximum draaisnelheid
     static constexpr float MAX_ANGULAR_DEG_S    = 90.0f;
+
+    // Hoekfout waarbij we beginnen af te remmen (in radialen).
+    // 20 graden is een goede startwaarde — verhoog als je nog overshoot hebt,
+    // verlaag als hij te vroeg afzwakt en traag naar de heading kruipt.
+    static const float PI             = 3.14159265358979f;
+    static const float BRAKE_ZONE_RAD = 20.0f * (PI / 180.0f);
+
+
+    // Minimale angular velocity in de remzone — moet groot genoeg zijn om de
+    // Pico-motors nog te laten bewegen (boven stall), maar klein genoeg om
+    // de overshoot te beperken.
+    static constexpr float MIN_ANGULAR_DEG_S = 15.0f;
 
     // Pas als de hoekfout groter is dan dit stopt hij met vooruitrijden
     // 0.25 rad ≈ 14° — snel genoeg voor soepele bochten

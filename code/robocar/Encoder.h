@@ -1,24 +1,13 @@
 #ifndef ENCODER_H
 #define ENCODER_H
+
 #include "pico/stdlib.h"
 
 class Encoder {
-
-private:
-    int GPIO;
-    int GPIOPinRes;
-    float LinearVelocity;
-    float DistanceMm;        // nieuw: voor afstand bijhouden
-    int pulsesWithResolution;
-    bool Updated;
-    uint64_t lastTime;
-    int lastPulseCount;
-    uint64_t lastPulseTime;
-    bool freshData;
-
 public:
-    Encoder(int GPIOPin, int GPIOPinRes);
+    Encoder(int gpioPin, int gpioPinRes);
 
+    // Returns true when a new velocity sample was produced (once per UPDATE_INTERVAL_US).
     bool Update();
     void Reset();
 
@@ -26,9 +15,26 @@ public:
     float GetDistanceMm()  const;
     int   GetGpio()        const;
     int   GetGpioPinRes()  const;
-    // In Encoder.h
-    bool HasFreshData() const { return freshData; }
-    void ConsumeFreshFlag() { freshData = false; }
+
+    // True if Update() produced a new sample since the last ConsumeFreshFlag() call.
+    // Used by Drive to avoid re-running PID on stale encoder data.
+    bool HasFreshData()     const { return freshData; }
+    void ConsumeFreshFlag()       { freshData = false; }
+
+private:
+    int      gpio;
+    int      gpioPinRes;
+    int      pulsesPerRotation;
+
+    float    linearVelocity;
+    float    distanceMm;
+
+    int      lastPulseCount;
+    uint64_t lastTime;
+    uint64_t lastPulseTime;
+
+    bool     updated;
+    bool     freshData;
 };
 
 #endif
