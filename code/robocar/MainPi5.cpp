@@ -299,12 +299,12 @@ static Position KiesFrontierDoel(const Mapper& mapper, const Position& huidig)
     float bestWx   = huidig.GetX();
     float bestWy   = huidig.GetY();
 
-    int W = mapper.GetGridMap().GetWidth();
-    int H = mapper.GetGridMap().GetHeight();
+    int W = mapper.GetMap().GetWidth();
+    int H = mapper.GetMap().GetHeight();
 
     for (int cy = 0; cy < H; ++cy) {
         for (int cx = 0; cx < W; ++cx) {
-            if (!mapper.GetGridMap().IsFree(cx, cy)) continue;
+            if (!mapper.GetMap().IsFree(cx, cy)) continue;
 
             // Moet minstens één UNKNOWN buur hebben (frontier voorwaarde)
             bool heeftOnbekendeBuur = false;
@@ -312,8 +312,8 @@ static Position KiesFrontierDoel(const Mapper& mapper, const Position& huidig)
             const int dy[4] = {0,0,-1,1};
             for (int d = 0; d < 4; ++d) {
                 int nx = cx + dx[d], ny = cy + dy[d];
-                if (mapper.GetGridMap().InBounds(nx, ny) &&
-                    mapper.GetGridMap().IsUnknown(nx, ny)) {
+                if (mapper.GetMap().InBounds(nx, ny) &&
+                    mapper.GetMap().IsUnknown(nx, ny)) {
                     heeftOnbekendeBuur = true;
                     break;
                 }
@@ -321,7 +321,7 @@ static Position KiesFrontierDoel(const Mapper& mapper, const Position& huidig)
             if (!heeftOnbekendeBuur) continue;
 
             float wx, wy;
-            mapper.GetGridMap().CellToWorld(cx, cy, wx, wy);
+            mapper.GetMap().CellToWorld(cx, cy, wx, wy);
 
             float dx2 = wx - huidig.GetX();
             float dy2 = wy - huidig.GetY();
@@ -358,10 +358,10 @@ static bool ObstakelVooruit(const Mapper& mapper, const Position& pos,
             float wy = pos.GetY() + r * std::sin(theta + offset);
 
             int cx, cy;
-            mapper.GetGridMap().WorldToCell(wx, wy, cx, cy);
+            mapper.GetMap().WorldToCell(wx, wy, cx, cy);
 
-            if (mapper.GetGridMap().InBounds(cx, cy) &&
-                mapper.GetGridMap().IsOccupied(cx, cy))
+            if (mapper.GetMap().InBounds(cx, cy) &&
+                mapper.GetMap().IsOccupied(cx, cy))
                 return true;
         }
     }
@@ -389,7 +389,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
     int      scansSindsHerplan = 0;
 
     // Pathfinding objecten
-    PathPlanner planner(mapper.GetGridMap());
+    PathPlanner planner(mapper.GetMap());
     Navigator   navigator;
     bool        heeftPad   = false;
 
@@ -500,9 +500,9 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
 
                 // Debug: robotpositie in wereldcoördinaten en gridcel
                 int robotCx = 0, robotCy = 0;
-                mapper.GetGridMap().WorldToCell(pos.GetX(), pos.GetY(), robotCx, robotCy);
-                bool robotCelVrij = mapper.GetGridMap().InBounds(robotCx, robotCy) &&
-                                    mapper.GetGridMap().IsFree(robotCx, robotCy);
+                mapper.GetMap().WorldToCell(pos.GetX(), pos.GetY(), robotCx, robotCy);
+                bool robotCelVrij = mapper.GetMap().InBounds(robotCx, robotCy) &&
+                                    mapper.GetMap().IsFree(robotCx, robotCy);
                 printf("[AUTO] pos=(%.0f,%.0f)mm  cel=(%d,%d)  vrij=%s  dekking=%d%%\n",
                        pos.GetX(), pos.GetY(), robotCx, robotCy,
                        robotCelVrij ? "ja" : "NEE", mapper.GetCoverage());
@@ -519,7 +519,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
                     printf("[AUTO] Frontier doel=(%.0f,%.0f)mm\n",
                            doel.GetX(), doel.GetY());
 
-                    Path pad = planner.PlanPath(pos, doel, mapper.GetGridMap());
+                    Path pad = planner.PlanPath(pos, doel, mapper.GetMap());
 
                     if (!pad.IsEmpty()) {
                         navigator.SetPath(pad);
