@@ -54,10 +54,11 @@ void Localisation::Predict(float vLeft, float vRight, float dt)
 
 // ── EKF update-stap (IMU yaw) ─────────────────────────────────────
 // BUGFIX: origineel gebruikte 'y' als zowel lokale variabele als lidvariabele.
-void Localisation::UpdateIMU(float imuYaw, float /*dt*/)
+void Localisation::UpdateIMU(float imuYawDeg, float /*dt*/)
 {
     // Innovatie (hoekfout)
-    float innov = imuYaw - theta;
+     float imuYawRad = imuYawDeg * (static_cast<float>(M_PI) / 180.0f);
+    float innov = imuYawRad - theta;
 
     // Normaliseer naar (-π, π]
     while (innov >  M_PI) innov -= 2.0f * static_cast<float>(M_PI);
@@ -85,4 +86,4 @@ void Localisation::UpdateIMU(float imuYaw, float /*dt*/)
 
 float Localisation::GetX()     const { return x;     }
 float Localisation::GetY()     const { return y;     }
-float Localisation::GetTheta() const { return theta; }
+float Localisation::GetTheta() const { return theta * (180.0f / static_cast<float>(M_PI)); }

@@ -28,15 +28,15 @@ set(PICO_BOARD pico_w CACHE STRING "Board type")
 # Pull in Raspberry Pi Pico SDK (must be before project)
 include(pico_sdk_import.cmake)
 
-project(ProjectRoboticz C CXX ASM)
+project(ProjectRobotica C CXX ASM)
 
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
 
-add_executable(ProjectRoboticz
-    ProjectRoboticz.cpp
+add_executable(MainPico
+    MainPico.cpp
     Encoder.cpp
     IMU.cpp
     SensorHub.cpp
@@ -48,20 +48,20 @@ add_executable(ProjectRoboticz
     Localisation.cpp     
 )
 
-pico_set_program_name(ProjectRoboticz "ProjectRoboticz")
-pico_set_program_version(ProjectRoboticz "0.1")
+pico_set_program_name(MainPico "MainPico")
+pico_set_program_version(MainPico "0.1")
 
 # voor uitlezen op mijn laptop
-pico_enable_stdio_uart(ProjectRoboticz 1)
-pico_enable_stdio_usb(ProjectRoboticz 0)
+pico_enable_stdio_uart(MainPico 1)
+pico_enable_stdio_usb(MainPico 0)
 
 
 # voor samen met RPI5
-#pico_enable_stdio_uart(ProjectRoboticz 0)
-#pico_enable_stdio_usb(ProjectRoboticz 1)
+#pico_enable_stdio_uart(MainPico 0)
+#pico_enable_stdio_usb(MainPico 1)
 
 # Add the standard library to the build
-target_link_libraries(ProjectRoboticz
+target_link_libraries(MainPico
         pico_stdlib
         hardware_pwm
         hardware_gpio
@@ -71,9 +71,9 @@ target_link_libraries(ProjectRoboticz
     )
 
 # Add the standard include files to the build
-target_include_directories(ProjectRoboticz PRIVATE
+target_include_directories(MainPico PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}
 )
 
-pico_add_extra_outputs(ProjectRoboticz)
+pico_add_extra_outputs(MainPico)
 

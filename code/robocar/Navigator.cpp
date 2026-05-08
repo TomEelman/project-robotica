@@ -46,30 +46,26 @@ DriveCommand Navigator::GetNextCommand(Position current) {
         return DriveCommand(0.0f, 0.0f);
 
     float dist     = CalculateDistance(current, currentTarget);
-    float angleErr = CalculateAngleError(current, currentTarget);
+    float angleErr = CalculateAngleError(current, currentTarget); // graden [-180, 180]
 
     if (dist < REACHED_THRESHOLD_MM)
         return DriveCommand(0.0f, 0.0f);
 
-    // Schaal angular velocity af naarmate de hoekfout kleiner wordt.
-    // BRAKE_ZONE_RAD is de zone waarin we beginnen af te remmen.
-    // Buiten die zone: volle snelheid. Binnen: lineair afschalen naar MIN.
     float absErr = std::fabs(angleErr);
     float angularDegS;
 
-    if (absErr > BRAKE_ZONE_RAD) {
-        // Buiten remzone: volle snelheid
+    if (absErr > BRAKE_ZONE_DEG) {
         angularDegS = MAX_ANGULAR_DEG_S;
     } else {
-        // Binnen remzone: lineair afschalen tussen MIN en MAX
-        float scale = absErr / BRAKE_ZONE_RAD;
+        // Lineair afschalen van MAX naar MIN binnen de remzone.
+        float scale = absErr / BRAKE_ZONE_DEG;
         angularDegS = MIN_ANGULAR_DEG_S + scale * (MAX_ANGULAR_DEG_S - MIN_ANGULAR_DEG_S);
     }
 
-    // Teken bewaren
     if (angleErr < 0.0f) angularDegS = -angularDegS;
 
-    float linearMmS = (absErr > ANGLE_THRESHOLD_RAD) ? 0.0f : LINEAR_SPEED_MM_S;
+    // Rijd alleen vooruit als de hoekfout klein genoeg is.
+    float linearMmS = (absErr > ANGLE_THRESHOLD_DEG) ? 0.0f : LINEAR_SPEED_MM_S;
 
     return DriveCommand(linearMmS, angularDegS);
 }
@@ -91,16 +87,17 @@ float Navigator::CalculateDistance(Position a, Position b) const {
     return std::sqrt(dx * dx + dy * dy);
 }
 
-float Navigator::CalculateAngleError(Position current, Position target) {
+float Navigator::CalculateAngleError(Position current, Position target) const {
     float dx      = target.GetX() - current.GetX();
     float dy      = target.GetY() - current.GetY();
-    float desired = std::atan2(dy, dx);
-    return NormalizeRad(desired - current.GetTheta());
+    // atan2 geeft radialen — direct omzetten naar graden.
+    float desired = std::atan2(dy, dx) * (180.0f / static_cast<float>(M_PI));
+    float theta   = current.GetTheta(); // verwacht graden van de IMU
+    return NormalizeDeg(desired - theta);
 }
 
-float Navigator::NormalizeRad(float a) {
-    const float PI = static_cast<float>(M_PI);
-    while (a >  PI) a -= 2.0f * PI;
-    while (a < -PI) a += 2.0f * PI;
-    return a;
+float Navigator::NormalizeDeg(float deg) const {
+    while (deg >  180.0f) deg -= 360.0f;
+    while (deg < -180.0f) deg += 360.0f;
+    return deg;
 }
