@@ -140,16 +140,13 @@ bool GridMap::IsUnknown(int cx, int cy) const {
 }
 
 bool GridMap::IsPathValid(Path path) const {
-    // Waypoints zijn in mm (zie Path.h) → omzetten naar meter voor WorldToCell
-    constexpr float MM2M = 0.001f;
-
     while (!path.IsEmpty()) {
-        Position wp = path.GetCurrentWaypoint();
+        Position p = path.GetNextPoint();
         int cx, cy;
-        WorldToCell(wp.GetX() * MM2M, wp.GetY() * MM2M, cx, cy);
+        WorldToCell(p.GetX(), p.GetY(), cx, cy);
 
-        if (!InBounds(cx, cy))  return false;
-        if (IsOccupied(cx, cy)) return false;
+        if (!InBounds(cx, cy))   return false;
+        if (IsOccupied(cx, cy))  return false;
 
         path.Advance();
     }
@@ -187,8 +184,7 @@ void GridMap::Clear() {
     binaryDirty = true;
 }
 
-//  SavePGM  –  debug visualisatie
-//  wit=vrij, zwart=bezet, grijs=onbekend
+//  SavePGM  –  volledige kaart, wit=vrij, zwart=bezet, grijs=onbekend
 
 bool GridMap::SavePGM(const std::string& filename) const {
     std::ofstream f(filename, std::ios::binary);
@@ -196,15 +192,195 @@ bool GridMap::SavePGM(const std::string& filename) const {
 
     f << "P5\n" << width << " " << height << "\n255\n";
 
-    for (int y = height - 1; y >= 0; --y) {   // PGM: rij 0 = onderkant
+    for (int y = height - 1; y >= 0; --y) {
         for (int x = 0; x < width; ++x) {
             int8_t v = logOdds[y][x];
             uint8_t px;
-            if      (v >= CELL_OCCUPIED) px = 0;    // zwart  = muur
-            else if (v <= CELL_FREE)     px = 255;  // wit    = vrij
-            else                          px = 127;  // grijs  = onbekend
+            if      (v >= CELL_OCCUPIED) px = 0;
+            else if (v <= CELL_FREE)     px = 255;
+            else                          px = 127;
             f.put(static_cast<char>(px));
         }
     }
+    return true;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  SavePGMCropped  –  bijgesneden kaart met schaalbalken
+//
+//  Werking:
+//    1. Zoek de bounding box van alle bekende cellen (vrij + bezet)
+//    2. Voeg een marge toe rondom dit gebied
+//    3. Schrijf een PPM (kleur) zodat de schaalbalken rood kunnen zijn
+//    4. Schaalbalken: horizontaal (breedte) + vertikaal (hoogte) in meter
+//       getekend als rode lijn met witte achtergrond onder de kaart
+// ═══════════════════════════════════════════════════════════════════
+
+bool GridMap::SavePGMCropped(const std::string& filename, float margin_m) const {
+    // ── Stap 1: bounding box van bekende cellen ───────────────────
+    int minX = width,  maxX = -1;
+    int minY = height, maxY = -1;
+
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            if (!IsUnknown(x, y)) {
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+            }
+        }
+    }
+
+    if (maxX < 0) {
+        // Niets gescand — schrijf lege kaart
+        return SavePGM(filename);
+    }
+
+    // ── Stap 2: marge toevoegen ───────────────────────────────────
+    int margin_cells = static_cast<int>(margin_m / resolution) + 1;
+    int x0 = std::max(0,       minX - margin_cells);
+    int y0 = std::max(0,       minY - margin_cells);
+    int x1 = std::min(width,   maxX + margin_cells + 1);
+    int y1 = std::min(height,  maxY + margin_cells + 1);
+
+    int cropW = x1 - x0;
+    int cropH = y1 - y0;
+
+    // ── Afmetingen in meters berekenen ────────────────────────────
+    float realW_m = static_cast<float>(cropW) * resolution;
+    float realH_m = static_cast<float>(cropH) * resolution;
+
+    // ── Stap 3: schaalbalken ──────────────────────────────────────
+    // Schaalblok: 30 pixels hoog, balk = 1 meter breed in pixels
+    int scaleBarH   = 30;
+    int pixPerMeter = static_cast<int>(1.0f / resolution);  // cellen per meter
+    int totalH      = cropH + scaleBarH;
+
+    // Schrijf als PPM (P6, kleur) zodat schaalbalken rood zijn
+    std::ofstream f(filename, std::ios::binary);
+    if (!f) return false;
+
+    f << "P6\n";
+    f << "# Kaart  breedte=" << realW_m << "m  hoogte=" << realH_m << "m\n";
+    f << "# Schaal: 1 pixel = " << resolution * 100.0f << " cm\n";
+    f << cropW << " " << totalH << "\n255\n";
+
+    // ── Kaartpixels ───────────────────────────────────────────────
+    for (int y = y1 - 1; y >= y0; --y) {   // PGM: Y van boven naar onder
+        for (int x = x0; x < x1; ++x) {
+            uint8_t px;
+            if      (!InBounds(x, y))          px = 200;  // buiten grid = lichtgrijs
+            else if (logOdds[y][x] >= CELL_OCCUPIED) px = 0;    // muur = zwart
+            else if (logOdds[y][x] <= CELL_FREE)     px = 255;  // vrij = wit
+            else                                      px = 160;  // onbekend = grijs
+            // RGB: grijs tint
+            f.put(static_cast<char>(px));
+            f.put(static_cast<char>(px));
+            f.put(static_cast<char>(px));
+        }
+    }
+
+    // ── Schaalblok: witte achtergrond ─────────────────────────────
+    for (int sy = 0; sy < scaleBarH; ++sy) {
+        for (int sx = 0; sx < cropW; ++sx) {
+            f.put(static_cast<char>(240));  // lichtgrijs
+            f.put(static_cast<char>(240));
+            f.put(static_cast<char>(240));
+        }
+    }
+
+    // ── Schaalbalken opnieuw schrijven als rode lijn ──────────────
+    // We gaan terug naar het begin van het schaalblok en overschrijven
+    // Simpelere aanpak: bouw schaalblok als pixel-buffer
+
+    // Heropen als we kunnen, maar we gebruiken een buffer
+    f.close();
+
+    // Herbouw het schaalblok als buffer
+    int totalPixels = cropW * totalH * 3;
+    std::vector<uint8_t> img(static_cast<size_t>(totalPixels), 240);
+
+    // Kaartpixels in buffer
+    for (int y = y1 - 1; y >= y0; --y) {
+        int row = (y1 - 1 - y);   // rij in output (0 = bovenkant)
+        for (int x = x0; x < x1; ++x) {
+            int col = x - x0;
+            int idx = (row * cropW + col) * 3;
+            uint8_t px;
+            if      (!InBounds(x, y))                    px = 200;
+            else if (logOdds[y][x] >= CELL_OCCUPIED)     px = 0;
+            else if (logOdds[y][x] <= CELL_FREE)         px = 255;
+            else                                          px = 160;
+            img[static_cast<size_t>(idx)]     = px;
+            img[static_cast<size_t>(idx + 1)] = px;
+            img[static_cast<size_t>(idx + 2)] = px;
+        }
+    }
+
+    // Schaalblok: witte achtergrond al ingevuld (240)
+    // Teken rode horizontale balk voor breedte (1 meter)
+    {
+        int barRow  = cropH + scaleBarH / 2;   // midden van schaalblok
+        int barStartX = 10;
+        int barEndX   = barStartX + pixPerMeter;
+        if (barEndX > cropW) barEndX = cropW - 10;
+
+        // Rode balk (3 pixels dik)
+        for (int thick = -1; thick <= 1; ++thick) {
+            int r = barRow + thick;
+            if (r < 0 || r >= totalH) continue;
+            for (int sx = barStartX; sx < barEndX; ++sx) {
+                int idx = (r * cropW + sx) * 3;
+                img[static_cast<size_t>(idx)]     = 220;  // R
+                img[static_cast<size_t>(idx + 1)] = 50;   // G
+                img[static_cast<size_t>(idx + 2)] = 50;   // B
+            }
+        }
+        // Eindstreepjes
+        for (int thick = -5; thick <= 5; ++thick) {
+            auto markCol = [&](int col) {
+                if (col < 0 || col >= cropW) return;
+                int idx = (barRow * cropW + col) * 3;
+                img[static_cast<size_t>(idx)]     = 220;
+                img[static_cast<size_t>(idx + 1)] = 50;
+                img[static_cast<size_t>(idx + 2)] = 50;
+            };
+            markCol(barStartX + thick);
+            markCol(barEndX   + thick);
+        }
+    }
+
+    // Teken rode verticale balk voor hoogte (1 meter)
+    {
+        int barColCenter = cropW - 20;
+        int barStartY    = cropH + 5;
+        int barEndY      = barStartY + pixPerMeter;
+        if (barEndY > totalH) barEndY = totalH - 2;
+
+        for (int thick = -1; thick <= 1; ++thick) {
+            int c = barColCenter + thick;
+            if (c < 0 || c >= cropW) continue;
+            for (int sy = barStartY; sy < barEndY; ++sy) {
+                int idx = (sy * cropW + c) * 3;
+                img[static_cast<size_t>(idx)]     = 50;
+                img[static_cast<size_t>(idx + 1)] = 100;
+                img[static_cast<size_t>(idx + 2)] = 220;  // blauw voor hoogte
+            }
+        }
+    }
+
+    // Schrijf buffer naar bestand
+    std::ofstream f2(filename, std::ios::binary);
+    if (!f2) return false;
+
+    f2 << "P6\n";
+    f2 << "# Kaart  breedte=" << realW_m << "m  hoogte=" << realH_m << "m\n";
+    f2 << "# Rode balk = 1m horizontaal  |  Blauwe balk = 1m verticaal\n";
+    f2 << "# Schaal: 1 pixel = " << resolution * 100.0f << " cm\n";
+    f2 << cropW << " " << totalH << "\n255\n";
+    f2.write(reinterpret_cast<const char*>(img.data()),
+             static_cast<std::streamsize>(img.size()));
+
     return true;
 }

@@ -8,6 +8,8 @@ Mapper::Mapper(int width, int height, float resolution)
 {
 }
 
+// ── Scan-verwerking ───────────────────────────────────────────────
+
 void Mapper::Update(const float ranges[], const float angles[],
                     int count, const Position& position)
 {
@@ -30,10 +32,12 @@ void Mapper::Update(const float scan360[], const Position& position) {
     Update(scan360, angles, 360, position);
 }
 
+// ── Visualisatie ──────────────────────────────────────────────────
+
 void Mapper::PrintMap(float robotX, float robotY,
                       int scanCount, int coverage) const
 {
-    constexpr int WIN_W = 62, WIN_H = 24;
+    constexpr int WIN_W = 124, WIN_H = 24;
 
     int rx, ry;
     map.WorldToCell(robotX, robotY, rx, ry);
@@ -61,14 +65,16 @@ void Mapper::PrintMap(float robotX, float robotY,
     std::cout << "══╝\n";
 }
 
+// ── Queries ───────────────────────────────────────────────────────
+
 int Mapper::GetCoverage() const {
     return static_cast<int>(map.GetCoveragePercent());
 }
 
 GridMap&       Mapper::GetMap()       { return map; }
 const GridMap& Mapper::GetMap() const { return map; }
-const GridMap& Mapper::GetGridMap() const { return map; }
 
 bool Mapper::SaveDebugMap(const std::string& filename) const {
-    return map.SavePGM(filename);
+    // SavePGMCropped: bijgesneden op verkend gebied + schaalbalken
+    return map.SavePGMCropped(filename);
 }
