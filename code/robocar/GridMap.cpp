@@ -141,7 +141,7 @@ bool GridMap::IsUnknown(int cx, int cy) const {
 
 bool GridMap::IsPathValid(Path path) const {
     while (!path.IsEmpty()) {
-        Position p = path.GetNextPoint();
+        Position p = path.GetCurrentWaypoint();
         int cx, cy;
         WorldToCell(p.GetX(), p.GetY(), cx, cy);
 
