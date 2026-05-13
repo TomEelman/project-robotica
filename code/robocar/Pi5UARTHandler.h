@@ -53,6 +53,7 @@ public:
     bool RebootPico();
 
     const std::string& GetPort() const { return port; }
+    int  GetFd()   const { return fd; }  // voor async-signal-safe noodstop
 
 private:
     std::string port;

@@ -24,7 +24,9 @@ bool Pi5UARTHandler::Open() {
         return false;
     }
     if (!ConfigureerPoort()) { Close(); return false; }
-    std::cout << "UART geopend op " << port << " (non-blocking, push-model)\n";
+    // Flush oude rommel uit de buffer
+    tcflush(fd, TCIOFLUSH);
+    std::cout << "UART geopend op " << port << "\n";
     return true;
 }
 
@@ -49,7 +51,7 @@ bool Pi5UARTHandler::ConfigureerPoort() {
     tty.c_oflag &= ~OPOST;
     tty.c_lflag  = 0;
 
-    // Non-blocking: geeft meteen terug wat er is
+    // Non-blocking lezen
     tty.c_cc[VMIN]  = 0;
     tty.c_cc[VTIME] = 0;
 
@@ -66,10 +68,9 @@ void Pi5UARTHandler::Close() {
 
 bool Pi5UARTHandler::IsOpen() const { return fd >= 0; }
 
-// ── LeesData  —  non-blocking, verwerkt alle beschikbare bytes ──
-// Herkent DATA: pakketten van de nieuwe Pico firmware.
-// Logt onbekende regels naar stderr zodat je kunt zien wat de
-// Pico stuurt als hij nog de oude firmware heeft.
+// ── LeesData ─────────────────────────────────────────────────────
+// Non-blocking. Leest byte voor byte, bouwt regels op.
+// Herkent DATA: pakketten. Logt alles anders naar stderr.
 bool Pi5UARTHandler::LeesData() {
     if (!IsOpen()) return false;
 
@@ -81,20 +82,19 @@ bool Pi5UARTHandler::LeesData() {
 
         if (c == '\n') {
             lineBuffer[linePos] = '\0';
-
             if (linePos > 0) {
                 if (ParseDataRegel(lineBuffer)) {
                     hadData = true;
-                } else {
-                    // Log alles wat niet DATA: is — helpt debuggen welke
-                    // firmware op de Pico staat
-                    fprintf(stderr, "[Pico→Pi5] %s\n", lineBuffer);
+                } else if (linePos > 2) {
+                    // Log naar stderr zodat je kunt zien wat de Pico stuurt
+                    fprintf(stderr, "[Pico] %s\n", lineBuffer);
                 }
             }
             linePos = 0;
         } else if (linePos < (int)sizeof(lineBuffer) - 1) {
             lineBuffer[linePos++] = c;
         } else {
+            // Buffer vol zonder newline — sync verloren, reset
             linePos = 0;
         }
     }
@@ -113,6 +113,11 @@ bool Pi5UARTHandler::ParseDataRegel(const char* regel) {
     float yaw   = strtof(p, &end); if (end == p || *end != ',') return false; p = end + 1;
     float omega = strtof(p, &end); if (end == p)                return false;
 
+    // Sanity check — gooi onmogelijke waarden weg
+    if (encL < -5000.0f || encL > 5000.0f) return false;
+    if (encR < -5000.0f || encR > 5000.0f) return false;
+    if (yaw  <  -360.0f || yaw  >  360.0f) return false;
+
     lastData.speedLinks   = encL;
     lastData.speedRechts  = encR;
     lastData.yawGraden    = yaw;
@@ -121,31 +126,38 @@ bool Pi5UARTHandler::ParseDataRegel(const char* regel) {
     return true;
 }
 
-// ── StuurCommand  —  fire-and-forget, geen ACK-wait ──────────
+// ── StuurCommand ─────────────────────────────────────────────────
 void Pi5UARTHandler::StuurCommand(float lin, float ang) {
     if (!IsOpen()) return;
-    char buf[64];
-    snprintf(buf, sizeof(buf), "CMD:%.3f,%.3f\n", lin, ang);
+    char buf[48];
+    snprintf(buf, sizeof(buf), "CMD:%.1f,%.1f\n", lin, ang);
     write(fd, buf, strlen(buf));
 }
 
+// ── StuurStop ────────────────────────────────────────────────────
+// Stuurt zowel "STOP\n" als "CMD:0.0,0.0\n" voor maximale kans
+// dat de Pico stopt — zelfs als één pakket verloren gaat.
 void Pi5UARTHandler::StuurStop() {
+    if (!IsOpen()) return;
+    const char* stop = "STOP\n";
+    write(fd, stop, strlen(stop));
+    usleep(5000);
     StuurCommand(0.0f, 0.0f);
 }
 
 bool Pi5UARTHandler::RebootPico() {
     if (!IsOpen()) return false;
+    tcflush(fd, TCIOFLUSH);
     const char* msg = "REBOOT\n";
     write(fd, msg, strlen(msg));
-    usleep(150000);
+    usleep(200000);
 
-    // Lees alles wat er in de buffer zit en zoek naar ACK:REBOOT
-    char buf[128];
+    char buf[64];
     ssize_t n = read(fd, buf, sizeof(buf) - 1);
     if (n > 0) {
         buf[n] = '\0';
         if (strstr(buf, "ACK:REBOOT")) {
-            std::cout << "Pi5UARTHandler: Pico reboot bevestigd\n";
+            std::cout << "Pico reboot bevestigd\n";
             return true;
         }
     }

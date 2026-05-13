@@ -4,10 +4,10 @@
 #include <cstdio>
 #include "hardware/watchdog.h"
 
-volatile char    PicoUARTHandler::rx_buffer[64] = {0};
-volatile int     PicoUARTHandler::rx_pos        = 0;
-volatile bool    PicoUARTHandler::bericht_klaar = false;
-PicoUARTHandler* PicoUARTHandler::instance      = nullptr;
+volatile char    PicoUARTHandler::rx_buffer[128] = {0};
+volatile int     PicoUARTHandler::rx_pos         = 0;
+volatile bool    PicoUARTHandler::bericht_klaar  = false;
+PicoUARTHandler* PicoUARTHandler::instance       = nullptr;
 
 PicoUARTHandler::PicoUARTHandler(SensorHub& sensorHub)
     : sensorHub(sensorHub)
@@ -34,7 +34,6 @@ void PicoUARTHandler::Init()
     uart_set_irq_enables(PICO_UART_ID, true, false);
 }
 
-// ── IRQ: verzamel bytes tot '\n' ─────────────────────────────
 void PicoUARTHandler::UartRxIrqHandler()
 {
     while (uart_is_readable(PICO_UART_ID)) {
@@ -46,17 +45,20 @@ void PicoUARTHandler::UartRxIrqHandler()
             bericht_klaar = true;
         } else if (rx_pos < (int)sizeof(rx_buffer) - 1) {
             rx_buffer[rx_pos++] = c;
+        } else {
+            // Buffer vol — reset (beschermt tegen ellenlange rommelstromen)
+            rx_pos = 0;
         }
     }
 }
 
-// ── Tick: aanroepen elke 10 ms ───────────────────────────────
 bool PicoUARTHandler::Tick(DriveCommand& out)
 {
     // 1) Verwerk inkomend bericht
     if (bericht_klaar) {
-        char regel[64];
+        char regel[128];
         strncpy(regel, (const char*)rx_buffer, sizeof(regel));
+        regel[sizeof(regel)-1] = '\0';
         bericht_klaar = false;
         HandleLine(regel);
     }
@@ -86,21 +88,39 @@ bool PicoUARTHandler::Tick(DriveCommand& out)
     return false;
 }
 
-// ── PushData: stuur "DATA:encL,encR,yaw,omega\n" ─────────────
 void PicoUARTHandler::PushData()
 {
-    char buf[96];
-    snprintf(buf, sizeof(buf), "DATA:%.2f,%.2f,%.3f,%.3f\n",
-        sensorHub.GetSpeedLeft(),
-        sensorHub.GetSpeedRight(),
-        sensorHub.GetCurrentYaw(),
-        sensorHub.GetAngVelocity());
+    // Gebruik vaste breedte formattering zodat de Pi5 makkelijk kan synchoniseren
+    // Format: DATA:<encL>,<encR>,<yaw>,<omega>\n
+    // Alle waarden als gewone decimalen (geen wetenschappelijke notatie)
+    float encL  = sensorHub.GetSpeedLeft();
+    float encR  = sensorHub.GetSpeedRight();
+    float yaw   = sensorHub.GetCurrentYaw();
+    float omega = sensorHub.GetAngVelocity();
+
+    // Clamp NaN/Inf naar 0 zodat snprintf nooit "0.E+00" of "nan" produceert
+    if (encL  != encL  || encL  > 9999.0f || encL  < -9999.0f) encL  = 0.0f;
+    if (encR  != encR  || encR  > 9999.0f || encR  < -9999.0f) encR  = 0.0f;
+    if (yaw   != yaw   || yaw   >  360.0f || yaw   < -360.0f)  yaw   = 0.0f;
+    if (omega != omega || omega >  720.0f || omega < -720.0f)   omega = 0.0f;
+
+    char buf[64];
+    snprintf(buf, sizeof(buf), "DATA:%.1f,%.1f,%.1f,%.1f\n",
+             encL, encR, yaw, omega);
     Send(buf);
 }
 
-// ── HandleLine: verwerk inkomend bericht ─────────────────────
 void PicoUARTHandler::HandleLine(const char* line)
 {
+    // STOP commando — hoogste prioriteit, direct uitvoeren
+    if (strcmp(line, "STOP") == 0) {
+        pendingCmd    = DriveCommand(0.0f, 0.0f);
+        hasPendingCmd = true;
+        lastCmdTimeMs = to_ms_since_boot(get_absolute_time());
+        Send("ACK:STOP\n");
+        return;
+    }
+
     if (strcmp(line, "REBOOT") == 0) {
         Send("ACK:REBOOT\n");
         sleep_ms(100);
@@ -114,8 +134,8 @@ void PicoUARTHandler::HandleLine(const char* line)
             pendingCmd    = DriveCommand(lin, ang);
             hasPendingCmd = true;
             lastCmdTimeMs = to_ms_since_boot(get_absolute_time());
-            char ack[64];
-            snprintf(ack, sizeof(ack), "ACK:%.2f,%.2f\n", lin, ang);
+            char ack[32];
+            snprintf(ack, sizeof(ack), "ACK:OK\n");  // kort ACK
             Send(ack);
         } else {
             Send("ERR:BAD_CMD\n");
@@ -123,7 +143,7 @@ void PicoUARTHandler::HandleLine(const char* line)
         return;
     }
 
-    Send("ERR:UNKNOWN\n");
+    // Onbekend bericht — negeer stilletjes (geen ERR sturen, voorkomt UART-spam)
 }
 
 bool PicoUARTHandler::ParseCmd(const char* line, float& lin, float& ang)

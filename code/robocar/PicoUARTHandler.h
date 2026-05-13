@@ -56,7 +56,7 @@ private:
     uint32_t     lastCmdTimeMs;
     uint32_t     lastPushMs;
 
-    static volatile char rx_buffer[64];
+    static volatile char rx_buffer[128];
     static volatile int  rx_pos;
     static volatile bool bericht_klaar;
     static PicoUARTHandler* instance;

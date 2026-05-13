@@ -16,8 +16,18 @@
 #include <string>
 #include <limits>
 
-static volatile bool running = true;
-static void onSignal(int) { running = false; }
+static std::atomic<bool> running{true};
+static Pi5UARTHandler*   g_uart = nullptr;  // voor noodstop in signal handler
+
+static void onSignal(int) {
+    running = false;
+    // Directe noodstop — stuurt STOP zonder te wachten op keepalive thread
+    if (g_uart && g_uart->IsOpen()) {
+        const char* stop = "STOP\nSTOP\nSTOP\n";
+        // write() is async-signal-safe
+        ::write(g_uart->GetFd(), stop, strlen(stop));
+    }
+}
 
 
 // ════════════════════════════════════════════════════════════════
@@ -65,11 +75,15 @@ public:
             while (threadActief) {
                 {
                     std::lock_guard<std::mutex> lk(mtx);
-                    if (actief)
+                    if (actief && running)
                         uart.StuurCommand(lin, ang);
+                    else if (!running) {
+                        // Ctrl+C ontvangen: stuur stop en zet actief uit
+                        uart.StuurStop();
+                        actief = false;
+                    }
                 }
-                // Wacht 200 ms tussen herhalingen (ruim onder 500 ms timeout)
-                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
         });
     }
@@ -640,9 +654,37 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
                << "staat,scan_staat,min_voor_mm,ruimte_links_mm,ruimte_rechts_mm\n";
     }
     auto logStart = std::chrono::steady_clock::now();
-    printf("Autonoom rijden + mappen gestart.\n");
-    printf("Strategie: altijd vooruit (278 mm/s), zachte bochten bij obstakels.\n\n");
-    usleep(1200000);   // LIDAR spin-up
+
+    // lastRanges buiten de loop zodat hij beschikbaar is in de scan-wacht sectie
+    float lastRanges[360] = {};
+    bool  heeftRanges     = false;
+
+    printf("LIDAR spin-up (1.2s)...\n");
+    usleep(1200000);
+
+    // Wacht op eerste geldige scan VOORDAT de robot begint te rijden
+    printf("Wacht op eerste LIDAR-scan...\n");
+    for (int pogingen = 0; !heeftRanges && running; ++pogingen) {
+        if (lidar.Update()) {
+            float angles[360];
+            for (int a = 0; a < 360; ++a) {
+                lastRanges[a] = lidar.GetDistance(a).distance;
+                angles[a]     = static_cast<float>(a);
+            }
+            heeftRanges = true;
+            printf("Eerste scan ontvangen (poging %d). Start rijden.\n\n", pogingen + 1);
+        } else {
+            if (pogingen % 10 == 0 && pogingen > 0)
+                printf("  Nog geen scan (%ds)...\n", pogingen / 10);
+            usleep(100000);
+            if (pogingen > 150) {
+                printf("FOUT: LIDAR geeft geen data na 15s. Controleer /dev/ttyUSB0.\n");
+                ka.Stop();
+                ka.Shutdown();
+                return 1;
+            }
+        }
+    }
 
     ka.SetCommand(LIN_SPEED, 0.0f);   // begin rijden
 
@@ -662,10 +704,6 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
 
         // ── 2. LIDAR → kaart ─────────────────────────────────────
         bool nieuweScan = false;
-        // lastRanges bewaard de meest recente 360° scan voor de rijlogica
-        // ook als er geen nieuwe scan is in deze iteratie
-        static float lastRanges[360] = {};
-        static bool  heeftRanges     = false;
 
         if (lidar.Update()) {
             float angles[360];
@@ -849,6 +887,13 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
 
     ka.Stop();
     ka.Shutdown();
+
+    // Stuur stop meerdere keren — zeker dat de Pico het ontvangt
+    for (int i = 0; i < 10; ++i) {
+        uart.StuurStop();
+        usleep(50000);  // 50ms tussen pogingen
+    }
+    printf("Noodstop gestuurd.\n");
     lidar.Disconnect();
 
     if (csvLog.is_open()) {
@@ -901,6 +946,7 @@ int main() {
     Pi5UARTHandler uart("/dev/ttyAMA10");
     LIDAR          lidar("/dev/ttyUSB0", 460800);
 
+    g_uart = &uart;  // signal handler kan nu direct stoppen
     initUartHandler(uart);
 
     MenuKeuze keuze = VraagMenuKeuze();
