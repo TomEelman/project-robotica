@@ -3,32 +3,28 @@
 #include <fcntl.h>
 #include <termios.h>
 #include <unistd.h>
-#include <iostream>
-#include <sstream>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <iostream>
 
 Pi5UARTHandler::Pi5UARTHandler(const std::string& port, int baudrate)
-    : port(port), baudrate(baudrate), fd(-1)
+    : port(port), baudrate(baudrate), fd(-1), linePos(0)
 {
+    memset(lineBuffer, 0, sizeof(lineBuffer));
+    lastData = {};
 }
 
-Pi5UARTHandler::~Pi5UARTHandler() {
-    Close();
-}
+Pi5UARTHandler::~Pi5UARTHandler() { Close(); }
 
 bool Pi5UARTHandler::Open() {
-    fd = open(port.c_str(), O_RDWR | O_NOCTTY | O_SYNC);
+    fd = open(port.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
     if (fd < 0) {
         perror(("Pi5UARTHandler: open " + port).c_str());
         return false;
     }
-    if (!ConfigureerPoort()) {
-        Close();
-        return false;
-    }
-    std::cout << "UART geopend op " << port << "\n";
+    if (!ConfigureerPoort()) { Close(); return false; }
+    std::cout << "UART geopend op " << port << " (non-blocking, push-model)\n";
     return true;
 }
 
@@ -40,9 +36,8 @@ bool Pi5UARTHandler::ConfigureerPoort() {
     }
 
     speed_t baud = B115200;
-    if (baudrate == 9600)   baud = B9600;
-    if (baudrate == 57600)  baud = B57600;
-    if (baudrate == 115200) baud = B115200;
+    if (baudrate ==  9600) baud = B9600;
+    if (baudrate == 57600) baud = B57600;
 
     cfsetispeed(&tty, baud);
     cfsetospeed(&tty, baud);
@@ -50,14 +45,13 @@ bool Pi5UARTHandler::ConfigureerPoort() {
     tty.c_cflag  = (tty.c_cflag & ~CSIZE) | CS8;
     tty.c_cflag |=  (CLOCAL | CREAD);
     tty.c_cflag &= ~(PARENB | PARODD | CSTOPB | CRTSCTS);
-
     tty.c_iflag &= ~(IXON | IXOFF | IXANY | IGNBRK | BRKINT | ICRNL);
     tty.c_oflag &= ~OPOST;
     tty.c_lflag  = 0;
 
-    // 200 ms lees-timeout
+    // Non-blocking: geeft meteen terug wat er is, ook als er niets is
     tty.c_cc[VMIN]  = 0;
-    tty.c_cc[VTIME] = 2;
+    tty.c_cc[VTIME] = 0;
 
     if (tcsetattr(fd, TCSANOW, &tty) != 0) {
         perror("Pi5UARTHandler: tcsetattr");
@@ -70,138 +64,76 @@ void Pi5UARTHandler::Close() {
     if (fd >= 0) { close(fd); fd = -1; }
 }
 
-bool Pi5UARTHandler::IsOpen() const {
-    return fd >= 0;
-}
+bool Pi5UARTHandler::IsOpen() const { return fd >= 0; }
 
-std::string Pi5UARTHandler::LeesRegel() {
-    std::string antwoord;
+bool Pi5UARTHandler::LeesData() {
+    if (!IsOpen()) return false;
+
+    bool hadData = false;
     char c;
-    while (read(fd, &c, 1) > 0) {
-        if (c == '\n') break;
-        if (c != '\r') antwoord += c;
+
+    while (read(fd, &c, 1) == 1) {
+        if (c == '\r') continue;
+
+        if (c == '\n') {
+            lineBuffer[linePos] = '\0';
+            if (ParseDataRegel(lineBuffer))
+                hadData = true;
+            linePos = 0;
+        } else if (linePos < (int)sizeof(lineBuffer) - 1) {
+            lineBuffer[linePos++] = c;
+        } else {
+            linePos = 0;
+        }
     }
-    return antwoord;
+
+    return hadData;
 }
 
-void Pi5UARTHandler::StuurRegel(const std::string& regel) {
+bool Pi5UARTHandler::ParseDataRegel(const char* regel) {
+    if (strncmp(regel, "DATA:", 5) != 0) return false;
+
+    const char* p = regel + 5;
+    char* end;
+
+    float encL  = strtof(p, &end); if (end == p || *end != ',') return false; p = end + 1;
+    float encR  = strtof(p, &end); if (end == p || *end != ',') return false; p = end + 1;
+    float yaw   = strtof(p, &end); if (end == p || *end != ',') return false; p = end + 1;
+    float omega = strtof(p, &end); if (end == p)                return false;
+
+    lastData.speedLinks   = encL;
+    lastData.speedRechts  = encR;
+    lastData.yawGraden    = yaw;
+    lastData.hoeksnelheid = omega;
+    lastData.geldig       = true;
+    return true;
+}
+
+void Pi5UARTHandler::StuurCommand(float lin, float ang) {
     if (!IsOpen()) return;
-    write(fd, regel.c_str(), regel.size());
-}
-
-std::string Pi5UARTHandler::StuurVerzoek(const std::string& sensor) {
-    if (!IsOpen()) return "";
-    tcflush(fd, TCIOFLUSH);
-    std::string verzoek = "GET:" + sensor + "\n";
-    write(fd, verzoek.c_str(), verzoek.size());
-    return LeesRegel();
-}
-
-CommandAck Pi5UARTHandler::StuurCommand(float lin, float ang) {
-    CommandAck result{false, 0.0f, 0.0f};
-    if (!IsOpen()) return result;
-
     char buf[64];
     snprintf(buf, sizeof(buf), "CMD:%.3f,%.3f\n", lin, ang);
-
-    tcflush(fd, TCIOFLUSH);
     write(fd, buf, strlen(buf));
-
-    std::string antwoord = LeesRegel();
-    if (antwoord.empty()) {
-        std::cerr << "Pi5UARTHandler: geen ACK ontvangen voor CMD\n";
-        return result;
-    }
-    return ParseAck(antwoord);
 }
 
-CommandAck Pi5UARTHandler::StuurStop() {
-    return StuurCommand(0.0f, 0.0f);
+void Pi5UARTHandler::StuurStop() {
+    StuurCommand(0.0f, 0.0f);
 }
 
 bool Pi5UARTHandler::RebootPico() {
     if (!IsOpen()) return false;
-    tcflush(fd, TCIOFLUSH);
-    StuurRegel("REBOOT\n");
-
-    std::string antwoord = LeesRegel();
-    if (antwoord == "ACK:REBOOT") {
-        std::cout << "Pi5UARTHandler: Pico reboot bevestigd\n";
-        return true;
+    const char* msg = "REBOOT\n";
+    write(fd, msg, strlen(msg));
+    usleep(150000);
+    char buf[32];
+    ssize_t n = read(fd, buf, sizeof(buf) - 1);
+    if (n > 0) {
+        buf[n] = '\0';
+        if (strstr(buf, "ACK:REBOOT")) {
+            std::cout << "Pi5UARTHandler: Pico reboot bevestigd\n";
+            return true;
+        }
     }
-    std::cerr << "Pi5UARTHandler: geen reboot ACK (kreeg: " << antwoord << ")\n";
+    std::cerr << "Pi5UARTHandler: geen reboot ACK\n";
     return false;
-}
-
-CommandAck Pi5UARTHandler::ParseAck(const std::string& antwoord) {
-    CommandAck result{false, 0.0f, 0.0f};
-    if (antwoord.substr(0, 4) != "ACK:") return result;
-
-    const char* data = antwoord.c_str() + 4;
-    char* endPtr     = nullptr;
-
-    result.lin = strtof(data, &endPtr);
-    if (endPtr == data || *endPtr != ',') return result;
-
-    const char* angStart = endPtr + 1;
-    result.ang   = strtof(angStart, &endPtr);
-    result.geldig = (endPtr != angStart);
-    return result;
-}
-
-EncoderData Pi5UARTHandler::LeesEncoder() {
-    EncoderData data{};
-    data.geldig = false;
-
-    std::string raw = StuurVerzoek("ENCODER");
-    if (raw.empty()) return data;
-
-    size_t kol = raw.find(':');
-    if (kol == std::string::npos) return data;
-    if (raw.substr(0, kol) != "ENCODER") return data;
-
-    std::vector<float> waarden;
-    std::stringstream ss(raw.substr(kol + 1));
-    std::string token;
-    while (std::getline(ss, token, ',')) {
-        try { waarden.push_back(std::stof(token)); }
-        catch (...) {}
-    }
-
-    if (waarden.size() < 4) return data;
-
-    data.speedLinks    = waarden[0];
-    data.afstandLinks  = waarden[1];
-    data.speedRechts   = waarden[2];
-    data.afstandRechts = waarden[3];
-    data.geldig        = true;
-    return data;
-}
-
-IMUData Pi5UARTHandler::LeesIMU() {
-    IMUData data{};
-    data.geldig = false;
-
-    std::string raw = StuurVerzoek("IMU");
-    if (raw.empty()) return data;
-
-    size_t kol = raw.find(':');
-    if (kol == std::string::npos) return data;
-    if (raw.substr(0, kol) != "IMU") return data;
-
-    std::vector<float> waarden;
-    std::stringstream ss(raw.substr(kol + 1));
-    std::string token;
-    while (std::getline(ss, token, ',')) {
-        try { waarden.push_back(std::stof(token)); }
-        catch (...) {}
-    }
-
-    if (waarden.empty()) return data;
-
-    // Pico stuurt al graden — geen conversie nodig
-    data.yawGraden    = waarden[0];
-    data.hoeksnelheid = (waarden.size() >= 2) ? waarden[1] : 0.0f;
-    data.geldig       = true;
-    return data;
 }

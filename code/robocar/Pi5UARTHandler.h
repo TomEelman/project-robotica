@@ -1,37 +1,28 @@
 #pragma once
 
 #include <string>
-#include <vector>
 
 // ═══════════════════════════════════════════════════════════════
-//  Pi5UARTHandler  –  alle UART-communicatie met de Pico
+//  Pi5UARTHandler  —  Pi5-kant UART, push-model
 //
-//  Gebruik:
-//    Pi5UARTHandler uart("/dev/ttyAMA10");
-//    if (!uart.Open()) { /* fout */ }
+//  De Pico stuurt automatisch elke 50ms:
+//    "DATA:encL,encR,yaw,omega\n"
 //
-//    auto enc = uart.LeesEncoder();
-//    auto imu = uart.LeesIMU();
+//  Pi5 stuurt:
+//    "CMD:lin,ang\n"   →  DriveCommand naar Pico
+//    "REBOOT\n"        →  Pico herstart
 //
-//    uart.StuurCommand(200.0f, 0.0f);   // 200 mm/s, rechtdoor
-//    uart.StuurCommand(0.0f,  45.0f);   // ter plekke draaien
-//    uart.StuurStop();                  // noodstop
-//
-//    uart.Close();
+//  LeesData() is non-blocking: leest wat er in de buffer zit
+//  en slaat de laatste waarden op. Geen GET-requests meer,
+//  geen 200ms timeout per sensor.
 // ═══════════════════════════════════════════════════════════════
 
-struct EncoderData {
-    float speedLinks;     // mm/s
-    float afstandLinks;   // mm
-    float speedRechts;    // mm/s
-    float afstandRechts;  // mm
-    bool  geldig;
-};
-
-struct IMUData {
-    float yawGraden;      // graden  (gebruik dit altijd)
-    float hoeksnelheid;   // graden/s
-    bool  geldig;
+struct SensorData {
+    float speedLinks;    // mm/s
+    float speedRechts;   // mm/s
+    float yawGraden;     // graden
+    float hoeksnelheid;  // graden/s
+    bool  geldig;        // true = minstens één DATA-pakket ontvangen
 };
 
 struct CommandAck {
@@ -49,16 +40,17 @@ public:
     void Close();
     bool IsOpen() const;
 
-    EncoderData LeesEncoder();
-    IMUData     LeesIMU();
+    // Non-blocking: leest alle beschikbare DATA-regels uit de buffer,
+    // slaat de laatste op. Geeft true als er nieuwe data was.
+    bool LeesData();
 
-    CommandAck StuurCommand(float lin, float ang);
-    CommandAck StuurStop();
-    bool       RebootPico();
+    // Geeft de laatste ontvangen sensorwaarden terug.
+    SensorData GetSensorData() const { return lastData; }
 
-    std::string StuurVerzoek(const std::string& sensor);
-    void        StuurRegel(const std::string& regel);
-    std::string LeesRegel();
+    // Stuur een DriveCommand naar de Pico (fire-and-forget, geen ACK-wait).
+    void StuurCommand(float lin, float ang);
+    void StuurStop();
+    bool RebootPico();
 
     const std::string& GetPort() const { return port; }
 
@@ -67,6 +59,10 @@ private:
     int         baudrate;
     int         fd;
 
-    bool       ConfigureerPoort();
-    CommandAck ParseAck(const std::string& antwoord);
+    SensorData  lastData{};
+    char        lineBuffer[128];
+    int         linePos;
+
+    bool ConfigureerPoort();
+    bool ParseDataRegel(const char* regel);
 };

@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cmath>
 #include <iostream>
+#include <fstream>
 #include <string>
 #include <limits>
 
@@ -133,13 +134,12 @@ static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
     while (running) {
         auto tStart = std::chrono::steady_clock::now();
 
-        EncoderData enc = uart.LeesEncoder();
-        if (enc.geldig)
-            loc.Predict(enc.speedLinks, enc.speedRechts, DT);  // mm/s direct, geen /1000
-
-        IMUData imu = uart.LeesIMU();
-        if (imu.geldig)
-            loc.UpdateIMU(imu.yawGraden, DT);
+        uart.LeesData();
+        SensorData sens = uart.GetSensorData();
+        if (sens.geldig) {
+            loc.Predict(sens.speedLinks, sens.speedRechts, DT);
+            loc.UpdateIMU(sens.yawGraden, DT);
+        }
 
         if (!lidar.Update()) { usleep(200000); continue; }
 
@@ -226,24 +226,18 @@ static void RunLeesLive(Pi5UARTHandler& uart) {
     });
 
     while (!stopLive) {
-        EncoderData enc = uart.LeesEncoder();
-        IMUData     imu = uart.LeesIMU();
+        uart.LeesData();
+        SensorData sens = uart.GetSensorData();
 
-        if (enc.geldig)
-            printf("ENC  sL=%7.2f mm/s  dL=%7.1f mm  sR=%7.2f mm/s  dR=%7.1f mm\n",
-                   enc.speedLinks, enc.afstandLinks,
-                   enc.speedRechts, enc.afstandRechts);
+        if (sens.geldig)
+            printf("ENC L=%7.2f mm/s  ENC R=%7.2f mm/s  IMU yaw=%7.2f deg  omega=%6.2f deg/s\n",
+                   sens.speedLinks, sens.speedRechts,
+                   sens.yawGraden,  sens.hoeksnelheid);
         else
-            std::cout << "ENC  [geen data]\n";
-
-        if (imu.geldig)
-            printf("IMU  yaw=%7.2f deg  omega=%6.3f rad/s\n",
-                   imu.yawGraden, imu.hoeksnelheid);
-        else
-            std::cout << "IMU  [geen data]\n";
+            printf("Wacht op DATA van Pico...\n");
 
         std::cout << "─────────────────────────────────────────\n";
-        usleep(200000);
+        usleep(100000);  // 10 Hz display
     }
 
     if (inputThread.joinable()) inputThread.join();
@@ -468,31 +462,25 @@ static void PrintStatus(const RobotStatus& s)
     printf("╠═══════════════════════════╬══════════════════════════════╣\n");
     printf("║  SENSOREN                 ║  NAVIGATIE                   ║\n");
 
-    if (s.encGeldig)
+    if (s.encGeldig) {
         printf("║  ENC L: %7.1f mm/s      ║  Pad     : %s             ║\n",
                s.speedLinks, s.heeftPad ? "JA  " : "NEE ");
-    else
-        printf("║  ENC L: [geen data]       ║  Pad     : %s             ║\n",
-               s.heeftPad ? "JA  " : "NEE ");
-
-    if (s.encGeldig)
         printf("║  ENC R: %7.1f mm/s      ║  Waypoint: %3d / %-3d        ║\n",
                s.speedRechts, s.waypointHuidig, s.waypointTotaal);
-    else
-        printf("║  ENC R: [geen data]       ║  Waypoint: --- / ---        ║\n");
-
-    if (s.imuGeldig)
         printf("║  IMU θ: %7.1f °          ║  Doel    : (%6.0f,%6.0f)  ║\n",
                s.imuYaw, s.doelX, s.doelY);
-    else
-        printf("║  IMU  : [geen data]       ║  Doel    : (  ----,  ----)  ║\n");
-
-    if (s.imuGeldig)
         printf("║  ω    : %7.1f °/s        ║  Afstand : %7.0f mm       ║\n",
                s.imuOmega, s.afstandTotDoel);
-    else
-        printf("║         [geen data]       ║  Afstand :    ----          ║\n");
-
+    } else {
+        printf("║  Sensoren: wacht op DATA  ║  Pad     : %s             ║\n",
+               s.heeftPad ? "JA  " : "NEE ");
+        printf("║  (Pico pusht elke 50ms)   ║  Waypoint: %3d / %-3d        ║\n",
+               s.waypointHuidig, s.waypointTotaal);
+        printf("║                           ║  Doel    : (%6.0f,%6.0f)  ║\n",
+               s.doelX, s.doelY);
+        printf("║                           ║  Afstand : %7.0f mm       ║\n",
+               s.afstandTotDoel);
+    }
     printf("║                           ║  HoekFout: %7.1f °         ║\n",
            s.hoekFout);
 
@@ -558,7 +546,18 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
     CommandKeepAlive ka(uart);
     ka.Start();
 
-    std::cout << "\033[2J";
+    // ── CSV log ───────────────────────────────────────────────
+    // Stuur robot_log.csv naar Claude voor analyse na de rit.
+    // Kolommen: tijd, positie, sensoren, commando, navigatie, staat
+    std::ofstream csvLog("robot_log.csv");
+    if (csvLog.is_open()) {
+        csvLog << "tijd_ms,x_mm,y_mm,theta_deg,"
+               << "encL_mms,encR_mms,yaw_imu_deg,omega_degs,"
+               << "cmd_lin,cmd_ang,"
+               << "dekking_pct,waypoint_huidig,waypoint_totaal,"
+               << "afstand_doel_mm,hoekfout_deg,staat,obst_richting\n";
+    }
+    auto logStart = std::chrono::steady_clock::now();
     printf("Autonoom rijden + mappen gestart.\n");
     printf("Strategie: altijd vooruit (278 mm/s), zachte bochten bij obstakels.\n\n");
     usleep(1200000);   // LIDAR spin-up
@@ -568,14 +567,14 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
     while (running) {
         auto tStart = std::chrono::steady_clock::now();
 
-        // ── 1. Encoder + IMU → lokalisatie ───────────────────────
-        EncoderData enc = uart.LeesEncoder();
-        if (enc.geldig)
-            loc.Predict(enc.speedLinks, enc.speedRechts, DT);  // mm/s direct, geen /1000
+        // ── 1. Sensor-data lezen (non-blocking push) ─────────────
+        uart.LeesData();
+        SensorData sens = uart.GetSensorData();
 
-        IMUData imu = uart.LeesIMU();
-        if (imu.geldig)
-            loc.UpdateIMU(imu.yawGraden, DT);
+        if (sens.geldig) {
+            loc.Predict(sens.speedLinks, sens.speedRechts, DT);
+            loc.UpdateIMU(sens.yawGraden, DT);
+        }
 
         Position pos(loc.GetX(), loc.GetY(), loc.GetTheta());
 
@@ -606,12 +605,12 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
         st.posX        = pos.GetX();
         st.posY        = pos.GetY();
         st.theta       = loc.GetTheta();
-        st.speedLinks  = enc.geldig ? enc.speedLinks  : 0.0f;
-        st.speedRechts = enc.geldig ? enc.speedRechts : 0.0f;
-        st.imuYaw      = imu.geldig ? imu.yawGraden   : 0.0f;
-        st.imuOmega    = imu.geldig ? imu.hoeksnelheid : 0.0f;
-        st.encGeldig   = enc.geldig;
-        st.imuGeldig   = imu.geldig;
+        st.speedLinks  = sens.geldig ? sens.speedLinks   : 0.0f;
+        st.speedRechts = sens.geldig ? sens.speedRechts  : 0.0f;
+        st.imuYaw      = sens.geldig ? sens.yawGraden    : 0.0f;
+        st.imuOmega    = sens.geldig ? sens.hoeksnelheid : 0.0f;
+        st.encGeldig   = sens.geldig;
+        st.imuGeldig   = sens.geldig;
         st.scanCount   = scanCount;
         st.dekking     = mapper.GetCoverage();
         st.heeftPad    = heeftPad;
@@ -709,6 +708,29 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
         if (nieuweScan)
             PrintStatus(st);
 
+        // ── 5. CSV loggen (elke iteratie, ~100 Hz) ────────────────
+        if (csvLog.is_open()) {
+            long tijdMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now() - logStart).count();
+            csvLog << tijdMs                << ','
+                   << st.posX              << ','
+                   << st.posY              << ','
+                   << st.theta             << ','
+                   << st.speedLinks        << ','
+                   << st.speedRechts       << ','
+                   << st.imuYaw            << ','
+                   << st.imuOmega          << ','
+                   << st.cmdLin            << ','
+                   << st.cmdAng            << ','
+                   << st.dekking           << ','
+                   << st.waypointHuidig    << ','
+                   << st.waypointTotaal    << ','
+                   << st.afstandTotDoel    << ','
+                   << st.hoekFout          << ','
+                   << st.staat             << ','
+                   << st.obstRichting      << '\n';
+        }
+
         // ── 5. Loop timing ────────────────────────────────────────
         auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
                            std::chrono::steady_clock::now() - tStart).count();
@@ -719,6 +741,11 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
     ka.Stop();
     ka.Shutdown();
     lidar.Disconnect();
+
+    if (csvLog.is_open()) {
+        csvLog.close();
+        printf("Log opgeslagen: robot_log.csv\n");
+    }
 
     if (mapper.SaveDebugMap("kaart.pgm"))
         printf("Kaart opgeslagen: kaart.pgm  (dekking: %d%%)\n", mapper.GetCoverage());
@@ -740,7 +767,7 @@ static void PrintMenu() {
     std::cout << "╠══════════════════════════════════════╣\n";
     std::cout << "║  1. Mappen                           ║\n";
     std::cout << "║  2. Pico communiceren                ║\n";
-    std::cout << "║  3. Autonoom rijden                  ║\n";
+    std::cout << "║  3. Rijden + Mappen (10s + 90° draai)║\n";
     std::cout << "║  4. Stoppen                          ║\n";
     std::cout << "╚══════════════════════════════════════╝\n";
     std::cout << "Keuze: ";
