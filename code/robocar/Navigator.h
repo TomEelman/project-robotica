@@ -23,21 +23,30 @@ private:
     // Drempelafstand om een waypoint als bereikt te beschouwen.
     static constexpr float REACHED_THRESHOLD_MM = 200.0f;
 
-    // Rijsnelheid — altijd vooruit, nooit stoppen voor draaien
+    // Rijsnelheid bij rechte koers
     static constexpr float LINEAR_SPEED_MM_S    = 278.0f;
 
-    // Proportionele gain voor zachte bijsturing (deg/s per graad fout)
-    // Bij 45° fout → 45 × 0.18 ≈ 8 deg/s bijsturing
-    static constexpr float ANGULAR_GAIN         = 0.18f;
+    // Proportionele gain voor bijsturing (deg/s per graad fout).
+    // Klein gehouden zodat kleine hoekfouten ook kleine correcties geven
+    // en de robot niet oscilleert. Bij 20° fout → 20 × 0.10 = 2 deg/s.
+    static constexpr float ANGULAR_GAIN         = 0.10f;
 
-    // Maximum bijsturing tijdens het rijden (graden/s)
-    static constexpr float MAX_ANGULAR_DEG_S    = 25.0f;
+    // Maximum bijsturing tijdens het rijden (graden/s).
+    // Lager dan voorheen zodat bochten geleidelijker gaan.
+    static constexpr float MAX_ANGULAR_DEG_S    = 15.0f;
 
-    // Minimum bijsturing boven motor-stall drempel (graden/s)
-    static constexpr float MIN_ANGULAR_DEG_S    = 5.0f;
+    // Geen minimum bijsturing — dat veroorzaakte overshoot bij kleine fouten.
+    // De gain is nu puur proportioneel: kleine fout → kleine correctie.
+    static constexpr float MIN_ANGULAR_DEG_S    = 0.0f;
 
-    // Dode zone: onder dit geen bijsturing (graden)
-    static constexpr float ANGLE_DEADBAND_DEG   = 3.0f;
+    // Dode zone: groter dan voorheen zodat de robot kleine drift negeert
+    // en niet constant heen-en-weer stuurt langs een rechte lijn.
+    static constexpr float ANGLE_DEADBAND_DEG   = 8.0f;
+
+    // Bij grote hoekfout (>30°) rijdt de robot langzamer zodat hij niet
+    // in een bocht slipt. Snelheidsreductie tot 50% bij 45° fout.
+    static constexpr float SLOW_TURN_THRESHOLD  = 30.0f;  // graden
+    static constexpr float SLOW_TURN_FACTOR     = 0.55f;  // fractie van LINEAR_SPEED
 
     Path     path;
     Position currentTarget;
