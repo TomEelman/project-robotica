@@ -99,18 +99,12 @@ private:
 // ════════════════════════════════════════════════════════════════
 
 static bool initUartHandler(Pi5UARTHandler& uart) {
-    if (!uart.Open()) {
-        std::cerr << "UART niet beschikbaar.\n";
-        return false;
-    }
+    if (!uart.Open()) { std::cerr << "UART niet beschikbaar.\n"; return false; }
     return true;
 }
 
 static bool initLidar(LIDAR& lidar) {
-    if (!lidar.Connect()) {
-        std::cerr << "Kan niet verbinden met LIDAR.\n";
-        return false;
-    }
+    if (!lidar.Connect()) { std::cerr << "Kan niet verbinden met LIDAR.\n"; return false; }
     return true;
 }
 
@@ -154,10 +148,7 @@ static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
         ++scanCount;
 
         printf("Scans: %4d  Dekking: %2d%%  Pos: (%.2f, %.2f)  theta: %.1fdeg\n",
-               scanCount, mapper.GetCoverage(),
-               loc.GetX(), loc.GetY(),
-               loc.GetTheta());
-
+               scanCount, mapper.GetCoverage(), loc.GetX(), loc.GetY(), loc.GetTheta());
         mapper.PrintMap(loc.GetX(), loc.GetY(), scanCount, mapper.GetCoverage());
 
         auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -168,10 +159,8 @@ static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
 
     std::cout << "\nStoppen...\n";
     lidar.Disconnect();
-
     if (mapper.SaveDebugMap("kaart.pgm"))
         printf("Kaart opgeslagen: kaart.pgm  (dekking: %d%%)\n", mapper.GetCoverage());
-
     return 0;
 }
 
@@ -185,12 +174,10 @@ static void PrintPicoMenu(const CommandKeepAlive& ka) {
     std::cout << "╔══════════════════════════════════════╗\n";
     std::cout << "║        PICO COMMUNICATIE             ║\n";
     std::cout << "╠══════════════════════════════════════╣\n";
-
     if (ka.IsActief())
         printf("║  Actief: lin=%-6.1f  ang=%-10.1f║\n", ka.GetLin(), ka.GetAng());
     else
         std::cout << "║  Actief: GESTOPT                     ║\n";
-
     std::cout << "╠══════════════════════════════════════╣\n";
     std::cout << "║  1. DriveCommand sturen              ║\n";
     std::cout << "║  2. Sensordata ontvangen (live)      ║\n";
@@ -202,69 +189,47 @@ static void PrintPicoMenu(const CommandKeepAlive& ka) {
 
 static void RunStuurCommand(CommandKeepAlive& ka) {
     float lin = 0.0f, ang = 0.0f;
-
     std::cout << "Lineaire snelheid (mm/s, positief=vooruit): ";
     std::cin >> lin;
     std::cout << "Hoeksnelheid (deg/s, positief=rechts):      ";
     std::cin >> ang;
     std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-
     ka.SetCommand(lin, ang);
-    printf("  Commando actief: lin=%.1f  ang=%.1f  (blijft rijden tot stop)\n",
-           lin, ang);
+    printf("  Commando actief: lin=%.1f  ang=%.1f\n", lin, ang);
 }
 
 static void RunLeesLive(Pi5UARTHandler& uart) {
     std::cout << "Live sensordata (druk Enter om te stoppen)...\n\n";
-
     std::atomic<bool> stopLive{false};
     std::thread inputThread([&]() {
-        std::string dummy;
-        std::getline(std::cin, dummy);
-        stopLive = true;
+        std::string dummy; std::getline(std::cin, dummy); stopLive = true;
     });
-
     while (!stopLive) {
         uart.LeesData();
         SensorData sens = uart.GetSensorData();
-
         if (sens.geldig)
             printf("ENC L=%7.2f mm/s  ENC R=%7.2f mm/s  IMU yaw=%7.2f deg  omega=%6.2f deg/s\n",
-                   sens.speedLinks, sens.speedRechts,
-                   sens.yawGraden,  sens.hoeksnelheid);
+                   sens.speedLinks, sens.speedRechts, sens.yawGraden, sens.hoeksnelheid);
         else
             printf("Wacht op DATA van Pico...\n");
-
         std::cout << "─────────────────────────────────────────\n";
         usleep(100000);
     }
-
     if (inputThread.joinable()) inputThread.join();
 }
 
 static int RunPicoCommunicatie(Pi5UARTHandler& uart) {
     CommandKeepAlive ka(uart);
     ka.Start();
-
     while (true) {
         PrintPicoMenu(ka);
         std::string invoer;
         std::getline(std::cin, invoer);
-
-        if (invoer == "1") {
-            RunStuurCommand(ka);
-        } else if (invoer == "2") {
-            RunLeesLive(uart);
-        } else if (invoer == "3") {
-            ka.Stop();
-            std::cout << "  Robot gestopt.\n";
-        } else if (invoer == "4") {
-            ka.Stop();
-            ka.Shutdown();
-            break;
-        } else {
-            std::cout << "Ongeldige keuze.\n";
-        }
+        if      (invoer == "1") { RunStuurCommand(ka); }
+        else if (invoer == "2") { RunLeesLive(uart); }
+        else if (invoer == "3") { ka.Stop(); std::cout << "  Robot gestopt.\n"; }
+        else if (invoer == "4") { ka.Stop(); ka.Shutdown(); break; }
+        else                    { std::cout << "Ongeldige keuze.\n"; }
     }
     return 0;
 }
@@ -277,9 +242,7 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart) {
 #include "PathPlanner.h"
 #include "Navigator.h"
 
-// ── FIX Bug 1: frontier-keuze op basis van score (afstand + vrije LIDAR-ruimte)
-// In plaats van altijd de verste frontier, kiezen we de frontier met de beste
-// combinatie van bereikbaarheid (vrije ruimte in die richting) en afstand.
+// ── Frontier-keuze: score op vrije LIDAR-ruimte (60%) + afstand (40%) ──
 static Position KiesFrontierDoel(const Mapper& mapper, const Position& huidig,
                                   const float lidarRanges[360])
 {
@@ -302,46 +265,54 @@ static Position KiesFrontierDoel(const Mapper& mapper, const Position& huidig,
             const int dx[4] = {-1,1,0,0};
             const int dy[4] = {0,0,-1,1};
             for (int d = 0; d < 4; ++d) {
-                int nx = cx + dx[d], ny = cy + dy[d];
-                if (mapper.GetMap().InBounds(nx, ny) &&
-                    mapper.GetMap().IsUnknown(nx, ny)) {
-                    heeftOnbekendeBuur = true;
-                    break;
+                int nx = cx+dx[d], ny = cy+dy[d];
+                if (mapper.GetMap().InBounds(nx, ny) && mapper.GetMap().IsUnknown(nx, ny)) {
+                    heeftOnbekendeBuur = true; break;
                 }
             }
             if (!heeftOnbekendeBuur) continue;
 
             float wx_m, wy_m;
             mapper.GetMap().CellToWorld(cx, cy, wx_m, wy_m);
-
             float ddx = wx_m - huidigX_m;
             float ddy = wy_m - huidigY_m;
             float dist_m = std::sqrt(ddx*ddx + ddy*ddy);
-            if (dist_m < 0.3f) continue;  // te dichtbij, sla over
+            if (dist_m < 0.3f) continue;
 
-            // Bereken de LIDAR-index in de richting van deze frontier
-            // (robotrelatief: index 0 = recht voor)
             float hoek_rad = std::atan2(ddy, ddx)
                              - (huidig.GetTheta() * static_cast<float>(M_PI) / 180.0f);
             int lidarIdx = ((int)(hoek_rad * 180.0f / static_cast<float>(M_PI)) + 360) % 360;
             float vrijRuimte = lidarRanges[lidarIdx];
             if (vrijRuimte <= 0.0f || vrijRuimte > 8000.0f) vrijRuimte = 8000.0f;
 
-            // Score: 60% vrije LIDAR-ruimte, 40% afstand (capped op 4m)
-            // Frontier dichtbij met open ruimte wint van verre frontier achter muur
-            float distScore   = std::min(dist_m, 4.0f) / 4.0f;
-            float ruimteScore = std::min(vrijRuimte, 2000.0f) / 2000.0f;
-            float score = 0.4f * distScore + 0.6f * ruimteScore;
+            float score = 0.4f * std::min(dist_m, 4.0f) / 4.0f
+                        + 0.6f * std::min(vrijRuimte, 2000.0f) / 2000.0f;
 
-            if (score > bestScore) {
-                bestScore = score;
-                bestWx_m  = wx_m;
-                bestWy_m  = wy_m;
-            }
+            if (score > bestScore) { bestScore = score; bestWx_m = wx_m; bestWy_m = wy_m; }
         }
     }
-
     return Position(bestWx_m / MM2M, bestWy_m / MM2M, 0.0f);
+}
+
+// ── Telt bereikbare frontiers (FREE cel met UNKNOWN buur) ──
+static int TelFrontiers(const Mapper& mapper)
+{
+    int W = mapper.GetMap().GetWidth();
+    int H = mapper.GetMap().GetHeight();
+    int count = 0;
+    const int dx[4] = {-1,1,0,0};
+    const int dy[4] = {0,0,-1,1};
+    for (int cy = 0; cy < H; ++cy)
+        for (int cx = 0; cx < W; ++cx) {
+            if (!mapper.GetMap().IsFree(cx, cy)) continue;
+            for (int d = 0; d < 4; ++d) {
+                if (mapper.GetMap().InBounds(cx+dx[d], cy+dy[d]) &&
+                    mapper.GetMap().IsUnknown(cx+dx[d], cy+dy[d])) {
+                    ++count; break;
+                }
+            }
+        }
+    return count;
 }
 
 
@@ -350,28 +321,22 @@ static Position KiesFrontierDoel(const Mapper& mapper, const Position& huidig,
 // ════════════════════════════════════════════════════════════════
 struct ScanAnalyse {
     int   staat;
-    float uitwijkHoek;
-    float ruimteLinks;
-    float ruimteRechts;
-    float minVoor;
-    float minLinks;
-    float minRechts;
+    float uitwijkHoek, ruimteLinks, ruimteRechts, minVoor, minLinks, minRechts;
 };
 
-static float  g_vorigeUitwijk = 0.0f;
+static float g_vorigeUitwijk = 0.0f;
 
 static ScanAnalyse AnalyseerScan(const float ranges[360])
 {
-    static constexpr float KRITIEK_MM  = 350.0f;
-    static constexpr float REMMEN_MM   = 500.0f;
-    static constexpr float VEILIG_MM   = 700.0f;
-    static constexpr float CHASSIS_MM  = 280.0f;
-    static constexpr float MAX_RANGE   = 8000.0f;
-    static constexpr float HYSTERESIS  = 200.0f;
+    static constexpr float KRITIEK_MM = 350.0f;
+    static constexpr float REMMEN_MM  = 500.0f;
+    static constexpr float VEILIG_MM  = 700.0f;
+    static constexpr float CHASSIS_MM = 280.0f;
+    static constexpr float MAX_RANGE  = 8000.0f;
+    static constexpr float HYSTERESIS = 200.0f;
 
     float sector[36];
     for (int s = 0; s < 36; ++s) sector[s] = MAX_RANGE;
-
     for (int a = 0; a < 360; ++a) {
         float r = ranges[a];
         if (r <= 0.0f || r > MAX_RANGE) continue;
@@ -381,74 +346,51 @@ static ScanAnalyse AnalyseerScan(const float ranges[360])
 
     auto sectorMin = [&](int van, int tot) -> float {
         float m = MAX_RANGE;
-        for (int s = van % 36; s != (tot % 36); s = (s + 1) % 36)
+        for (int s = van%36; s != (tot%36); s = (s+1)%36)
             if (sector[s] < m) m = sector[s];
         return m;
     };
 
     float minVoorSmal = MAX_RANGE;
-    {
-        float m1 = sectorMin(0,  4);
-        float m2 = sectorMin(33, 36);
-        minVoorSmal = (m1 < m2) ? m1 : m2;
-    }
+    { float m1=sectorMin(0,4); float m2=sectorMin(33,36); minVoorSmal=(m1<m2)?m1:m2; }
     float minVoor = MAX_RANGE;
-    {
-        float m1 = sectorMin(0,  5);
-        float m2 = sectorMin(31, 36);
-        minVoor = (m1 < m2) ? m1 : m2;
-    }
+    { float m1=sectorMin(0,5); float m2=sectorMin(31,36); minVoor=(m1<m2)?m1:m2; }
 
-    float minRechtsZijde = sectorMin(5,  13);
+    float minRechtsZijde = sectorMin(5, 13);
     float minLinksZijde  = sectorMin(23, 31);
-
-    float minRechts = sectorMin(5,  18);
-    float minLinks  = sectorMin(19, 35);
-
-    float ruimteRechts = sectorMin(1,  18);
-    float ruimteLinks  = sectorMin(19, 36);
+    float minRechts      = sectorMin(5, 18);
+    float minLinks       = sectorMin(19, 35);
+    float ruimteRechts   = sectorMin(1, 18);
+    float ruimteLinks    = sectorMin(19, 36);
 
     bool inGang = (minVoor >= REMMEN_MM) &&
-                  (minRechtsZijde < VEILIG_MM) &&
-                  (minLinksZijde  < VEILIG_MM);
+                  (minRechtsZijde < VEILIG_MM) && (minLinksZijde < VEILIG_MM);
 
     ScanAnalyse res{};
-    res.ruimteLinks  = ruimteLinks;
-    res.ruimteRechts = ruimteRechts;
-    res.minVoor      = minVoor;
-    res.minLinks     = minLinks;
-    res.minRechts    = minRechts;
-    res.uitwijkHoek  = g_vorigeUitwijk;
+    res.ruimteLinks=ruimteLinks; res.ruimteRechts=ruimteRechts;
+    res.minVoor=minVoor; res.minLinks=minLinks; res.minRechts=minRechts;
+    res.uitwijkHoek = g_vorigeUitwijk;
 
     if (minVoor >= VEILIG_MM || inGang) {
-        res.staat = 0;
-        g_vorigeUitwijk = 0.0f;
-        return res;
+        res.staat = 0; g_vorigeUitwijk = 0.0f; return res;
     }
 
     bool rechtsVeilig = (minRechtsZijde > CHASSIS_MM);
     bool linksVeilig  = (minLinksZijde  > CHASSIS_MM);
-
     float scoreRechts = rechtsVeilig ? ruimteRechts : 0.0f;
     float scoreLinks  = linksVeilig  ? ruimteLinks  : 0.0f;
-
     if (g_vorigeUitwijk > 0.0f) scoreRechts += HYSTERESIS;
     if (g_vorigeUitwijk < 0.0f) scoreLinks  += HYSTERESIS;
 
-    float nieuweUitwijk;
-    if (!rechtsVeilig && !linksVeilig) {
-        nieuweUitwijk = (ruimteRechts >= ruimteLinks) ? +1.0f : -1.0f;
-    } else {
-        nieuweUitwijk = (scoreRechts >= scoreLinks) ? +1.0f : -1.0f;
-    }
-
+    float nieuweUitwijk = (!rechtsVeilig && !linksVeilig)
+        ? ((ruimteRechts >= ruimteLinks) ? +1.0f : -1.0f)
+        : ((scoreRechts  >= scoreLinks)  ? +1.0f : -1.0f);
     res.uitwijkHoek = nieuweUitwijk;
     g_vorigeUitwijk = nieuweUitwijk;
 
     if      (minVoorSmal < KRITIEK_MM) res.staat = 3;
     else if (minVoor     < REMMEN_MM)  res.staat = 2;
     else                               res.staat = 1;
-
     return res;
 }
 
@@ -458,52 +400,33 @@ static ScanAnalyse AnalyseerScan(const float ranges[360])
 // ════════════════════════════════════════════════════════════════
 
 struct RobotStatus {
-    float   posX, posY;
-    float   theta;
-    float   speedLinks;
-    float   speedRechts;
-    float   imuYaw;
-    float   imuOmega;
-    float   cmdLin;
-    float   cmdAng;
-    bool    heeftPad;
-    int     waypointHuidig;
-    int     waypointTotaal;
-    float   doelX, doelY;
-    float   afstandTotDoel;
-    float   hoekFout;
-    int     obstRichting;
-    float   scanMinVoor;
-    float   scanRuimteLinks;
-    float   scanRuimteRechts;
-    float   scanUitwijkHoek;
-    int     scanCount;
-    int     dekking;
-    bool    robotCelVrij;
-    int     staat;
-    bool    encGeldig;
-    bool    imuGeldig;
+    float posX, posY, theta;
+    float speedLinks, speedRechts, imuYaw, imuOmega;
+    float cmdLin, cmdAng;
+    bool  heeftPad;
+    int   waypointHuidig, waypointTotaal;
+    float doelX, doelY, afstandTotDoel, hoekFout;
+    int   obstRichting;
+    float scanMinVoor, scanRuimteLinks, scanRuimteRechts, scanUitwijkHoek;
+    int   scanCount, dekking;
+    bool  robotCelVrij;
+    int   staat;   // 0=vrij 1=navigeert 2=obstakel 3=herplan 4=terug_home 5=klaar
+    bool  encGeldig, imuGeldig;
+    int   aantalFrontiers;
 };
 
 static void PrintStatus(const RobotStatus& s)
 {
     printf("\033[H");
-
     printf("╔══════════════════════════════════════════════════════════╗\n");
     printf("║           ROBOT AUTONOOM — LIVE STATUS                  ║\n");
     printf("╠═══════════════════════════╦══════════════════════════════╣\n");
-
     printf("║  LOKALISATIE              ║  AANSTURING                  ║\n");
-    printf("║  X   : %8.0f mm        ║  Linear  : %7.1f mm/s      ║\n",
-           s.posX, s.cmdLin);
-    printf("║  Y   : %8.0f mm        ║  Angular : %7.1f deg/s     ║\n",
-           s.posY, s.cmdAng);
-    printf("║  θ   : %8.1f °          ║                              ║\n",
-           s.theta);
-
+    printf("║  X   : %8.0f mm        ║  Linear  : %7.1f mm/s      ║\n", s.posX, s.cmdLin);
+    printf("║  Y   : %8.0f mm        ║  Angular : %7.1f deg/s     ║\n", s.posY, s.cmdAng);
+    printf("║  θ   : %8.1f °          ║                              ║\n", s.theta);
     printf("╠═══════════════════════════╬══════════════════════════════╣\n");
     printf("║  SENSOREN                 ║  NAVIGATIE                   ║\n");
-
     if (s.encGeldig) {
         printf("║  ENC L: %7.1f mm/s      ║  Pad     : %s             ║\n",
                s.speedLinks, s.heeftPad ? "JA  " : "NEE ");
@@ -523,79 +446,89 @@ static void PrintStatus(const RobotStatus& s)
         printf("║                           ║  Afstand : %7.0f mm       ║\n",
                s.afstandTotDoel);
     }
-    printf("║                           ║  HoekFout: %7.1f °         ║\n",
-           s.hoekFout);
-
+    printf("║                           ║  HoekFout: %7.1f °         ║\n", s.hoekFout);
     printf("╠═══════════════════════════╩══════════════════════════════╣\n");
-    printf("║  KAART   Scans: %4d   Dekking: %3d%%   Cel: %s       ║\n",
-           s.scanCount, s.dekking, s.robotCelVrij ? "VRIJ " : "FOUT!");
-
+    printf("║  KAART  Scans:%4d  Dekking:%3d%%  Frontiers:%-4d  Cel:%s║\n",
+           s.scanCount, s.dekking, s.aantalFrontiers,
+           s.robotCelVrij ? "VRIJ " : "FOUT!");
     {
         int gevuld = s.dekking * 40 / 100;
         printf("║  [");
         for (int i = 0; i < 40; ++i) printf(i < gevuld ? "█" : "░");
         printf("]  %3d%%  ║\n", s.dekking);
     }
-
     printf("╠══════════════════════════════════════════════════════════╣\n");
     const char* staatTekst = "";
     const char* staatKleur = "";
     switch (s.staat) {
-        case 0: staatTekst = "VRIJ RIJDEN  (geen obstakel, geen pad — rechtdoor)";
-                staatKleur = "\033[32m"; break;
-        case 1: staatTekst = "NAVIGEERT    (pad actief, bijsturing via navigator)";
-                staatKleur = "\033[36m"; break;
-        case 2: staatTekst = "OBSTAKEL     (uitwijken op basis van 360° scan)    ";
-                staatKleur = "\033[33m"; break;
-        case 3: staatTekst = "HERPLANNEN   (wacht op nieuw pad van A*)           ";
-                staatKleur = "\033[35m"; break;
+        case 0: staatTekst="VRIJ RIJDEN  (geen obstakel, geen pad — rechtdoor)"; staatKleur="\033[32m"; break;
+        case 1: staatTekst="NAVIGEERT    (pad actief, bijsturing via navigator)"; staatKleur="\033[36m"; break;
+        case 2: staatTekst="OBSTAKEL     (uitwijken op basis van 360° scan)    "; staatKleur="\033[33m"; break;
+        case 3: staatTekst="HERPLANNEN   (wacht op nieuw pad van A*)           "; staatKleur="\033[35m"; break;
+        case 4: staatTekst="TERUG HOME   (exploratie klaar, rijdt naar start)  "; staatKleur="\033[34m"; break;
+        case 5: staatTekst="KLAAR        (exploratie volledig, robot gestopt)   "; staatKleur="\033[32m"; break;
     }
     printf("║  %s● %s\033[0m  ║\n", staatKleur, staatTekst);
-
     const char* obstKleur =
-        (s.obstRichting == 0) ? "\033[32m" :
-        (s.obstRichting == 1) ? "\033[33m" :
-        (s.obstRichting == 2) ? "\033[33m" : "\033[31m";
+        (s.obstRichting==0)?"\033[32m":(s.obstRichting==1)?"\033[33m":
+        (s.obstRichting==2)?"\033[33m":"\033[31m";
     const char* obstLabel =
-        (s.obstRichting == 0) ? "VRIJ   " :
-        (s.obstRichting == 1) ? "VEILIG " :
-        (s.obstRichting == 2) ? "REMMEN " : "KRITIEK";
+        (s.obstRichting==0)?"VRIJ   ":(s.obstRichting==1)?"VEILIG ":
+        (s.obstRichting==2)?"REMMEN ":"KRITIEK";
     const char* uitwijkLabel = (s.scanUitwijkHoek >= 0.0f) ? "← LINKS " : "RECHTS →";
-
     printf("║  %s%s\033[0m  Voor:%5.0fmm  Links:%5.0fmm  Rechts:%5.0fmm  %s  ║\n",
-           obstKleur, obstLabel,
-           s.scanMinVoor, s.scanRuimteLinks, s.scanRuimteRechts,
+           obstKleur, obstLabel, s.scanMinVoor, s.scanRuimteLinks, s.scanRuimteRechts,
            (s.obstRichting > 0) ? uitwijkLabel : "        ");
-
     printf("╚══════════════════════════════════════════════════════════╝\n");
     fflush(stdout);
 }
+
 
 static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
 {
     Localisation loc(235.0f);
     Mapper mapper(260, 160, 0.05f);
 
-    constexpr float DT             = 0.1f;
-    constexpr long  LOOP_US        = 100000;
-    constexpr float LIN_SPEED      = 278.0f;
-    constexpr int   HERPLAN_SCANS  =  15;
+    constexpr float DT            = 0.1f;
+    constexpr long  LOOP_US       = 100000;
+    constexpr float LIN_SPEED     = 278.0f;
+    constexpr int   HERPLAN_SCANS = 15;
 
-    int      scanCount         = 0;
-    int      scansSindsHerplan = HERPLAN_SCANS;
+    // ── Exploratie-eindconditie ───────────────────────────────────────
+    // FRONTIER_DREMPEL : minder dan dit aantal frontiers → klaar met exploreren
+    // MISLUKT_DREMPEL  : zoveel opeenvolgende mislukte A*-pogingen → klaar
+    //                    (alle resterende frontiers zijn onbereikbaar)
+    // HOME_DREMPEL_MM  : binnen deze afstand van beginpunt = thuis
+    constexpr int   FRONTIER_DREMPEL = 3;
+    constexpr int   MISLUKT_DREMPEL  = 5;
+    constexpr float HOME_DREMPEL_MM  = 300.0f;
+
+    int  scanCount         = 0;
+    int  scansSindsHerplan = HERPLAN_SCANS;
+    int  mislukteTeller    = 0;
 
     PathPlanner planner(mapper.GetMap());
     Navigator   navigator;
-    bool        heeftPad   = false;
+    bool        heeftPad = false;
 
-    // ── Ontwijkfase state-machine ─────────────────────────────
+    // ── Beginpunt onthouden ───────────────────────────────────────────
+    // De localisatie start op (0,0). We vergrendelen het beginpunt zodra
+    // de eerste geldige sensordata binnenkomt, zodat kleine sensor-offsets
+    // geen invloed hebben op de thuiskoers.
+    Position beginPunt(0.0f, 0.0f, 0.0f);
+    bool     beginPuntVergrendeld = false;
+
+    // ── Exploratietoestand ────────────────────────────────────────────
+    enum class ExploratieStaat { EXPLOREREN, TERUG_HOME, KLAAR };
+    ExploratieStaat exploratieStaat = ExploratieStaat::EXPLOREREN;
+
+    // ── Ontwijkfase state-machine ─────────────────────────────────────
     enum class OntwijkFase { NORMAAL, DRAAIEN, VRIJRIJDEN, ACHTERUIT };
-    OntwijkFase ontwijkFase    = OntwijkFase::NORMAAL;
-    float       doelHoek       = 0.0f;
-    float       draaiRichting  = 0.0f;
-    int         vrijrijTicks   = 0;
+    OntwijkFase ontwijkFase   = OntwijkFase::NORMAAL;
+    float       doelHoek      = 0.0f;
+    float       draaiRichting = 0.0f;
+    int         vrijrijTicks  = 0;
     int         achteruitTicks = 0;
-    // FIX Bug 4: vastzitTeller wordt alleen gereset na succesvol vrijrijden
     int         vastzitTeller  = 0;
     constexpr int VRIJRIJ_TICKS   = 25;
     constexpr int ACHTERUIT_TICKS = 18;
@@ -640,9 +573,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
             usleep(100000);
             if (pogingen > 150) {
                 printf("FOUT: LIDAR geeft geen data na 15s. Controleer /dev/ttyUSB0.\n");
-                ka.Stop();
-                ka.Shutdown();
-                return 1;
+                ka.Stop(); ka.Shutdown(); return 1;
             }
         }
     }
@@ -659,13 +590,17 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
         if (sens.geldig) {
             loc.Predict(sens.speedLinks, sens.speedRechts, DT);
             loc.UpdateIMU(sens.yawGraden, DT);
+            // Vergrendel beginpunt bij eerste geldige sensordata
+            if (!beginPuntVergrendeld) {
+                beginPunt = Position(loc.GetX(), loc.GetY(), loc.GetTheta());
+                beginPuntVergrendeld = true;
+            }
         }
 
         Position pos(loc.GetX(), loc.GetY(), loc.GetTheta());
 
         // ── 2. LIDAR → kaart ─────────────────────────────────────
         bool nieuweScan = false;
-
         if (lidar.Update()) {
             float angles[360];
             for (int a = 0; a < 360; ++a) {
@@ -680,10 +615,9 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
         }
 
         ScanAnalyse scan{};
-        if (heeftRanges)
-            scan = AnalyseerScan(lastRanges);
+        if (heeftRanges) scan = AnalyseerScan(lastRanges);
 
-        // ── 3. Autonoom rijden ────────────────────────────────────
+        // ── 3. Status struct vullen ───────────────────────────────
         RobotStatus st{};
         st.posX        = pos.GetX();
         st.posY        = pos.GetY();
@@ -697,239 +631,301 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
         st.scanCount   = scanCount;
         st.dekking     = mapper.GetCoverage();
         st.heeftPad    = heeftPad;
+        st.aantalFrontiers = TelFrontiers(mapper);
 
         {
             constexpr float MM2M = 0.001f;
             int cx = 0, cy = 0;
-            mapper.GetMap().WorldToCell(pos.GetX() * MM2M, pos.GetY() * MM2M, cx, cy);
+            mapper.GetMap().WorldToCell(pos.GetX()*MM2M, pos.GetY()*MM2M, cx, cy);
             st.robotCelVrij = mapper.GetMap().InBounds(cx, cy) &&
                               mapper.GetMap().IsFree(cx, cy);
         }
-
         if (heeftPad && !navigator.IsFinished()) {
             Position doel = navigator.GetCurrentTarget();
-            st.doelX          = doel.GetX();
-            st.doelY          = doel.GetY();
+            st.doelX = doel.GetX(); st.doelY = doel.GetY();
             st.waypointHuidig = navigator.GetPath().GetCurrentIndex() + 1;
             st.waypointTotaal = navigator.GetPath().GetSize();
-            float dx = doel.GetX() - pos.GetX();
-            float dy = doel.GetY() - pos.GetY();
-            st.afstandTotDoel = std::sqrt(dx*dx + dy*dy);
-            float desired     = std::atan2(dy, dx) * (180.0f / static_cast<float>(M_PI));
-            float err         = desired - loc.GetTheta();
-            while (err >  180.0f) err -= 360.0f;
-            while (err < -180.0f) err += 360.0f;
+            float dx = doel.GetX()-pos.GetX(), dy = doel.GetY()-pos.GetY();
+            st.afstandTotDoel = std::sqrt(dx*dx+dy*dy);
+            float desired = std::atan2(dy,dx)*(180.0f/static_cast<float>(M_PI));
+            float err = desired - loc.GetTheta();
+            while (err>180.0f) err-=360.0f; while (err<-180.0f) err+=360.0f;
             st.hoekFout = err;
         }
-
-        st.obstRichting     = scan.staat;
-        st.scanMinVoor      = scan.minVoor;
-        st.scanRuimteLinks  = scan.ruimteLinks;
-        st.scanRuimteRechts = scan.ruimteRechts;
-        st.scanUitwijkHoek  = scan.uitwijkHoek;
+        st.obstRichting=scan.staat; st.scanMinVoor=scan.minVoor;
+        st.scanRuimteLinks=scan.ruimteLinks; st.scanRuimteRechts=scan.ruimteRechts;
+        st.scanUitwijkHoek=scan.uitwijkHoek;
 
         auto normDeg = [](float d) -> float {
-            while (d >  180.0f) d -= 360.0f;
-            while (d < -180.0f) d += 360.0f;
-            return d;
+            while (d>180.0f) d-=360.0f; while (d<-180.0f) d+=360.0f; return d;
         };
 
-        if (ontwijkFase == OntwijkFase::DRAAIEN) {
-            float huidig = loc.GetTheta();
-            float fout   = normDeg(doelHoek - huidig);
+        // ════════════════════════════════════════════════════════
+        //  RIJLOGICA — drie niveaus:
+        //    KLAAR        → niets doen, robot staat stil
+        //    TERUG_HOME   → navigeer naar beginpunt, stop bij aankomst
+        //    EXPLOREREN   → normale frontier-lus met obstakelontwijking
+        //
+        //  De obstakelontwijking (DRAAIEN/VRIJRIJDEN/ACHTERUIT) werkt in
+        //  ALLE staten — ook tijdens de terugrit.
+        // ════════════════════════════════════════════════════════
 
-            if (std::fabs(fout) < 8.0f) {
-                ontwijkFase  = OntwijkFase::VRIJRIJDEN;
-                // FIX Bonus: adaptieve vrijrijtijd — kort in krappe ruimte
-                vrijrijTicks = (scan.minVoor < 600.0f) ? 8 : VRIJRIJ_TICKS;
-                scansSindsHerplan = HERPLAN_SCANS;
-                ka.SetCommand(LIN_SPEED, 0.0f);
-            } else if (heeftRanges && scan.staat >= 3 &&
-                       ((draaiRichting > 0 && scan.minRechts < 350.0f) ||
-                        (draaiRichting < 0 && scan.minLinks  < 350.0f))) {
-                draaiRichting = -draaiRichting;
-                doelHoek = normDeg(huidig - draaiRichting * 90.0f);
-                ka.SetCommand(0.0f, draaiRichting * 40.0f);
-            } else {
-                ka.SetCommand(0.0f, draaiRichting * 40.0f);
-            }
-            st.staat = 2;
-
-        } else if (ontwijkFase == OntwijkFase::VRIJRIJDEN) {
-            if (heeftRanges && scan.staat >= 3) {
-                ++vastzitTeller;
-                if (vastzitTeller >= VASTZIT_DREMPEL) {
-                    // FIX Bug 4: vastzitTeller NIET resetten hier — pas na succesvol vrijrijden
-                    achteruitTicks = ACHTERUIT_TICKS;
-                    ontwijkFase    = OntwijkFase::ACHTERUIT;
-                    ka.SetCommand(-LIN_SPEED * 0.6f, 0.0f);
-                } else {
-                    draaiRichting = -draaiRichting;
-                    doelHoek      = normDeg(loc.GetTheta() - draaiRichting * 90.0f);
-                    ontwijkFase   = OntwijkFase::DRAAIEN;
-                    ka.SetCommand(0.0f, draaiRichting * 40.0f);
-                }
-            } else {
-                --vrijrijTicks;
-                if (vrijrijTicks <= 0) {
-                    // FIX Bug 4: alleen hier resetten na succesvol vrijrijden
-                    vastzitTeller     = 0;
-                    ontwijkFase       = OntwijkFase::NORMAAL;
-                    heeftPad          = false;
-                    scansSindsHerplan = HERPLAN_SCANS;
-                    g_vorigeUitwijk   = 0.0f;
-                } else {
-                    ka.SetCommand(LIN_SPEED, 0.0f);
-                }
-            }
-            st.staat = 2;
-
-        } else if (ontwijkFase == OntwijkFase::ACHTERUIT) {
-            --achteruitTicks;
-            if (achteruitTicks <= 0) {
-                // FIX Bug 2: kies doelhoek op basis van de richting met meeste vrije ruimte
-                // in plaats van altijd een vaste 150° draai
-                float besteRuimte = 0.0f;
-                float besteHoek   = 0.0f;
-                for (int s = 0; s < 36; ++s) {
-                    float ruimte = 8000.0f;
-                    for (int a = s * 10; a < s * 10 + 10; ++a) {
-                        if (lastRanges[a] > 0.0f && lastRanges[a] < ruimte)
-                            ruimte = lastRanges[a];
-                    }
-                    if (ruimte > besteRuimte) {
-                        besteRuimte = ruimte;
-                        besteHoek   = static_cast<float>(s * 10);
-                    }
-                }
-                // Omzetten naar gesigneerde hoek (-180..180) voor normalisatie
-                if (besteHoek > 180.0f) besteHoek -= 360.0f;
-                doelHoek      = normDeg(loc.GetTheta() + besteHoek);
-                draaiRichting = (besteHoek >= 0.0f) ? 1.0f : -1.0f;
-                if (std::fabs(besteHoek) < 5.0f) draaiRichting = 1.0f; // fallback
-                ontwijkFase   = OntwijkFase::DRAAIEN;
-                ka.SetCommand(0.0f, draaiRichting * 40.0f);
-                // Sla huidige positie op als ontsnappositie (na achteruit zijn we op nieuwe plek)
-                ontsnapX = loc.GetX();
-                ontsnapY = loc.GetY();
-            } else {
-                ka.SetCommand(-LIN_SPEED * 0.6f, 0.0f);
-            }
-            st.staat = 2;
+        if (exploratieStaat == ExploratieStaat::KLAAR) {
+            // Niets doen — robot staat stil, lus eindigt via running=false
+            st.staat = 5;
 
         } else {
-            // ── Fase NORMAAL ──────────────────────────────────────
-            if (heeftRanges && scan.staat >= 3) {
-                ontsnapX      = loc.GetX();
-                ontsnapY      = loc.GetY();
-                draaiRichting = scan.uitwijkHoek;
-                doelHoek      = normDeg(loc.GetTheta() - draaiRichting * 90.0f);
-                ontwijkFase   = OntwijkFase::DRAAIEN;
-                heeftPad      = false;
-                ka.SetCommand(0.0f, draaiRichting * 40.0f);
+            // ── Obstakelontwijking (geldig in TERUG_HOME én EXPLOREREN) ──
+            if (ontwijkFase == OntwijkFase::DRAAIEN) {
+                float huidig = loc.GetTheta();
+                float fout   = normDeg(doelHoek - huidig);
+                if (std::fabs(fout) < 8.0f) {
+                    ontwijkFase  = OntwijkFase::VRIJRIJDEN;
+                    vrijrijTicks = (scan.minVoor < 600.0f) ? 8 : VRIJRIJ_TICKS;
+                    scansSindsHerplan = HERPLAN_SCANS;
+                    ka.SetCommand(LIN_SPEED, 0.0f);
+                } else if (heeftRanges && scan.staat >= 3 &&
+                           ((draaiRichting>0 && scan.minRechts<350.0f) ||
+                            (draaiRichting<0 && scan.minLinks <350.0f))) {
+                    draaiRichting = -draaiRichting;
+                    doelHoek = normDeg(huidig - draaiRichting * 90.0f);
+                    ka.SetCommand(0.0f, draaiRichting * 40.0f);
+                } else {
+                    ka.SetCommand(0.0f, draaiRichting * 40.0f);
+                }
                 st.staat = 2;
 
-            } else if (heeftRanges && scan.staat == 2) {
-                ka.SetCommand(LIN_SPEED * 0.35f, scan.uitwijkHoek * 22.0f);
+            } else if (ontwijkFase == OntwijkFase::VRIJRIJDEN) {
+                if (heeftRanges && scan.staat >= 3) {
+                    ++vastzitTeller;
+                    if (vastzitTeller >= VASTZIT_DREMPEL) {
+                        achteruitTicks = ACHTERUIT_TICKS;
+                        ontwijkFase    = OntwijkFase::ACHTERUIT;
+                        ka.SetCommand(-LIN_SPEED * 0.6f, 0.0f);
+                    } else {
+                        draaiRichting = -draaiRichting;
+                        doelHoek = normDeg(loc.GetTheta() - draaiRichting * 90.0f);
+                        ontwijkFase = OntwijkFase::DRAAIEN;
+                        ka.SetCommand(0.0f, draaiRichting * 40.0f);
+                    }
+                } else {
+                    --vrijrijTicks;
+                    if (vrijrijTicks <= 0) {
+                        vastzitTeller     = 0;   // alleen hier resetten
+                        ontwijkFase       = OntwijkFase::NORMAAL;
+                        heeftPad          = false;
+                        scansSindsHerplan = HERPLAN_SCANS;
+                        g_vorigeUitwijk   = 0.0f;
+                    } else {
+                        ka.SetCommand(LIN_SPEED, 0.0f);
+                    }
+                }
                 st.staat = 2;
 
-            } else if (heeftPad && !navigator.IsFinished()) {
-                navigator.Update(pos);
-                DriveCommand cmd = navigator.GetNextCommand(pos);
-                float extraAng = (heeftRanges && scan.staat == 1)
-                                 ? scan.uitwijkHoek * 8.0f : 0.0f;
-                ka.SetCommand(cmd.GetLinVelocity(), cmd.GetAngVelocity() + extraAng);
-                st.staat = 1;
+            } else if (ontwijkFase == OntwijkFase::ACHTERUIT) {
+                --achteruitTicks;
+                if (achteruitTicks <= 0) {
+                    float besteRuimte = 0.0f, besteHoek = 0.0f;
+                    for (int s = 0; s < 36; ++s) {
+                        float ruimte = 8000.0f;
+                        for (int a = s*10; a < s*10+10; ++a)
+                            if (lastRanges[a]>0.0f && lastRanges[a]<ruimte) ruimte=lastRanges[a];
+                        if (ruimte > besteRuimte) { besteRuimte=ruimte; besteHoek=(float)(s*10); }
+                    }
+                    if (besteHoek > 180.0f) besteHoek -= 360.0f;
+                    doelHoek = normDeg(loc.GetTheta() + besteHoek);
+                    draaiRichting = (besteHoek >= 0.0f) ? 1.0f : -1.0f;
+                    if (std::fabs(besteHoek) < 5.0f) draaiRichting = 1.0f;
+                    ontwijkFase = OntwijkFase::DRAAIEN;
+                    ka.SetCommand(0.0f, draaiRichting * 40.0f);
+                    ontsnapX = loc.GetX(); ontsnapY = loc.GetY();
+                } else {
+                    ka.SetCommand(-LIN_SPEED * 0.6f, 0.0f);
+                }
+                st.staat = 2;
 
             } else {
-                if (heeftPad && navigator.IsFinished()) {
-                    heeftPad          = false;
-                    st.heeftPad       = false;
-                    scansSindsHerplan = HERPLAN_SCANS;
-                }
+                // ── OntwijkFase::NORMAAL ─────────────────────────
+                // Hier splitsen we op ExploratieStaat
 
-                if (nieuweScan && scansSindsHerplan >= HERPLAN_SCANS) {
-                    scansSindsHerplan = 0;
-                    st.staat          = 3;
+                if (exploratieStaat == ExploratieStaat::TERUG_HOME) {
+                    // ── TERUG_HOME ────────────────────────────────
+                    st.staat = 4;
 
-                    // FIX Bug 1: gebruik nieuwe KiesFrontierDoel met LIDAR-score
-                    Position doel = KiesFrontierDoel(mapper, pos, lastRanges);
+                    float dx = pos.GetX() - beginPunt.GetX();
+                    float dy = pos.GetY() - beginPunt.GetY();
+                    float afstandHome = std::sqrt(dx*dx + dy*dy);
 
-                    float dx = doel.GetX() - ontsnapX;
-                    float dy = doel.GetY() - ontsnapY;
-                    bool teVlakBijOntsnap = (dx*dx + dy*dy) < (ONTSNAP_RADIUS * ONTSNAP_RADIUS);
+                    if (afstandHome < HOME_DREMPEL_MM) {
+                        // Thuis aangekomen!
+                        ka.Stop();
+                        exploratieStaat = ExploratieStaat::KLAAR;
+                        printf("\n\033[32m✓ Thuis aangekomen! Exploratie klaar.\033[0m\n");
+                        if (mapper.SaveDebugMap("kaart.pgm"))
+                            printf("Kaart opgeslagen: kaart.pgm\n");
 
-                    if (teVlakBijOntsnap && ontsnapX < 1e8f) {
-                        Position nepPos(ontsnapX, ontsnapY, pos.GetTheta());
-                        Position alternatief = KiesFrontierDoel(mapper, nepPos, lastRanges);
-                        float d1sq = dx*dx + dy*dy;
-                        float dx2 = alternatief.GetX() - ontsnapX;
-                        float dy2 = alternatief.GetY() - ontsnapY;
-                        float d2sq = dx2*dx2 + dy2*dy2;
-                        if (d2sq > d1sq) doel = alternatief;
-                        else ontsnapX = ontsnapY = 1e9f;
-                    }
-
-                    if (doel.GetX() == pos.GetX() && doel.GetY() == pos.GetY()) {
-                        ka.SetCommand(LIN_SPEED, 0.0f);
-                        scansSindsHerplan = HERPLAN_SCANS;
-                        st.staat = 0;
-                    } else {
-                        st.doelX = doel.GetX();
-                        st.doelY = doel.GetY();
-                        Path pad = planner.PlanPath(pos, doel, mapper.GetMap());
-
+                    } else if (!heeftPad || navigator.IsFinished()) {
+                        // Plan of herplan pad naar beginpunt
+                        heeftPad = false;
+                        Path pad = planner.PlanPath(pos, beginPunt, mapper.GetMap());
                         if (!pad.IsEmpty()) {
                             navigator.SetPath(pad);
-                            heeftPad          = true;
-                            st.heeftPad       = true;
-                            st.waypointTotaal = pad.GetSize();
-                            st.staat          = 1;
+                            heeftPad = true;
                         } else {
-                            ka.SetCommand(LIN_SPEED, 0.0f);
+                            // A* faalt: stuur direct op beginpunt aan
+                            float hoekNaarHome = std::atan2(-dy, -dx)
+                                                 * (180.0f / static_cast<float>(M_PI));
+                            float hoekFout2 = normDeg(hoekNaarHome - loc.GetTheta());
+                            ka.SetCommand(LIN_SPEED * 0.6f, hoekFout2 * 0.5f);
+                        }
+                    }
+
+                    if (heeftPad && !navigator.IsFinished()) {
+                        navigator.Update(pos);
+                        DriveCommand cmd = navigator.GetNextCommand(pos);
+                        float extraAng = (heeftRanges && scan.staat == 1)
+                                         ? scan.uitwijkHoek * 8.0f : 0.0f;
+                        ka.SetCommand(cmd.GetLinVelocity(), cmd.GetAngVelocity() + extraAng);
+                    }
+
+                    // Obstakel tijdens terugrit → ontwijkfase activeren
+                    if (heeftRanges && scan.staat >= 3) {
+                        ontsnapX = loc.GetX(); ontsnapY = loc.GetY();
+                        draaiRichting = scan.uitwijkHoek;
+                        doelHoek = normDeg(loc.GetTheta() - draaiRichting * 90.0f);
+                        ontwijkFase = OntwijkFase::DRAAIEN;
+                        heeftPad = false;
+                        ka.SetCommand(0.0f, draaiRichting * 40.0f);
+                        st.staat = 2;
+                    }
+
+                } else {
+                    // ── EXPLOREREN ────────────────────────────────
+                    if (heeftRanges && scan.staat >= 3) {
+                        ontsnapX = loc.GetX(); ontsnapY = loc.GetY();
+                        draaiRichting = scan.uitwijkHoek;
+                        doelHoek = normDeg(loc.GetTheta() - draaiRichting * 90.0f);
+                        ontwijkFase = OntwijkFase::DRAAIEN;
+                        heeftPad = false;
+                        ka.SetCommand(0.0f, draaiRichting * 40.0f);
+                        st.staat = 2;
+
+                    } else if (heeftRanges && scan.staat == 2) {
+                        ka.SetCommand(LIN_SPEED * 0.35f, scan.uitwijkHoek * 22.0f);
+                        st.staat = 2;
+
+                    } else if (heeftPad && !navigator.IsFinished()) {
+                        navigator.Update(pos);
+                        DriveCommand cmd = navigator.GetNextCommand(pos);
+                        float extraAng = (heeftRanges && scan.staat == 1)
+                                         ? scan.uitwijkHoek * 8.0f : 0.0f;
+                        ka.SetCommand(cmd.GetLinVelocity(), cmd.GetAngVelocity() + extraAng);
+                        st.staat = 1;
+
+                    } else {
+                        if (heeftPad && navigator.IsFinished()) {
+                            heeftPad = false; st.heeftPad = false;
                             scansSindsHerplan = HERPLAN_SCANS;
+                        }
+
+                        if (nieuweScan && scansSindsHerplan >= HERPLAN_SCANS) {
+                            scansSindsHerplan = 0;
+                            st.staat = 3;
+
+                            // ── Eindconditie ──────────────────────
+                            int aantalFrontiers = TelFrontiers(mapper);
+                            if (aantalFrontiers <= FRONTIER_DREMPEL ||
+                                mislukteTeller  >= MISLUKT_DREMPEL) {
+
+                                printf("\n\033[34m→ Exploratie klaar "
+                                       "(%d frontiers, %d mislukt). "
+                                       "Rijdt terug naar beginpunt.\033[0m\n",
+                                       aantalFrontiers, mislukteTeller);
+
+                                exploratieStaat   = ExploratieStaat::TERUG_HOME;
+                                heeftPad          = false;
+                                mislukteTeller    = 0;
+                                scansSindsHerplan = HERPLAN_SCANS;
+
+                                // Meteen eerste pad naar huis plannen
+                                Path pad = planner.PlanPath(pos, beginPunt, mapper.GetMap());
+                                if (!pad.IsEmpty()) {
+                                    navigator.SetPath(pad);
+                                    heeftPad = true;
+                                }
+
+                            } else {
+                                // Normaal: kies volgende frontier
+                                Position doel = KiesFrontierDoel(mapper, pos, lastRanges);
+
+                                float dx = doel.GetX() - ontsnapX;
+                                float dy = doel.GetY() - ontsnapY;
+                                bool teVlakBijOntsnap =
+                                    (dx*dx+dy*dy) < (ONTSNAP_RADIUS*ONTSNAP_RADIUS);
+
+                                if (teVlakBijOntsnap && ontsnapX < 1e8f) {
+                                    Position nepPos(ontsnapX, ontsnapY, pos.GetTheta());
+                                    Position alt = KiesFrontierDoel(mapper, nepPos, lastRanges);
+                                    float d1sq = dx*dx+dy*dy;
+                                    float dx2=alt.GetX()-ontsnapX, dy2=alt.GetY()-ontsnapY;
+                                    float d2sq=dx2*dx2+dy2*dy2;
+                                    if (d2sq > d1sq) doel = alt;
+                                    else ontsnapX = ontsnapY = 1e9f;
+                                }
+
+                                if (doel.GetX() == pos.GetX() && doel.GetY() == pos.GetY()) {
+                                    ++mislukteTeller;
+                                    ka.SetCommand(LIN_SPEED, 0.0f);
+                                    scansSindsHerplan = HERPLAN_SCANS;
+                                    st.staat = 0;
+                                } else {
+                                    st.doelX = doel.GetX(); st.doelY = doel.GetY();
+                                    Path pad = planner.PlanPath(pos, doel, mapper.GetMap());
+                                    if (!pad.IsEmpty()) {
+                                        navigator.SetPath(pad);
+                                        heeftPad = true; st.heeftPad = true;
+                                        st.waypointTotaal = pad.GetSize();
+                                        st.staat = 1;
+                                        mislukteTeller = 0;
+                                    } else {
+                                        ++mislukteTeller;
+                                        ka.SetCommand(LIN_SPEED, 0.0f);
+                                        scansSindsHerplan = HERPLAN_SCANS;
+                                        st.staat = 0;
+                                    }
+                                }
+                            }
+                        } else {
+                            float extraAng = (heeftRanges && scan.staat == 1)
+                                             ? scan.uitwijkHoek * 8.0f : 0.0f;
+                            ka.SetCommand(LIN_SPEED, extraAng);
                             st.staat = 0;
                         }
                     }
-                } else {
-                    float extraAng = (heeftRanges && scan.staat == 1)
-                                     ? scan.uitwijkHoek * 8.0f : 0.0f;
-                    ka.SetCommand(LIN_SPEED, extraAng);
-                    st.staat = 0;
                 }
             }
         }
 
         st.cmdLin = ka.GetLin();
         st.cmdAng = ka.GetAng();
-
-        if (nieuweScan)
-            PrintStatus(st);
+        if (nieuweScan) PrintStatus(st);
 
         if (csvLog.is_open()) {
             long tijdMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                               std::chrono::steady_clock::now() - logStart).count();
-            csvLog << tijdMs                 << ','
-                   << st.posX               << ','
-                   << st.posY               << ','
-                   << st.theta              << ','
-                   << st.speedLinks         << ','
-                   << st.speedRechts        << ','
-                   << st.imuYaw             << ','
-                   << st.imuOmega           << ','
-                   << st.cmdLin             << ','
-                   << st.cmdAng             << ','
-                   << st.dekking            << ','
-                   << st.waypointHuidig     << ','
-                   << st.waypointTotaal     << ','
-                   << st.afstandTotDoel     << ','
-                   << st.hoekFout           << ','
-                   << st.staat              << ','
-                   << st.obstRichting       << ','
-                   << st.scanMinVoor        << ','
-                   << st.scanRuimteLinks    << ','
-                   << st.scanRuimteRechts   << '\n';
+            csvLog << tijdMs << ',' << st.posX << ',' << st.posY << ',' << st.theta << ','
+                   << st.speedLinks << ',' << st.speedRechts << ','
+                   << st.imuYaw << ',' << st.imuOmega << ','
+                   << st.cmdLin << ',' << st.cmdAng << ','
+                   << st.dekking << ',' << st.waypointHuidig << ',' << st.waypointTotaal << ','
+                   << st.afstandTotDoel << ',' << st.hoekFout << ','
+                   << st.staat << ',' << st.obstRichting << ',' << st.scanMinVoor << ','
+                   << st.scanRuimteLinks << ',' << st.scanRuimteRechts << '\n';
         }
+
+        // Hoofdlus stoppen zodra KLAAR
+        if (exploratieStaat == ExploratieStaat::KLAAR)
+            running = false;
 
         auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
                            std::chrono::steady_clock::now() - tStart).count();
@@ -939,19 +935,11 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
 
     ka.Stop();
     ka.Shutdown();
-
-    for (int i = 0; i < 10; ++i) {
-        uart.StuurStop();
-        usleep(50000);
-    }
-    printf("Noodstop gestuurd.\n");
+    for (int i = 0; i < 10; ++i) { uart.StuurStop(); usleep(50000); }
+    printf("Robot gestopt.\n");
     lidar.Disconnect();
 
-    if (csvLog.is_open()) {
-        csvLog.close();
-        printf("Log opgeslagen: robot_log.csv\n");
-    }
-
+    if (csvLog.is_open()) { csvLog.close(); printf("Log opgeslagen: robot_log.csv\n"); }
     if (mapper.SaveDebugMap("kaart.pgm"))
         printf("Kaart opgeslagen: kaart.pgm  (dekking: %d%%)\n", mapper.GetCoverage());
 
@@ -1011,18 +999,14 @@ int main() {
         case MenuKeuze::MAPPEN:
             if (!initLidar(lidar)) return 1;
             return RunMappen(uart, lidar);
-
         case MenuKeuze::PICO_COMMUNICATIE:
             return RunPicoCommunicatie(uart);
-
         case MenuKeuze::RIJDEN_EN_MAPPEN:
             if (!initLidar(lidar)) return 1;
             return RunRijdenEnMappen(uart, lidar);
-
         case MenuKeuze::STOPPEN:
             std::cout << "Programma afgesloten.\n";
             return 0;
     }
-
     return 0;
 }
