@@ -7,6 +7,7 @@
 #include <chrono>
 #include <thread>
 #include <mutex>
+#include <cstring>
 #include <atomic>
 #include <unistd.h>
 #include <cstdio>
