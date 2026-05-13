@@ -28,10 +28,6 @@ void PathPlanner::UpdateMap(const GridMap& map) {
 Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
     gridMap = map;
 
-    // ── Eenheden ──────────────────────────────────────────────
-    // start/goal zijn in mm (van Localisation/Position)
-    // WorldToCell verwacht meter → omzetten
-    // CellToWorld geeft meter → omzetten naar mm voor waypoints
     constexpr float MM2M = 0.001f;
     constexpr float M2MM = 1000.0f;
 
@@ -48,7 +44,6 @@ Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
         return Path();
     }
 
-    // GetCell + Cell::OCCUPIED/UNKNOWN → IsOccupied / IsUnknown / IsFree
     auto walkable = [&](int x, int y) -> bool {
         if (!gridMap.InBounds(x, y))    return false;
         if (gridMap.IsOccupied(x, y))   return false;
@@ -56,10 +51,29 @@ Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
         return true;
     };
 
+    // ── FIX Bug 3: als startcel bezet is, zoek dichtstbijzijnde vrije cel ──
     if (!walkable(sx, sy)) {
-        std::cerr << "PathPlanner: start cel niet betreedbaar\n";
-        return Path();
+        bool gevonden = false;
+        for (int r = 1; r <= 5 && !gevonden; ++r) {
+            for (int ddx = -r; ddx <= r && !gevonden; ++ddx) {
+                for (int ddy = -r; ddy <= r && !gevonden; ++ddy) {
+                    if (std::abs(ddx) != r && std::abs(ddy) != r) continue;
+                    int nx = sx + ddx, ny = sy + ddy;
+                    if (walkable(nx, ny)) {
+                        std::cerr << "PathPlanner: start cel bezet, fallback naar ("
+                                  << nx << ", " << ny << ")\n";
+                        sx = nx; sy = ny;
+                        gevonden = true;
+                    }
+                }
+            }
+        }
+        if (!gevonden) {
+            std::cerr << "PathPlanner: start cel niet betreedbaar (ook geen buur vrij)\n";
+            return Path();
+        }
     }
+
     if (!walkable(gx, gy)) {
         std::cerr << "PathPlanner: goal cel niet betreedbaar\n";
         return Path();
@@ -112,7 +126,7 @@ Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
         return Path();
     }
 
-    // ── Reconstrueer pad goal → start als ruw cel-voor-cel pad ──
+    // ── Reconstrueer pad goal → start ──
     std::vector<std::pair<int,int>> rawCells;
     {
         int cx = gx, cy = gy;
@@ -127,18 +141,13 @@ Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
         std::reverse(rawCells.begin(), rawCells.end());
     }
 
-    // ── Waypoint-verdunning: bewaar alleen hoekpunten ────────────
-    // Een hoekpunt is een cel waarbij de richting verandert t.o.v.
-    // de vorige stap. Zo rijdt de robot lange rechte stukken door
-    // zonder bij elke cel een nieuw waypoint te verwachten.
-    // Minimale segmentlengte: MIN_SEG cellen (voorkomt te korte stukjes)
-    constexpr int MIN_SEG = 5;   // ≈ 5 × 5 cm = 25 cm minimumsegment
+    // ── Waypoint-verdunning: bewaar alleen hoekpunten ──
+    constexpr int MIN_SEG = 5;
 
-    // Helper: cel → waypoint in mm
     auto celNaarWaypoint = [&](int cx2, int cy2) -> Position {
         float wx_m, wy_m;
         gridMap.CellToWorld(cx2, cy2, wx_m, wy_m);
-        return Position(wx_m * M2MM, wy_m * M2MM, 0.0f);  // meter → mm
+        return Position(wx_m * M2MM, wy_m * M2MM, 0.0f);
     };
 
     std::vector<Position> waypoints;
