@@ -106,7 +106,6 @@ void GridMap::IntegrateScan(float robotX, float robotY, float robotTheta,
 
     float robotX_m = robotX * MM2M;
     float robotY_m = robotY * MM2M;
-    float maxRange_m = maxRange * MM2M;
 
     int rx, ry;
     WorldToCell(robotX_m, robotY_m, rx, ry);
@@ -114,7 +113,6 @@ void GridMap::IntegrateScan(float robotX, float robotY, float robotTheta,
     for (int i = 0; i < count; ++i) {
         float dist_mm = ranges[i];
 
-        // Ongeldige of te verre metingen negeren
         if (dist_mm <= 0.0f || dist_mm > maxRange) continue;
 
         float dist_m = dist_mm * MM2M;

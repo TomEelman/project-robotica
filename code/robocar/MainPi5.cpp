@@ -389,7 +389,7 @@ static ScanAnalyse AnalyseerScan(const float ranges[360])
         sectorN[s] += 1;
     }
     for (int s = 0; s < 36; ++s)
-        if (sectorN[s] > 0) sector[s] /= sectorN[s];
+        if (sectorN[s] > 0) sector[s] /= static_cast<float>(sectorN[s]);
 
     // ── Stap 2: minimale afstand in kritieke zones ────────────
     // Voorwaarts = ±45° = sector 0–4 en 32–35
