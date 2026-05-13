@@ -368,123 +368,125 @@ struct ScanAnalyse {
 
 // ── AnalyseerScan ────────────────────────────────────────────────────────────
 //
-//  Gebruikt de ruwe LIDAR-meting (360 waarden, index = LIDAR-hoek in graden).
-//  robotTheta (graden) roteert de indices zodat sector 0 altijd "recht voor
-//  de robot" is, ongeacht de rijrichting.
+//  LIDAR-indices zijn robot-relatief: index 0 = recht voor, 90 = rechts,
+//  270 = links. Geen rotatie-correctie nodig (GridMap::IntegrateScan
+//  voegt robotTheta zelf toe).
 //
-//  Sectorindeling (na rotatie, t.o.v. robot):
-//    sector  0        =   0° – 10°   = recht voor
-//    sector  4        =  40° – 50°   = voor-rechts
-//    sector  9        =  90°–100°    = rechts
-//    sector 18        = 180°–190°    = achter
-//    sector 27        = 270°–280°    = links
-//    sector 31        = 310°–320°    = voor-links
+//  Drempelwaarden:
+//    VEILIG_MM  = 900mm  — detectie begint, zacht bijsturen
+//    REMMEN_MM  = 550mm  — rem + hard bijsturen
+//    KRITIEK_MM = 350mm  — volledig stop + draai
+//    CHASSIS_MM = 300mm  — minimale zijruimte voor bocht
 //
-//  Fysieke constraints:
-//    VEILIG_MM   = 900mm  — detectie begint hier, zacht bijsturen
-//    REMMEN_MM   = 600mm  — rem naar 40%, hard bijsturen
-//    KRITIEK_MM  = 350mm  — stop + draai op plek (chassis blokkeert <250mm)
-//    CHASSIS_MM  = 300mm  — minimale zijruimte die de robot nodig heeft voor bocht
+//  Uitwijkrichting:
+//    Kiest de kant met de grootste MINIMALE vrije ruimte in de
+//    ±90°-helft (niet het gemiddelde — gemiddelde kan flippen door
+//    verre lege ruimte). Hysteresis van 200mm voorkomt flip-flopping.
 //
-static ScanAnalyse AnalyseerScan(const float ranges[360], float robotTheta = 0.0f)
+static float  g_vorigeUitwijk = 0.0f;  // hysteresis geheugen
+
+static ScanAnalyse AnalyseerScan(const float ranges[360])
 {
     static constexpr float KRITIEK_MM  = 350.0f;
-    static constexpr float REMMEN_MM   = 600.0f;
+    static constexpr float REMMEN_MM   = 550.0f;
     static constexpr float VEILIG_MM   = 900.0f;
     static constexpr float CHASSIS_MM  = 300.0f;
     static constexpr float MAX_RANGE   = 8000.0f;
+    static constexpr float HYSTERESIS  = 200.0f;  // mm voordeel voor huidige kant
 
-    // ── Stap 1: roteer LIDAR-indices naar robot-frame ─────────
-    // LIDAR index 0 = absolute 0°. De robot kijkt in richting robotTheta.
-    // Offset = hoeveel graden we moeten opschuiven zodat robot-voorwaarts
-    // op index 0 belandt.
-    //   robotForwardLidarAngle: welk LIDAR-index overeenkomt met "recht voor"
-    //   Als robotTheta = 90°, dan kijkt de robot naar 90° → LIDAR[90] is voor.
-    //   We willen sector[0] = robot-voor, dus rotatie = +robotTheta.
-    int rotOffset = static_cast<int>(std::fmod(robotTheta + 360.0f, 360.0f));
-
-    // ── Stap 2: bouw sector-gemiddelden per 10° in robot-frame ─
-    // sector[0]  = robot-voor (0°–10°)
-    // sector[9]  = robot-rechts (90°–100°)
-    // sector[27] = robot-links (270°–280°)
-    float sector[36] = {};
-    int   sectorN[36] = {};
+    // ── Stap 1: sector-minima per 10° (geen gemiddelde — min is veiliger) ─
+    // sector[0]  = 0°–10°   = recht voor
+    // sector[9]  = 90°–100° = rechts
+    // sector[27] = 270°–280°= links
+    float sector[36];
+    for (int s = 0; s < 36; ++s) sector[s] = MAX_RANGE;
 
     for (int a = 0; a < 360; ++a) {
         float r = ranges[a];
-        if (r <= 0.0f || r > MAX_RANGE) r = MAX_RANGE;
-        // Roteer: robot-frame hoek = (LIDAR-hoek - rotOffset + 360) % 360
-        int robotAngle = (a - rotOffset + 360) % 360;
-        int s = (robotAngle / 10) % 36;
-        sector[s]  += r;
-        sectorN[s] += 1;
+        if (r <= 0.0f || r > MAX_RANGE) continue;  // ongeldige meting overslaan
+        int s = (a / 10) % 36;
+        if (r < sector[s]) sector[s] = r;
     }
-    for (int s = 0; s < 36; ++s)
-        if (sectorN[s] > 0) sector[s] /= static_cast<float>(sectorN[s]);
 
-    // ── Stap 3: sectorMin helper (wraparound) ─────────────────
+    // ── Stap 2: sectorMin helper met wraparound ───────────────
+    // [van, tot) in sector-indices (0–35), wraps rond 36
     auto sectorMin = [&](int van, int tot) -> float {
         float m = MAX_RANGE;
-        for (int s = van; s != (tot % 36); s = (s + 1) % 36)
+        for (int s = van % 36; s != (tot % 36); s = (s + 1) % 36)
             if (sector[s] < m) m = sector[s];
         return m;
     };
 
-    // ── Stap 4: minimale afstand per zone (in robot-frame) ────
-    //  Voorwaarts  = ±45° van robot-voor  → sector 0–4  en 32–35
-    //  Voor-rechts = 45°–135°             → sector 5–13  (strikte rechterhelft)
-    //  Voor-links  = 225°–315°            → sector 23–31 (strikte linkerhelft)
-    //  Rechter zijkant (voor bocht check) = 45°–135°  → sector 5–13
-    //  Linker  zijkant (voor bocht check) = 225°–315° → sector 23–31
-    float minVoor        = sectorMin(32, 5);   // 320°–50°   robot-voor ±45°
-    float minRechtsZijde = sectorMin(5,  14);  //  50°–140°  rechter zijkant
-    float minLinksZijde  = sectorMin(23, 32);  // 230°–320°  linker zijkant
-    // minLinks/minRechts exclusief het voor-gebied voor de display
-    float minLinks       = sectorMin(23, 32);  // 230°–320°  links voor
-    float minRechts      = sectorMin(5,  14);  //  50°–140°  rechts voor
+    // ── Stap 3: kritieke zones (robot-relatief) ───────────────
+    //  Voorwaartse zone  : ±50°        → sector 0–4 en 31–35
+    //  Rechter zijkant   : 50°–130°    → sector 5–12
+    //  Linker  zijkant   : 230°–310°   → sector 23–30
+    //  Rechterhelft      : 10°–170°    → sector 1–16  (voor uitwijkkeuze)
+    //  Linkerhelft       : 190°–350°   → sector 19–34 (voor uitwijkkeuze)
+    float minVoor        = sectorMin(31, 36);  // 310°–360°
+    {   // ook 0°–50°
+        float m2 = sectorMin(0, 5);
+        if (m2 < minVoor) minVoor = m2;
+    }
+    float minRechtsZijde = sectorMin(5,  13);  //  50°–130°
+    float minLinksZijde  = sectorMin(23, 31);  // 230°–310°
 
-    // ── Stap 5: gemiddelde ruimte links en rechts ─────────────
-    // Linkerhelft = 180°–360° (sector 18–35), rechterhelft = 0°–180° (sector 0–17)
-    float somLinks = 0.0f, somRechts = 0.0f;
-    for (int s = 18; s < 36; ++s) somLinks  += sector[s];
-    for (int s = 0;  s < 18; ++s) somRechts += sector[s];
-    float ruimteLinks  = somLinks  / 18.0f;
-    float ruimteRechts = somRechts / 18.0f;
+    // Voor display: min in de respectievelijke halfcirkels
+    float minRechts = sectorMin(5,  18);   //  50°–180°
+    float minLinks  = sectorMin(19, 35);   // 190°–350°
 
-    // ── Stap 6: vul resultaat ─────────────────────────────────
+    // ── Stap 4: ruimte-score per kant — gebruik minimum, niet gemiddelde ──
+    // Rechterhelft = sector 1–17 (10°–179°), linkerhelft = sector 19–35 (190°–359°)
+    float ruimteRechts = sectorMin(1,  18);
+    float ruimteLinks  = sectorMin(19, 36);
+
+    // ── Stap 5: vul basisresultaat ────────────────────────────
     ScanAnalyse res{};
     res.ruimteLinks  = ruimteLinks;
     res.ruimteRechts = ruimteRechts;
     res.minVoor      = minVoor;
     res.minLinks     = minLinks;
     res.minRechts    = minRechts;
+    res.uitwijkHoek  = g_vorigeUitwijk;  // bewaar vorige richting als standaard
 
     if (minVoor >= VEILIG_MM) {
-        res.staat = 0;   // volledig vrij
+        res.staat = 0;
+        g_vorigeUitwijk = 0.0f;  // reset hysteresis als we vrij rijden
         return res;
     }
 
-    // ── Stap 7: kies uitwijkrichting ──────────────────────────
-    // Links uitwijken vereist dat de linker zijkant > CHASSIS_MM heeft.
+    // ── Stap 6: kies uitwijkrichting met hysteresis ───────────
+    //
+    //  Hoofdregel: ga naar de kant met de meeste minimale vrije ruimte.
+    //  Zijkant-check: die kant moet ook > CHASSIS_MM hebben.
+    //  Hysteresis: de huidige kant krijgt HYSTERESIS mm voordeel zodat
+    //              kleine wisselingen in de scan niet flippen.
+    //
     bool linksVeilig  = (minLinksZijde  > CHASSIS_MM);
     bool rechtsVeilig = (minRechtsZijde > CHASSIS_MM);
 
     float scoreLinks  = linksVeilig  ? ruimteLinks  : 0.0f;
     float scoreRechts = rechtsVeilig ? ruimteRechts : 0.0f;
 
-    // +1 = links uitwijken, -1 = rechts uitwijken
-    res.uitwijkHoek = (scoreLinks >= scoreRechts) ? +1.0f : -1.0f;
+    // Hysteresis: geef de huidige richting een bonus
+    if (g_vorigeUitwijk > 0.0f) scoreLinks  += HYSTERESIS;
+    if (g_vorigeUitwijk < 0.0f) scoreRechts += HYSTERESIS;
 
-    if (!linksVeilig && !rechtsVeilig)
-        res.uitwijkHoek = (ruimteLinks >= ruimteRechts) ? +1.0f : -1.0f;
+    float nieuweUitwijk;
+    if (!linksVeilig && !rechtsVeilig) {
+        // Beide geblokkeerd: kies minst slechte op basis van ruimte (geen bonus)
+        nieuweUitwijk = (ruimteLinks >= ruimteRechts) ? +1.0f : -1.0f;
+    } else {
+        nieuweUitwijk = (scoreLinks >= scoreRechts) ? +1.0f : -1.0f;
+    }
 
-    // ── Stap 8: ernstklasse ───────────────────────────────────
-    if (minVoor < KRITIEK_MM)
-        res.staat = 3;
-    else if (minVoor < REMMEN_MM)
-        res.staat = 2;
-    else
-        res.staat = 1;
+    res.uitwijkHoek = nieuweUitwijk;
+    g_vorigeUitwijk = nieuweUitwijk;
+
+    // ── Stap 7: ernstklasse ───────────────────────────────────
+    if      (minVoor < KRITIEK_MM) res.staat = 3;
+    else if (minVoor < REMMEN_MM)  res.staat = 2;
+    else                           res.staat = 1;
 
     return res;
 }
@@ -653,6 +655,20 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
     Navigator   navigator;
     bool        heeftPad   = false;
 
+    // ── Ontwijkfase state-machine ─────────────────────────────
+    // Bij KRITIEK draait de robot naar een berekende doelhoek en
+    // rijdt daarna een korte tijd rechtdoor voor hij weer herplant.
+    // Fases:
+    //   NORMAAL    = gewoon rijden/navigeren
+    //   DRAAIEN    = op plek draaien naar doelhoek (lin=0, ang=±40)
+    //   VRIJRIJDEN = na de draai een stukje rechtdoor (timer)
+    enum class OntwijkFase { NORMAAL, DRAAIEN, VRIJRIJDEN };
+    OntwijkFase ontwijkFase   = OntwijkFase::NORMAAL;
+    float       doelHoek      = 0.0f;   // gewenste theta na draai (graden, −180…180]
+    float       draaiRichting = 0.0f;   // +1=links, −1=rechts
+    int         vrijrijTicks  = 0;      // afteller voor VRIJRIJDEN
+    constexpr int VRIJRIJ_TICKS = 15;  // ~1.5s bij 100ms loop ≈ 40 cm
+
     CommandKeepAlive ka(uart);
     ka.Start();
 
@@ -734,10 +750,9 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
         }
 
         // Analyseer 360° scan — altijd, ook als geen nieuwe scan
-        // Geef robotTheta mee zodat sector 0 altijd robot-voorwaarts is
         ScanAnalyse scan{};
         if (heeftRanges)
-            scan = AnalyseerScan(lastRanges, loc.GetTheta());
+            scan = AnalyseerScan(lastRanges);
 
         // ── 3. Autonoom rijden ────────────────────────────────────
         //
@@ -788,13 +803,23 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
             st.hoekFout = err;
         }
 
-        // ── 3a. Obstakelcheck op basis van 360° LIDAR-analyse ────
+        // ── 3a. Obstakelcheck + ontwijkfase state-machine ────────
         //
-        //  Prioriteitsregels:
-        //    staat 3 (KRITIEK <350mm): altijd overschrijven, volledig stop + draai
-        //    staat 2 (REMMEN 350–600mm): overschrijven, rem + bijsturen
-        //    staat 1 (VEILIG 600–900mm): zachte bijsturing bovenop navigator
-        //    staat 0 (VRIJ ≥900mm): navigator of rechtdoor
+        //  OntwijkFase::NORMAAL
+        //    → scan.staat >= 3 (KRITIEK): bereken doelhoek, ga naar DRAAIEN
+        //    → scan.staat == 2 (REMMEN) : rem + bijsturen, blijf NORMAAL
+        //    → scan.staat == 1 (VEILIG) : navigator + zachte correctie
+        //    → scan.staat == 0 (VRIJ)   : navigator of rechtdoor
+        //
+        //  OntwijkFase::DRAAIEN
+        //    Draai op plek naar doelHoek. Stop als hoekfout < 8°.
+        //    Als tijdens draaien KRITIEK in nieuwe richting: herbereken doelhoek.
+        //    → klaar: ga naar VRIJRIJDEN
+        //
+        //  OntwijkFase::VRIJRIJDEN
+        //    Rijd VRIJRIJ_TICKS × 100ms rechtdoor.
+        //    Als scan.staat >= 3 tijdens vrijrijden: terug naar DRAAIEN.
+        //    → klaar: herplan pad, terug naar NORMAAL
         //
         st.obstRichting     = scan.staat;
         st.scanMinVoor      = scan.minVoor;
@@ -802,73 +827,130 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
         st.scanRuimteRechts = scan.ruimteRechts;
         st.scanUitwijkHoek  = scan.uitwijkHoek;
 
-        if (heeftRanges && scan.staat >= 3) {
-            // KRITIEK (<350mm): volledig stoppen, draai naar vrije kant
-            float richting = scan.uitwijkHoek;  // +1 = links, -1 = rechts
-            ka.SetCommand(0.0f, richting * 40.0f);
+        // hulpfunctie: normaliseer graden naar (-180, 180]
+        auto normDeg = [](float d) -> float {
+            while (d >  180.0f) d -= 360.0f;
+            while (d < -180.0f) d += 360.0f;
+            return d;
+        };
+
+        if (ontwijkFase == OntwijkFase::DRAAIEN) {
+            // ── Fase DRAAIEN: draai op plek naar doelHoek ────────
+            float huidig = loc.GetTheta();
+            float fout   = normDeg(doelHoek - huidig);
+
+            if (std::fabs(fout) < 8.0f) {
+                // Doelhoek bereikt → ga vrijrijden
+                ontwijkFase  = OntwijkFase::VRIJRIJDEN;
+                vrijrijTicks = VRIJRIJ_TICKS;
+                scansSindsHerplan = HERPLAN_SCANS;  // direct herplannen na vrijrijden
+                ka.SetCommand(LIN_SPEED, 0.0f);
+            } else if (heeftRanges && scan.staat >= 3 &&
+                       // Nieuw obstakel in de draairichting? Herbereken.
+                       ((draaiRichting > 0 && scan.minLinks < 350.0f) ||
+                        (draaiRichting < 0 && scan.minRechts < 350.0f))) {
+                // Blokkade in draairichting: keer om
+                draaiRichting = -draaiRichting;
+                doelHoek = normDeg(huidig + draaiRichting * 90.0f);
+                ka.SetCommand(0.0f, draaiRichting * 40.0f);
+            } else {
+                // Blijf draaien in de vastgezette richting
+                ka.SetCommand(0.0f, draaiRichting * 40.0f);
+            }
             st.staat = 2;
 
-        } else if (heeftRanges && scan.staat == 2) {
-            // REMMEN (350–600mm): rem naar 40%, hard bijsturen
-            float richting = scan.uitwijkHoek;
-            ka.SetCommand(LIN_SPEED * 0.4f, richting * 20.0f);
+        } else if (ontwijkFase == OntwijkFase::VRIJRIJDEN) {
+            // ── Fase VRIJRIJDEN: rijd een stuk rechtdoor ─────────
+            if (heeftRanges && scan.staat >= 3) {
+                // Alweer een kritiek obstakel → meteen terug naar draaien
+                draaiRichting = scan.uitwijkHoek;
+                doelHoek      = normDeg(loc.GetTheta() + draaiRichting * 90.0f);
+                ontwijkFase   = OntwijkFase::DRAAIEN;
+                ka.SetCommand(0.0f, draaiRichting * 40.0f);
+            } else {
+                --vrijrijTicks;
+                if (vrijrijTicks <= 0) {
+                    // Klaar met vrijrijden → terug naar normaal, herplan
+                    ontwijkFase       = OntwijkFase::NORMAAL;
+                    heeftPad          = false;       // forceer herplan
+                    scansSindsHerplan = HERPLAN_SCANS;
+                    g_vorigeUitwijk   = 0.0f;        // reset hysteresis
+                } else {
+                    ka.SetCommand(LIN_SPEED, 0.0f);
+                }
+            }
             st.staat = 2;
-
-        } else if (heeftPad && !navigator.IsFinished()) {
-            // ── 3b. Navigator rijdt het pad ───────────────────────────
-            // Bij staat==1 (VEILIG): navigator-hoek + zachte obstakelcorrectie
-            navigator.Update(pos);
-            DriveCommand cmd = navigator.GetNextCommand(pos);
-            float extraAng = 0.0f;
-            if (heeftRanges && scan.staat == 1)
-                extraAng = scan.uitwijkHoek * 8.0f;  // zachte bijsturing bovenop navigator
-            ka.SetCommand(cmd.GetLinVelocity(), cmd.GetAngVelocity() + extraAng);
-            st.staat = 1;
 
         } else {
-            // ── 3c. Herplan als navigator klaar of geen pad ───────
-            if (heeftPad && navigator.IsFinished()) {
-                heeftPad          = false;
-                st.heeftPad       = false;
-                scansSindsHerplan = HERPLAN_SCANS;
-            }
+            // ── Fase NORMAAL ──────────────────────────────────────
+            if (heeftRanges && scan.staat >= 3) {
+                // KRITIEK: bereken doelhoek en begin draaien
+                draaiRichting = scan.uitwijkHoek;           // +1=links, -1=rechts
+                doelHoek      = normDeg(loc.GetTheta() + draaiRichting * 90.0f);
+                ontwijkFase   = OntwijkFase::DRAAIEN;
+                heeftPad      = false;   // huidig pad vervalt
+                ka.SetCommand(0.0f, draaiRichting * 40.0f);
+                st.staat = 2;
 
-            if (nieuweScan && scansSindsHerplan >= HERPLAN_SCANS) {
-                scansSindsHerplan = 0;
-                st.staat          = 3;
+            } else if (heeftRanges && scan.staat == 2) {
+                // REMMEN: langzaam + bijsturen, blijf in NORMAAL
+                ka.SetCommand(LIN_SPEED * 0.35f, scan.uitwijkHoek * 22.0f);
+                st.staat = 2;
 
-                Position doel = KiesFrontierDoel(mapper, pos);
+            // ── 3b. Navigator rijdt het pad ───────────────────────
+            } else if (heeftPad && !navigator.IsFinished()) {
+                navigator.Update(pos);
+                DriveCommand cmd = navigator.GetNextCommand(pos);
+                // VEILIG (staat==1): zachte obstakelcorrectie bovenop navigator
+                float extraAng = (heeftRanges && scan.staat == 1)
+                                 ? scan.uitwijkHoek * 8.0f : 0.0f;
+                ka.SetCommand(cmd.GetLinVelocity(), cmd.GetAngVelocity() + extraAng);
+                st.staat = 1;
 
-                if (doel.GetX() == pos.GetX() && doel.GetY() == pos.GetY()) {
-                    ka.SetCommand(LIN_SPEED, 0.0f);
+            } else {
+                // ── 3c. Herplan als navigator klaar of geen pad ───
+                if (heeftPad && navigator.IsFinished()) {
+                    heeftPad          = false;
+                    st.heeftPad       = false;
                     scansSindsHerplan = HERPLAN_SCANS;
-                    st.staat = 0;
-                } else {
-                    st.doelX = doel.GetX();
-                    st.doelY = doel.GetY();
-                    Path pad = planner.PlanPath(pos, doel, mapper.GetMap());
+                }
 
-                    if (!pad.IsEmpty()) {
-                        navigator.SetPath(pad);
-                        heeftPad          = true;
-                        st.heeftPad       = true;
-                        st.waypointTotaal = pad.GetSize();
-                        st.staat          = 1;
-                    } else {
+                if (nieuweScan && scansSindsHerplan >= HERPLAN_SCANS) {
+                    scansSindsHerplan = 0;
+                    st.staat          = 3;
+
+                    Position doel = KiesFrontierDoel(mapper, pos);
+
+                    if (doel.GetX() == pos.GetX() && doel.GetY() == pos.GetY()) {
                         ka.SetCommand(LIN_SPEED, 0.0f);
                         scansSindsHerplan = HERPLAN_SCANS;
                         st.staat = 0;
+                    } else {
+                        st.doelX = doel.GetX();
+                        st.doelY = doel.GetY();
+                        Path pad = planner.PlanPath(pos, doel, mapper.GetMap());
+
+                        if (!pad.IsEmpty()) {
+                            navigator.SetPath(pad);
+                            heeftPad          = true;
+                            st.heeftPad       = true;
+                            st.waypointTotaal = pad.GetSize();
+                            st.staat          = 1;
+                        } else {
+                            ka.SetCommand(LIN_SPEED, 0.0f);
+                            scansSindsHerplan = HERPLAN_SCANS;
+                            st.staat = 0;
+                        }
                     }
+                } else {
+                    // Wacht op herplan: rechtdoor + zachte correctie bij VEILIG
+                    float extraAng = (heeftRanges && scan.staat == 1)
+                                     ? scan.uitwijkHoek * 8.0f : 0.0f;
+                    ka.SetCommand(LIN_SPEED, extraAng);
+                    st.staat = 0;
                 }
-            } else {
-                // Geen pad of herplannen nodig
-                // Bij staat==1 (VEILIG): al zacht bijsturen terwijl we wachten op een pad
-                float extraAng = (heeftRanges && scan.staat == 1)
-                                 ? scan.uitwijkHoek * 8.0f : 0.0f;
-                ka.SetCommand(LIN_SPEED, extraAng);
-                st.staat = 0;
             }
-        }
+        } // einde OntwijkFase::NORMAAL
 
         st.cmdLin = ka.GetLin();
         st.cmdAng = ka.GetAng();
