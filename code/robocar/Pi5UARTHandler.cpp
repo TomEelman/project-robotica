@@ -49,7 +49,7 @@ bool Pi5UARTHandler::ConfigureerPoort() {
     tty.c_oflag &= ~OPOST;
     tty.c_lflag  = 0;
 
-    // Non-blocking: geeft meteen terug wat er is, ook als er niets is
+    // Non-blocking: geeft meteen terug wat er is
     tty.c_cc[VMIN]  = 0;
     tty.c_cc[VTIME] = 0;
 
@@ -66,6 +66,10 @@ void Pi5UARTHandler::Close() {
 
 bool Pi5UARTHandler::IsOpen() const { return fd >= 0; }
 
+// ── LeesData  —  non-blocking, verwerkt alle beschikbare bytes ──
+// Herkent DATA: pakketten van de nieuwe Pico firmware.
+// Logt onbekende regels naar stderr zodat je kunt zien wat de
+// Pico stuurt als hij nog de oude firmware heeft.
 bool Pi5UARTHandler::LeesData() {
     if (!IsOpen()) return false;
 
@@ -77,8 +81,16 @@ bool Pi5UARTHandler::LeesData() {
 
         if (c == '\n') {
             lineBuffer[linePos] = '\0';
-            if (ParseDataRegel(lineBuffer))
-                hadData = true;
+
+            if (linePos > 0) {
+                if (ParseDataRegel(lineBuffer)) {
+                    hadData = true;
+                } else {
+                    // Log alles wat niet DATA: is — helpt debuggen welke
+                    // firmware op de Pico staat
+                    fprintf(stderr, "[Pico→Pi5] %s\n", lineBuffer);
+                }
+            }
             linePos = 0;
         } else if (linePos < (int)sizeof(lineBuffer) - 1) {
             lineBuffer[linePos++] = c;
@@ -109,6 +121,7 @@ bool Pi5UARTHandler::ParseDataRegel(const char* regel) {
     return true;
 }
 
+// ── StuurCommand  —  fire-and-forget, geen ACK-wait ──────────
 void Pi5UARTHandler::StuurCommand(float lin, float ang) {
     if (!IsOpen()) return;
     char buf[64];
@@ -125,7 +138,9 @@ bool Pi5UARTHandler::RebootPico() {
     const char* msg = "REBOOT\n";
     write(fd, msg, strlen(msg));
     usleep(150000);
-    char buf[32];
+
+    // Lees alles wat er in de buffer zit en zoek naar ACK:REBOOT
+    char buf[128];
     ssize_t n = read(fd, buf, sizeof(buf) - 1);
     if (n > 0) {
         buf[n] = '\0';

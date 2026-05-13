@@ -876,7 +876,7 @@ static void PrintMenu() {
     std::cout << "╠══════════════════════════════════════╣\n";
     std::cout << "║  1. Mappen                           ║\n";
     std::cout << "║  2. Pico communiceren                ║\n";
-    std::cout << "║  3. Rijden + Mappen (10s + 90° draai)║\n";
+    std::cout << "║  3. Autonoom rijden + mappen         ║\n";
     std::cout << "║  4. Stoppen                          ║\n";
     std::cout << "╚══════════════════════════════════════╝\n";
     std::cout << "Keuze: ";
@@ -905,7 +905,11 @@ int main() {
 
     MenuKeuze keuze = VraagMenuKeuze();
 
-    uart.RebootPico();
+    // Pico reboot is optioneel — geen ACK is geen probleem als Pico al draait
+    if (!uart.RebootPico())
+        std::cout << "Pico reboot overgeslagen (al actief).\n";
+    else
+        usleep(1500000);  // wacht op Pico boot alleen als reboot gelukt is
 
     switch (keuze) {
         case MenuKeuze::MAPPEN:
