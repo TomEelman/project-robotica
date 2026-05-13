@@ -338,86 +338,126 @@ static Position KiesFrontierDoel(const Mapper& mapper, const Position& huidig)
     return Position(bestWx_m / MM2M, bestWy_m / MM2M, 0.0f);
 }
 
-// ── ObstakelRichting ─────────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════
+//  ScanAnalyse  —  resultaat van de 360° LIDAR-analyse
+// ════════════════════════════════════════════════════════════════
+struct ScanAnalyse {
+    int   staat;          // 0=vrij  1=veilig  2=remmen  3=kritiek
+    float uitwijkHoek;    // gewenste draaihoek t.o.v. robot (graden, + = links)
+    float ruimteLinks;    // gemiddelde vrije ruimte linkerhelft (mm)
+    float ruimteRechts;   // gemiddelde vrije ruimte rechterhelft (mm)
+    float minVoor;        // minimale afstand in de voorwaartse sector (mm)
+    float minLinks;       // minimale afstand linker sector (mm)
+    float minRechts;      // minimale afstand rechter sector (mm)
+};
+
+// ── AnalyseerScan ────────────────────────────────────────────────────────────
 //
-//  Drie zones gebaseerd op fysieke maten:
+//  Gebruikt de ruwe LIDAR-meting (360 waarden, index = hoek t.o.v. robot).
+//  Analyseert per 10° sector de vrije ruimte, kiest de veiligste uitwijkrichting.
 //
-//  KRITIEK (0–350mm)  : chassis kan niet meer draaien → stop, draai op plek
-//  REMMEN  (350–600mm): rem af naar 40%, hard bijsturen
-//  VEILIG  (600–900mm): vroeg beginnen bijsturen, vol gas
+//  Fysieke constraints:
+//    VEILIG_MM   = 900mm  — detectie begint hier, zacht bijsturen
+//    REMMEN_MM   = 600mm  — rem naar 40%, hard bijsturen
+//    KRITIEK_MM  = 350mm  — stop + draai op plek (chassis blokkeert <250mm)
+//    CHASSIS_MM  = 300mm  — minimale ruimte die nodig is voor de bocht
+//                           (als de zijkant minder ruimte heeft, die kant vermijden)
 //
-//  Returns:
-//    0    = vrij
-//   ±1    = VEILIG zijkant    (zachte bocht, vol gas)
-//   ±2    = VEILIG midden     (zachte bocht, vol gas)
-//   ±20   = REMMEN            (harde bocht, halve snelheid)
-//   ±30   = KRITIEK           (stop + draai op plek)
-static int ObstakelRichting(const Mapper& mapper, const Position& pos)
+//  Bocht-kwaliteit berekening:
+//    Bij een bocht naar links kijken we naar sectoren 270°–360° (linker zijkant).
+//    Die moeten allemaal > CHASSIS_MM hebben. Anders is de bocht niet veilig.
+//
+static ScanAnalyse AnalyseerScan(const float ranges[360])
 {
-    static constexpr float DEG2RAD    = 3.14159265f / 180.0f;
-    static constexpr float MM2M       = 0.001f;
-    static constexpr float KRITIEK_MM =  350.0f;
-    static constexpr float REMMEN_MM  =  600.0f;
-    static constexpr float VEILIG_MM  =  900.0f;
-    static constexpr float HOEK_DEG   =   20.0f;
+    static constexpr float KRITIEK_MM  = 350.0f;
+    static constexpr float REMMEN_MM   = 600.0f;
+    static constexpr float VEILIG_MM   = 900.0f;
+    static constexpr float CHASSIS_MM  = 300.0f;  // minimale zijruimte voor bocht
+    static constexpr float MAX_RANGE   = 8000.0f; // cap voor ongeldige metingen
 
-    float thetaRad = pos.GetTheta() * DEG2RAD;
-    float hoekRad  = HOEK_DEG * DEG2RAD;
-    float robotX_m = pos.GetX() * MM2M;
-    float robotY_m = pos.GetY() * MM2M;
+    // ── Stap 1: bouw sector-gemiddelden per 10° ───────────────
+    // sector[i] = gemiddelde afstand in graden [i*10, i*10+10)
+    // Index 0 = recht voor (0°), 9 = rechts (90°), 27 = links (270°)
+    float sector[36] = {};
+    int   sectorN[36] = {};
 
-    constexpr int STAPPEN = 18;
+    for (int a = 0; a < 360; ++a) {
+        float r = ranges[a];
+        if (r <= 0.0f || r > MAX_RANGE) r = MAX_RANGE;
+        int s = (a / 10) % 36;
+        sector[s]  += r;
+        sectorN[s] += 1;
+    }
+    for (int s = 0; s < 36; ++s)
+        if (sectorN[s] > 0) sector[s] /= sectorN[s];
 
-    bool kritiekVoor = false, kritiekLinks = false, kritiekRechts = false;
-    bool remmenVoor  = false, remmenLinks  = false, remmenRechts  = false;
-    bool veiligVoor  = false, veiligLinks  = false, veiligRechts  = false;
+    // ── Stap 2: minimale afstand in kritieke zones ────────────
+    // Voorwaarts = ±45° = sector 0–4 en 32–35
+    // Links      = 270°–360° = sector 27–35
+    // Rechts     = 0°–90°    = sector 1–9  (maar ook recht voor)
+    // Linker zijkant voor bocht: 225°–315° = sector 22–31
+    // Rechter zijkant voor bocht:  45°–135° = sector 4–13
 
-    for (int s = 1; s <= STAPPEN; ++s) {
-        float r_mm = VEILIG_MM * static_cast<float>(s) / STAPPEN;
-        float r_m  = r_mm * MM2M;
+    auto sectorMin = [&](int van, int tot) -> float {
+        // van/tot zijn sectorindices, wraps rond 36
+        float m = MAX_RANGE;
+        for (int s = van; s != tot; s = (s + 1) % 36)
+            if (sector[s] < m) m = sector[s];
+        return m;
+    };
 
-        const float offsets[3] = { 0.0f, -hoekRad, +hoekRad };
-        for (int i = 0; i < 3; ++i) {
-            float wx_m = robotX_m + r_m * std::cos(thetaRad + offsets[i]);
-            float wy_m = robotY_m + r_m * std::sin(thetaRad + offsets[i]);
-            int cx, cy;
-            mapper.GetMap().WorldToCell(wx_m, wy_m, cx, cy);
-            if (!mapper.GetMap().InBounds(cx, cy) || !mapper.GetMap().IsOccupied(cx, cy))
-                continue;
+    float minVoor        = sectorMin(32, 5);   // 320°–50°  (voor)
+    float minLinksZijde  = sectorMin(22, 32);  // 220°–320° (linker zijkant)
+    float minRechtsZijde = sectorMin(5,  14);  // 50°–140°  (rechter zijkant)
+    float minLinks       = sectorMin(27, 36);  // 270°–360° (links voor)
+    float minRechts      = sectorMin(0,  9);   // 0°–90°    (rechts voor)
 
-            if (r_mm <= KRITIEK_MM) {
-                if (i == 0) kritiekVoor   = true;
-                if (i == 1) kritiekLinks  = true;
-                if (i == 2) kritiekRechts = true;
-            } else if (r_mm <= REMMEN_MM) {
-                if (i == 0) remmenVoor    = true;
-                if (i == 1) remmenLinks   = true;
-                if (i == 2) remmenRechts  = true;
-            } else {
-                if (i == 0) veiligVoor    = true;
-                if (i == 1) veiligLinks   = true;
-                if (i == 2) veiligRechts  = true;
-            }
-        }
+    // ── Stap 3: gemiddelde ruimte links en rechts ─────────────
+    float somLinks = 0.0f, somRechts = 0.0f;
+    for (int s = 18; s < 36; ++s) somLinks  += sector[s];  // 180°–360°
+    for (int s = 0;  s < 18; ++s) somRechts += sector[s];  // 0°–180°
+    float ruimteLinks  = somLinks  / 18.0f;
+    float ruimteRechts = somRechts / 18.0f;
+
+    // ── Stap 4: beoordeel staat ───────────────────────────────
+    ScanAnalyse res{};
+    res.ruimteLinks  = ruimteLinks;
+    res.ruimteRechts = ruimteRechts;
+    res.minVoor      = minVoor;
+    res.minLinks     = minLinks;
+    res.minRechts    = minRechts;
+
+    if (minVoor >= VEILIG_MM) {
+        res.staat = 0;   // volledig vrij
+        return res;
     }
 
-    // Kritiek — stop en draai, kies vrije kant
-    if (kritiekVoor || kritiekLinks || kritiekRechts) {
-        if (kritiekRechts && !kritiekLinks) return -30;  // rechts vol → links draaien
-        return +30;                                       // links/voor vol → rechts draaien
-    }
+    // ── Stap 5: kies uitwijkrichting ──────────────────────────
+    // Links uitwijken is veilig als de linker ZIJKANT genoeg ruimte heeft
+    // (de robot moet zijn breedte door die ruimte kunnen manoeuvreren)
+    bool linksVeilig  = (minLinksZijde  > CHASSIS_MM);
+    bool rechtsVeilig = (minRechtsZijde > CHASSIS_MM);
 
-    // Remmen — hard bijsturen, snelheid terug
-    if (remmenVoor)   return +20;
-    if (remmenRechts) return -20;
-    if (remmenLinks)  return +20;
+    // Voorkeur: kant met de meeste totale ruimte, mits zijkant ook vrij is
+    float scoreLinks  = linksVeilig  ? ruimteLinks  : 0.0f;
+    float scoreRechts = rechtsVeilig ? ruimteRechts : 0.0f;
 
-    // Veilig — vroeg zacht bijsturen
-    if (veiligVoor)   return  +2;
-    if (veiligRechts) return  -1;
-    if (veiligLinks)  return  +1;
+    // Positief = links uitwijken, negatief = rechts uitwijken
+    res.uitwijkHoek = (scoreLinks >= scoreRechts) ? +1.0f : -1.0f;
 
-    return 0;
+    // Als beide zijden geblokkeerd zijn: kies de minst slechte
+    if (!linksVeilig && !rechtsVeilig)
+        res.uitwijkHoek = (ruimteLinks >= ruimteRechts) ? +1.0f : -1.0f;
+
+    // ── Stap 6: ernstklasse ───────────────────────────────────
+    if (minVoor < KRITIEK_MM)
+        res.staat = 3;   // KRITIEK
+    else if (minVoor < REMMEN_MM)
+        res.staat = 2;   // REMMEN
+    else
+        res.staat = 1;   // VEILIG
+
+    return res;
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -453,8 +493,12 @@ struct RobotStatus {
     float   doelX, doelY;        // mm
     float   afstandTotDoel;      // mm
     float   hoekFout;            // graden
-    // Obstakel
-    int     obstRichting;        // 0=vrij, ±1=zijkant, 2=voor
+    // Obstakel / scan analyse
+    int     obstRichting;        // 0=vrij 1=veilig 2=remmen 3=kritiek
+    float   scanMinVoor;         // mm
+    float   scanRuimteLinks;     // mm
+    float   scanRuimteRechts;    // mm
+    float   scanUitwijkHoek;     // +1=links -1=rechts
     // Kaart
     int     scanCount;
     int     dekking;             // %
@@ -525,36 +569,37 @@ static void PrintStatus(const RobotStatus& s)
         printf("]  %3d%%  ║\n", s.dekking);
     }
 
-    // ── Staat ──────────────────────────────────────────────────
+    // Obstakelstaat en 360° ruimte
     printf("╠══════════════════════════════════════════════════════════╣\n");
     const char* staatTekst = "";
     const char* staatKleur = "";
     switch (s.staat) {
         case 0: staatTekst = "VRIJ RIJDEN  (geen obstakel, geen pad — rechtdoor)";
-                staatKleur = "\033[32m"; break;   // groen
+                staatKleur = "\033[32m"; break;
         case 1: staatTekst = "NAVIGEERT    (pad actief, bijsturing via navigator)";
-                staatKleur = "\033[36m"; break;   // cyaan
-        case 2: staatTekst = "OBSTAKEL     (zachte bocht, obstakel gedetecteerd) ";
-                staatKleur = "\033[33m"; break;   // geel
+                staatKleur = "\033[36m"; break;
+        case 2: staatTekst = "OBSTAKEL     (uitwijken op basis van 360° scan)    ";
+                staatKleur = "\033[33m"; break;
         case 3: staatTekst = "HERPLANNEN   (wacht op nieuw pad van A*)           ";
-                staatKleur = "\033[35m"; break;   // magenta
+                staatKleur = "\033[35m"; break;
     }
     printf("║  %s● %s\033[0m  ║\n", staatKleur, staatTekst);
 
-    // Obstakelrichting visueel — drie zones
-    const char* obstSymbool;
-    switch (s.obstRichting) {
-        case   0: obstSymbool = "  VRIJ    [voor: ---] [links: ---] [rechts: ---]               "; break;
-        case  +1: obstSymbool = "\033[33m  VEILIG  [voor: ---] [links: ---] [rechts: 900mm] bocht L  \033[0m"; break;
-        case  -1: obstSymbool = "\033[33m  VEILIG  [voor: ---] [links: 900mm] [rechts: ---] bocht R  \033[0m"; break;
-        case  +2: obstSymbool = "\033[33m  VEILIG  [voor: 900mm] [links: ---] [rechts: ---] bocht L  \033[0m"; break;
-        case +20: obstSymbool = "\033[33m  REMMEN  [voor/L: 600mm] rem+bocht L — 40% snelheid         \033[0m"; break;
-        case -20: obstSymbool = "\033[33m  REMMEN  [rechts: 600mm] rem+bocht R — 40% snelheid         \033[0m"; break;
-        case +30: obstSymbool = "\033[31m  KRITIEK [<350mm] STOP + draai L — chassis beschermd        \033[0m"; break;
-        case -30: obstSymbool = "\033[31m  KRITIEK [<350mm] STOP + draai R — chassis beschermd        \033[0m"; break;
-        default:  obstSymbool = "  [onbekend code]                                                  "; break;
-    }
-    printf("║  %s║\n", obstSymbool);
+    // 360° ruimte visueel
+    const char* obstKleur =
+        (s.obstRichting == 0) ? "\033[32m" :
+        (s.obstRichting == 1) ? "\033[33m" :
+        (s.obstRichting == 2) ? "\033[33m" : "\033[31m";
+    const char* obstLabel =
+        (s.obstRichting == 0) ? "VRIJ   " :
+        (s.obstRichting == 1) ? "VEILIG " :
+        (s.obstRichting == 2) ? "REMMEN " : "KRITIEK";
+    const char* uitwijkLabel = (s.scanUitwijkHoek >= 0.0f) ? "← LINKS " : "RECHTS →";
+
+    printf("║  %s%s\033[0m  Voor:%5.0fmm  Links:%5.0fmm  Rechts:%5.0fmm  %s  ║\n",
+           obstKleur, obstLabel,
+           s.scanMinVoor, s.scanRuimteLinks, s.scanRuimteRechts,
+           (s.obstRichting > 0) ? uitwijkLabel : "        ");
 
     printf("╚══════════════════════════════════════════════════════════╝\n");
     fflush(stdout);
@@ -591,7 +636,8 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
                << "encL_mms,encR_mms,yaw_imu_deg,omega_degs,"
                << "cmd_lin,cmd_ang,"
                << "dekking_pct,waypoint_huidig,waypoint_totaal,"
-               << "afstand_doel_mm,hoekfout_deg,staat,obst_richting\n";
+               << "afstand_doel_mm,hoekfout_deg,"
+               << "staat,scan_staat,min_voor_mm,ruimte_links_mm,ruimte_rechts_mm\n";
     }
     auto logStart = std::chrono::steady_clock::now();
     printf("Autonoom rijden + mappen gestart.\n");
@@ -616,17 +662,28 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
 
         // ── 2. LIDAR → kaart ─────────────────────────────────────
         bool nieuweScan = false;
+        // lastRanges bewaard de meest recente 360° scan voor de rijlogica
+        // ook als er geen nieuwe scan is in deze iteratie
+        static float lastRanges[360] = {};
+        static bool  heeftRanges     = false;
+
         if (lidar.Update()) {
-            float ranges[360], angles[360];
+            float angles[360];
             for (int a = 0; a < 360; ++a) {
-                ranges[a] = lidar.GetDistance(a).distance;
-                angles[a] = static_cast<float>(a);
+                lastRanges[a] = lidar.GetDistance(a).distance;
+                angles[a]     = static_cast<float>(a);
             }
-            mapper.Update(ranges, angles, 360, pos);
+            mapper.Update(lastRanges, angles, 360, pos);
+            heeftRanges = true;
             ++scanCount;
             ++scansSindsHerplan;
             nieuweScan = true;
         }
+
+        // Analyseer 360° scan — altijd, ook als geen nieuwe scan
+        ScanAnalyse scan{};
+        if (heeftRanges)
+            scan = AnalyseerScan(lastRanges);
 
         // ── 3. Autonoom rijden ────────────────────────────────────
         //
@@ -677,22 +734,23 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
             st.hoekFout = err;
         }
 
-        // ── 3a. Obstakelcheck: drie zones ────────────────────────
-        int obstRichting = ObstakelRichting(mapper, pos);
-        st.obstRichting  = obstRichting;
+        // ── 3a. Obstakelcheck op basis van 360° LIDAR-analyse ────
+        st.obstRichting     = scan.staat;
+        st.scanMinVoor      = scan.minVoor;
+        st.scanRuimteLinks  = scan.ruimteLinks;
+        st.scanRuimteRechts = scan.ruimteRechts;
+        st.scanUitwijkHoek  = scan.uitwijkHoek;
 
-        if (obstRichting != 0) {
-            float richting = (obstRichting > 0) ? -1.0f : +1.0f;
-            int   absCode  = std::abs(obstRichting);
+        if (heeftRanges && scan.staat > 0) {
+            float richting = scan.uitwijkHoek;  // +1 = links, -1 = rechts
 
-            if (absCode == 30) {
-                // KRITIEK (<350mm): volledig stoppen, alleen draaien op de plek
-                // Rijdt NIET vooruit — chassis kan niet meer draaien bij <250mm
+            if (scan.staat == 3) {
+                // KRITIEK (<350mm): volledig stoppen, draai naar vrije kant
                 ka.SetCommand(0.0f, richting * 40.0f);
-                nieuweScan = false;  // kaart niet bijwerken tijdens stilstaand draaien
+                nieuweScan = false;  // kaart niet bijwerken — positie verandert snel
 
-            } else if (absCode == 20) {
-                // REMMEN (350–600mm): rem af naar 40%, hard bijsturen
+            } else if (scan.staat == 2) {
+                // REMMEN (350–600mm): rem naar 40%, hard bijsturen
                 ka.SetCommand(LIN_SPEED * 0.4f, richting * 20.0f);
 
             } else {
@@ -760,23 +818,26 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
         if (csvLog.is_open()) {
             long tijdMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                               std::chrono::steady_clock::now() - logStart).count();
-            csvLog << tijdMs                << ','
-                   << st.posX              << ','
-                   << st.posY              << ','
-                   << st.theta             << ','
-                   << st.speedLinks        << ','
-                   << st.speedRechts       << ','
-                   << st.imuYaw            << ','
-                   << st.imuOmega          << ','
-                   << st.cmdLin            << ','
-                   << st.cmdAng            << ','
-                   << st.dekking           << ','
-                   << st.waypointHuidig    << ','
-                   << st.waypointTotaal    << ','
-                   << st.afstandTotDoel    << ','
-                   << st.hoekFout          << ','
-                   << st.staat             << ','
-                   << st.obstRichting      << '\n';
+            csvLog << tijdMs                 << ','
+                   << st.posX               << ','
+                   << st.posY               << ','
+                   << st.theta              << ','
+                   << st.speedLinks         << ','
+                   << st.speedRechts        << ','
+                   << st.imuYaw             << ','
+                   << st.imuOmega           << ','
+                   << st.cmdLin             << ','
+                   << st.cmdAng             << ','
+                   << st.dekking            << ','
+                   << st.waypointHuidig     << ','
+                   << st.waypointTotaal     << ','
+                   << st.afstandTotDoel     << ','
+                   << st.hoekFout           << ','
+                   << st.staat              << ','
+                   << st.obstRichting       << ','
+                   << st.scanMinVoor        << ','
+                   << st.scanRuimteLinks    << ','
+                   << st.scanRuimteRechts   << '\n';
         }
 
         // ── 5. Loop timing ────────────────────────────────────────
