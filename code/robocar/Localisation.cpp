@@ -11,33 +11,51 @@ static float NormalizeDeg(float deg) {
     return deg;
 }
 
-Localisation::Localisation(float wheelBase)
-    : x(0.0f), y(0.0f), theta(0.0f), wheelBase(wheelBase)
+// ─────────────────────────────────────────────────────────────────
+//  Constructor
+//
+//  wheelBaseMm : afstand tussen de wielen IN MILLIMETER (bijv. 235.0f).
+//                Let op: MainPi5 moet Localisation(235.0f) aanroepen,
+//                NIET Localisation(0.235f).
+// ─────────────────────────────────────────────────────────────────
+Localisation::Localisation(float wheelBaseMm)
+    : x(0.0f), y(0.0f), theta(0.0f), wheelBase(wheelBaseMm)
 {
     for (int i = 0; i < 3; i++)
         for (int j = 0; j < 3; j++)
             P[i][j] = Q[i][j] = 0.0f;
 
-    P[0][0] = 0.01f;  P[1][1] = 0.01f;  P[2][2] = 0.01f;
-    Q[0][0] = 0.02f;  Q[1][1] = 0.02f;  Q[2][2] = 0.01f;
-    R = 0.01f;
+    P[0][0] = 1.0f;   P[1][1] = 1.0f;   P[2][2] = 1.0f;
+    Q[0][0] = 0.5f;   Q[1][1] = 0.5f;   Q[2][2] = 0.1f;
+    R = 0.5f;
 }
 
-// ── EKF predict-stap (odometrie) ──────────────────────────────────
+// ─────────────────────────────────────────────────────────────────
+//  Predict  —  odometrie EKF
+//
+//  vLeft, vRight : wielsnelheden in mm/s  (positief = vooruit)
+//  dt            : tijdstap in seconden
+//
+//  Eenheden:
+//    v      [mm/s]
+//    omega  [rad/s]  = (vR - vL) [mm/s] / wheelBase [mm]  = rad/s  ✓
+//    x, y   [mm]     += v [mm/s] * cos/sin * dt [s]
+//    theta  [graden] += omega [rad/s] * RAD2DEG * dt [s]
+// ─────────────────────────────────────────────────────────────────
 void Localisation::Predict(float vLeft, float vRight, float dt)
 {
-    float v     = 0.5f * (vLeft + vRight);
-    float omega = (vRight - vLeft) / wheelBase; // graden/s (als vLeft/vRight in mm/s zijn en wheelBase in mm)
+    float v     = 0.5f * (vLeft + vRight);          // mm/s
+    float omega = (vRight - vLeft) / wheelBase;      // rad/s
 
     float thetaRad = theta * DEG2RAD;
     float c = std::cos(thetaRad);
     float s = std::sin(thetaRad);
 
-    x     += v * c * dt;
-    y     += v * s * dt;
-    theta  = NormalizeDeg(theta + omega * RAD2DEG * dt);
+    x     += v * c * dt;                             // mm
+    y     += v * s * dt;                             // mm
+    theta  = NormalizeDeg(theta + omega * RAD2DEG * dt);  // graden
 
-    // Jacobiaan F (3×3) — hoekterm in graden/s dus omgerekend
+    // Jacobiaan F — ∂x/∂θ en ∂y/∂θ in mm/graad
     float vdt = v * dt;
     float F[3][3] = {
         {1.0f, 0.0f, -vdt * s * DEG2RAD},
@@ -60,17 +78,16 @@ void Localisation::Predict(float vLeft, float vRight, float dt)
             P[i][j] = Pnew[i][j];
 }
 
-// ── EKF update-stap (IMU yaw) ─────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────
+//  UpdateIMU  —  EKF correctiestap op basis van IMU-yaw (graden)
+// ─────────────────────────────────────────────────────────────────
 void Localisation::UpdateIMU(float imuYawDeg, float /*dt*/)
 {
-    // Innovatie: verschil in graden, genormaliseerd
     float innov = NormalizeDeg(imuYawDeg - theta);
 
-    // Innovatiecovariantie S = P[2][2] + R
     float S = P[2][2] + R;
     if (S < 1e-9f) return;
 
-    // Kalman-gain voor x, y, theta
     float Kx = P[0][2] / S;
     float Ky = P[1][2] / S;
     float Kt = P[2][2] / S;
@@ -79,12 +96,11 @@ void Localisation::UpdateIMU(float imuYawDeg, float /*dt*/)
     y     += Ky * innov;
     theta  = NormalizeDeg(theta + Kt * innov);
 
-    // Covariantie bijwerken
     P[0][2] -= Kx * P[2][2];
     P[1][2] -= Ky * P[2][2];
     P[2][2] *= (1.0f - Kt);
 }
 
-float Localisation::GetX()     const { return x;     }
-float Localisation::GetY()     const { return y;     }
-float Localisation::GetTheta() const { return theta; } // al in graden
+float Localisation::GetX()     const { return x;     }   // mm
+float Localisation::GetY()     const { return y;     }   // mm
+float Localisation::GetTheta() const { return theta; }   // graden

@@ -119,7 +119,7 @@ static bool initLidar(LIDAR& lidar) {
 // ════════════════════════════════════════════════════════════════
 
 static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
-    Localisation loc(0.235f);
+    Localisation loc(235.0f);   // wheelBase in mm (was 0.235 m — fout)
     Mapper       mapper(1200, 1200, 0.04f);
 
     constexpr float DT      = 0.1f;
@@ -135,7 +135,7 @@ static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
 
         EncoderData enc = uart.LeesEncoder();
         if (enc.geldig)
-            loc.Predict(enc.speedLinks / 1000.0f, enc.speedRechts / 1000.0f, DT);
+            loc.Predict(enc.speedLinks, enc.speedRechts, DT);  // mm/s direct, geen /1000
 
         IMUData imu = uart.LeesIMU();
         if (imu.geldig)
@@ -371,7 +371,7 @@ static bool ObstakelVooruit(const Mapper& mapper, const Position& pos,
 
 static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
 {
-    Localisation loc(0.235f);
+    Localisation loc(235.0f);   // wheelBase in mm (was 0.235 m — fout)
     Mapper       mapper(1200, 1200, 0.04f);   // 48×48 m @ 4 cm/cel
 
     constexpr float DT             = 0.1f;
@@ -415,7 +415,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
         // ── 1. Encoder + IMU → lokalisatie ───────────────────────
         EncoderData enc = uart.LeesEncoder();
         if (enc.geldig)
-            loc.Predict(enc.speedLinks / 1000.0f, enc.speedRechts / 1000.0f, DT);
+            loc.Predict(enc.speedLinks, enc.speedRechts, DT);  // mm/s direct, geen /1000
 
         IMUData imu = uart.LeesIMU();
         if (imu.geldig)
