@@ -369,21 +369,24 @@ struct ScanAnalyse {
 // ── AnalyseerScan ────────────────────────────────────────────────────────────
 //
 //  LIDAR-indices zijn robot-relatief: index 0 = recht voor, 90 = rechts,
-//  270 = links. Geen rotatie-correctie nodig (GridMap::IntegrateScan
-//  voegt robotTheta zelf toe).
+//  270 = links. Geen rotatie-correctie nodig.
 //
-//  Drempelwaarden:
-//    VEILIG_MM  = 900mm  — detectie begint, zacht bijsturen
-//    REMMEN_MM  = 550mm  — rem + hard bijsturen
-//    KRITIEK_MM = 350mm  — volledig stop + draai
-//    CHASSIS_MM = 300mm  — minimale zijruimte voor bocht
+//  TEKENCONVENTIE angular (Pico-hardware):
+//    ang > 0  → rechts draaien   (rechterwiel langzamer)
+//    ang < 0  → links  draaien   (linkerwiel langzamer)
+//  Geverifieerd: handmatig 0,−40 = links; 0,+40 = rechts.
 //
-//  Uitwijkrichting:
-//    Kiest de kant met de grootste MINIMALE vrije ruimte in de
-//    ±90°-helft (niet het gemiddelde — gemiddelde kan flippen door
-//    verre lege ruimte). Hysteresis van 200mm voorkomt flip-flopping.
+//  uitwijkHoek:
+//    +1.0 → uitwijken naar rechts (ang = +getal naar Pico)
+//    −1.0 → uitwijken naar links  (ang = −getal naar Pico)
 //
-static float  g_vorigeUitwijk = 0.0f;  // hysteresis geheugen
+//  Sectorindeling (robot-frame, index = graden):
+//    Rechterhelft (robot-rechts) : index  10°–170°  → sector  1–16
+//    Linkerhelft  (robot-links)  : index 190°–350°  → sector 19–34
+//    Rechter zijkant (bocht-check): 50°–130°        → sector  5–12
+//    Linker  zijkant (bocht-check): 230°–310°       → sector 23–30
+//
+static float  g_vorigeUitwijk = 0.0f;  // hysteresis geheugen (+1=rechts, -1=links)
 
 static ScanAnalyse AnalyseerScan(const float ranges[360])
 {
@@ -392,24 +395,23 @@ static ScanAnalyse AnalyseerScan(const float ranges[360])
     static constexpr float VEILIG_MM   = 900.0f;
     static constexpr float CHASSIS_MM  = 300.0f;
     static constexpr float MAX_RANGE   = 8000.0f;
-    static constexpr float HYSTERESIS  = 200.0f;  // mm voordeel voor huidige kant
+    static constexpr float HYSTERESIS  = 200.0f;
 
-    // ── Stap 1: sector-minima per 10° (geen gemiddelde — min is veiliger) ─
-    // sector[0]  = 0°–10°   = recht voor
-    // sector[9]  = 90°–100° = rechts
-    // sector[27] = 270°–280°= links
+    // ── Stap 1: sector-minima per 10° ─────────────────────────
+    // sector[0]  =   0°–10°  = recht voor
+    // sector[9]  =  90°–100° = rechts van de robot
+    // sector[27] = 270°–280° = links  van de robot
     float sector[36];
     for (int s = 0; s < 36; ++s) sector[s] = MAX_RANGE;
 
     for (int a = 0; a < 360; ++a) {
         float r = ranges[a];
-        if (r <= 0.0f || r > MAX_RANGE) continue;  // ongeldige meting overslaan
+        if (r <= 0.0f || r > MAX_RANGE) continue;
         int s = (a / 10) % 36;
         if (r < sector[s]) sector[s] = r;
     }
 
     // ── Stap 2: sectorMin helper met wraparound ───────────────
-    // [van, tot) in sector-indices (0–35), wraps rond 36
     auto sectorMin = [&](int van, int tot) -> float {
         float m = MAX_RANGE;
         for (int s = van % 36; s != (tot % 36); s = (s + 1) % 36)
@@ -417,67 +419,63 @@ static ScanAnalyse AnalyseerScan(const float ranges[360])
         return m;
     };
 
-    // ── Stap 3: kritieke zones (robot-relatief) ───────────────
-    //  Voorwaartse zone  : ±50°        → sector 0–4 en 31–35
-    //  Rechter zijkant   : 50°–130°    → sector 5–12
-    //  Linker  zijkant   : 230°–310°   → sector 23–30
-    //  Rechterhelft      : 10°–170°    → sector 1–16  (voor uitwijkkeuze)
-    //  Linkerhelft       : 190°–350°   → sector 19–34 (voor uitwijkkeuze)
-    float minVoor        = sectorMin(31, 36);  // 310°–360°
-    {   // ook 0°–50°
-        float m2 = sectorMin(0, 5);
-        if (m2 < minVoor) minVoor = m2;
+    // ── Stap 3: kritieke zones ────────────────────────────────
+    //  Voorwaartse zone  : ±50°            → sector 0–4 en 31–35
+    //  Rechter zijkant   : 50°–130°        → sector 5–12   (robot-RECHTS)
+    //  Linker  zijkant   : 230°–310°       → sector 23–30  (robot-LINKS)
+    float minVoor = MAX_RANGE;
+    {
+        float m1 = sectorMin(0,  5);   //   0°– 50°
+        float m2 = sectorMin(31, 36);  // 310°–360°
+        minVoor = (m1 < m2) ? m1 : m2;
     }
-    float minRechtsZijde = sectorMin(5,  13);  //  50°–130°
-    float minLinksZijde  = sectorMin(23, 31);  // 230°–310°
+    float minRechtsZijde = sectorMin(5,  13);  //  50°–130°  robot-rechts zijkant
+    float minLinksZijde  = sectorMin(23, 31);  // 230°–310°  robot-links  zijkant
 
-    // Voor display: min in de respectievelijke halfcirkels
+    // Voor display
     float minRechts = sectorMin(5,  18);   //  50°–180°
     float minLinks  = sectorMin(19, 35);   // 190°–350°
 
-    // ── Stap 4: ruimte-score per kant — gebruik minimum, niet gemiddelde ──
-    // Rechterhelft = sector 1–17 (10°–179°), linkerhelft = sector 19–35 (190°–359°)
-    float ruimteRechts = sectorMin(1,  18);
-    float ruimteLinks  = sectorMin(19, 36);
+    // ── Stap 4: ruimte per kant (minimum over halfcirkel) ─────
+    //  Rechterhelft = sector  1–17  (10°–179°)   → ang > 0 stuurt hiernaartoe
+    //  Linkerhelft  = sector 19–35  (190°–359°)  → ang < 0 stuurt hiernaartoe
+    float ruimteRechts = sectorMin(1,  18);  // rechts van robot
+    float ruimteLinks  = sectorMin(19, 36);  // links  van robot
 
-    // ── Stap 5: vul basisresultaat ────────────────────────────
+    // ── Stap 5: basisresultaat ────────────────────────────────
     ScanAnalyse res{};
     res.ruimteLinks  = ruimteLinks;
     res.ruimteRechts = ruimteRechts;
     res.minVoor      = minVoor;
     res.minLinks     = minLinks;
     res.minRechts    = minRechts;
-    res.uitwijkHoek  = g_vorigeUitwijk;  // bewaar vorige richting als standaard
+    res.uitwijkHoek  = g_vorigeUitwijk;
 
     if (minVoor >= VEILIG_MM) {
         res.staat = 0;
-        g_vorigeUitwijk = 0.0f;  // reset hysteresis als we vrij rijden
+        g_vorigeUitwijk = 0.0f;
         return res;
     }
 
-    // ── Stap 6: kies uitwijkrichting met hysteresis ───────────
-    //
-    //  Hoofdregel: ga naar de kant met de meeste minimale vrije ruimte.
-    //  Zijkant-check: die kant moet ook > CHASSIS_MM hebben.
-    //  Hysteresis: de huidige kant krijgt HYSTERESIS mm voordeel zodat
-    //              kleine wisselingen in de scan niet flippen.
-    //
-    bool linksVeilig  = (minLinksZijde  > CHASSIS_MM);
+    // ── Stap 6: uitwijkrichting met hysteresis ────────────────
+    //  Rechts uitwijken (ang > 0) vereist dat rechter zijkant vrij is.
+    //  Links  uitwijken (ang < 0) vereist dat linker  zijkant vrij is.
     bool rechtsVeilig = (minRechtsZijde > CHASSIS_MM);
+    bool linksVeilig  = (minLinksZijde  > CHASSIS_MM);
 
-    float scoreLinks  = linksVeilig  ? ruimteLinks  : 0.0f;
     float scoreRechts = rechtsVeilig ? ruimteRechts : 0.0f;
+    float scoreLinks  = linksVeilig  ? ruimteLinks  : 0.0f;
 
-    // Hysteresis: geef de huidige richting een bonus
-    if (g_vorigeUitwijk > 0.0f) scoreLinks  += HYSTERESIS;
-    if (g_vorigeUitwijk < 0.0f) scoreRechts += HYSTERESIS;
+    // Hysteresis: huidige richting krijgt bonus
+    if (g_vorigeUitwijk > 0.0f) scoreRechts += HYSTERESIS;  // was rechts → bonus rechts
+    if (g_vorigeUitwijk < 0.0f) scoreLinks  += HYSTERESIS;  // was links  → bonus links
 
     float nieuweUitwijk;
-    if (!linksVeilig && !rechtsVeilig) {
-        // Beide geblokkeerd: kies minst slechte op basis van ruimte (geen bonus)
-        nieuweUitwijk = (ruimteLinks >= ruimteRechts) ? +1.0f : -1.0f;
+    if (!rechtsVeilig && !linksVeilig) {
+        // Beide geblokkeerd: kies minst slechte
+        nieuweUitwijk = (ruimteRechts >= ruimteLinks) ? +1.0f : -1.0f;
     } else {
-        nieuweUitwijk = (scoreLinks >= scoreRechts) ? +1.0f : -1.0f;
+        nieuweUitwijk = (scoreRechts >= scoreLinks) ? +1.0f : -1.0f;
     }
 
     res.uitwijkHoek = nieuweUitwijk;
@@ -805,11 +803,12 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
 
         // ── 3a. Obstakelcheck + ontwijkfase state-machine ────────
         //
-        //  OntwijkFase::NORMAAL
-        //    → scan.staat >= 3 (KRITIEK): bereken doelhoek, ga naar DRAAIEN
-        //    → scan.staat == 2 (REMMEN) : rem + bijsturen, blijf NORMAAL
-        //    → scan.staat == 1 (VEILIG) : navigator + zachte correctie
-        //    → scan.staat == 0 (VRIJ)   : navigator of rechtdoor
+        //  Tekenconventie samengevat:
+        //    uitwijkHoek = +1 → rechts uitwijken → ang = +40 → theta daalt
+        //    uitwijkHoek = -1 → links  uitwijken → ang = -40 → theta stijgt
+        //    doelHoek = theta + draaiRichting * (-90°)
+        //             = theta - 90° bij rechts draaien
+        //             = theta + 90° bij links  draaien
         //
         //  OntwijkFase::DRAAIEN
         //    Draai op plek naar doelHoek. Stop als hoekfout < 8°.
@@ -846,12 +845,14 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
                 scansSindsHerplan = HERPLAN_SCANS;  // direct herplannen na vrijrijden
                 ka.SetCommand(LIN_SPEED, 0.0f);
             } else if (heeftRanges && scan.staat >= 3 &&
-                       // Nieuw obstakel in de draairichting? Herbereken.
-                       ((draaiRichting > 0 && scan.minLinks < 350.0f) ||
-                        (draaiRichting < 0 && scan.minRechts < 350.0f))) {
+                       // Blokkade in de richting waar we naartoe draaien?
+                       // draaiRichting=+1 (rechts): rechter voorkant (minRechts) kan geblokkeerd raken
+                       // draaiRichting=-1 (links):  linker  voorkant (minLinks)  kan geblokkeerd raken
+                       ((draaiRichting > 0 && scan.minRechts < 350.0f) ||
+                        (draaiRichting < 0 && scan.minLinks  < 350.0f))) {
                 // Blokkade in draairichting: keer om
                 draaiRichting = -draaiRichting;
-                doelHoek = normDeg(huidig + draaiRichting * 90.0f);
+                doelHoek = normDeg(huidig - draaiRichting * 90.0f);
                 ka.SetCommand(0.0f, draaiRichting * 40.0f);
             } else {
                 // Blijf draaien in de vastgezette richting
@@ -864,7 +865,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
             if (heeftRanges && scan.staat >= 3) {
                 // Alweer een kritiek obstakel → meteen terug naar draaien
                 draaiRichting = scan.uitwijkHoek;
-                doelHoek      = normDeg(loc.GetTheta() + draaiRichting * 90.0f);
+                doelHoek      = normDeg(loc.GetTheta() - draaiRichting * 90.0f);
                 ontwijkFase   = OntwijkFase::DRAAIEN;
                 ka.SetCommand(0.0f, draaiRichting * 40.0f);
             } else {
@@ -885,8 +886,8 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
             // ── Fase NORMAAL ──────────────────────────────────────
             if (heeftRanges && scan.staat >= 3) {
                 // KRITIEK: bereken doelhoek en begin draaien
-                draaiRichting = scan.uitwijkHoek;           // +1=links, -1=rechts
-                doelHoek      = normDeg(loc.GetTheta() + draaiRichting * 90.0f);
+                draaiRichting = scan.uitwijkHoek;           // +1=rechts (ang>0), -1=links (ang<0)
+                doelHoek      = normDeg(loc.GetTheta() - draaiRichting * 90.0f);
                 ontwijkFase   = OntwijkFase::DRAAIEN;
                 heeftPad      = false;   // huidig pad vervalt
                 ka.SetCommand(0.0f, draaiRichting * 40.0f);

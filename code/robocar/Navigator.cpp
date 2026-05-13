@@ -54,13 +54,18 @@ DriveCommand Navigator::GetNextCommand(Position current) {
     float absErr = std::fabs(angleErr);
 
     // Dode zone: kleine afwijkingen negeren, rijdt dan puur rechtdoor
+    // Tekenconventie Pico-hardware (geverifieerd handmatig):
+    //   ang > 0 → rechts draaien,  ang < 0 → links draaien
+    // atan2 geeft positieve hoekfout als doel LINKS ligt van huidige kijkrichting.
+    // Dus: positieve hoekfout → negatieve angular (links draaien).
     float angularDegS = 0.0f;
     if (absErr > ANGLE_DEADBAND_DEG) {
-        // Proportioneel: gain × fout, begrensd op [MIN, MAX]
         angularDegS = ANGULAR_GAIN * absErr;
         if (angularDegS < MIN_ANGULAR_DEG_S) angularDegS = MIN_ANGULAR_DEG_S;
         if (angularDegS > MAX_ANGULAR_DEG_S) angularDegS = MAX_ANGULAR_DEG_S;
-        if (angleErr < 0.0f) angularDegS = -angularDegS;
+        // Positieve hoekfout = doel is links → ang negatief (links)
+        // Negatieve hoekfout = doel is rechts → ang positief (rechts)
+        if (angleErr > 0.0f) angularDegS = -angularDegS;
     }
 
     // Altijd vooruit rijden — Drive::ExecuteLinear verwerkt angular als zachte bocht
