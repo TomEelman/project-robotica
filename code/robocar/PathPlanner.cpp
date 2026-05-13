@@ -28,16 +28,21 @@ void PathPlanner::UpdateMap(const GridMap& map) {
 Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
     gridMap = map;
 
-    int sx, sy, gx, gy;
+    // ── Eenheden ──────────────────────────────────────────────
+    // start/goal zijn in mm (van Localisation/Position)
+    // WorldToCell verwacht meter → omzetten
+    // CellToWorld geeft meter → omzetten naar mm voor waypoints
+    constexpr float MM2M = 0.001f;
+    constexpr float M2MM = 1000.0f;
 
-    // WorldToGrid → WorldToCell (geeft void, InBounds voor de check)
-    gridMap.WorldToCell(start.GetX(), start.GetY(), sx, sy);
+    int sx, sy, gx, gy;
+    gridMap.WorldToCell(start.GetX() * MM2M, start.GetY() * MM2M, sx, sy);
     if (!gridMap.InBounds(sx, sy)) {
         std::cerr << "PathPlanner: start buiten grid\n";
         return Path();
     }
 
-    gridMap.WorldToCell(goal.GetX(), goal.GetY(), gx, gy);
+    gridMap.WorldToCell(goal.GetX() * MM2M, goal.GetY() * MM2M, gx, gy);
     if (!gridMap.InBounds(gx, gy)) {
         std::cerr << "PathPlanner: goal buiten grid\n";
         return Path();
@@ -127,23 +132,21 @@ Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
     // de vorige stap. Zo rijdt de robot lange rechte stukken door
     // zonder bij elke cel een nieuw waypoint te verwachten.
     // Minimale segmentlengte: MIN_SEG cellen (voorkomt te korte stukjes)
-    constexpr int MIN_SEG = 5;   // ≈ 5 × 4 cm = 20 cm minimumsegment
+    constexpr int MIN_SEG = 5;   // ≈ 5 × 5 cm = 25 cm minimumsegment
+
+    // Helper: cel → waypoint in mm
+    auto celNaarWaypoint = [&](int cx2, int cy2) -> Position {
+        float wx_m, wy_m;
+        gridMap.CellToWorld(cx2, cy2, wx_m, wy_m);
+        return Position(wx_m * M2MM, wy_m * M2MM, 0.0f);  // meter → mm
+    };
 
     std::vector<Position> waypoints;
     if (rawCells.size() <= 2) {
-        // Pad is 1 of 2 cellen: gewoon alles meenemen
-        for (auto& [cx2, cy2] : rawCells) {
-            float wx, wy;
-            gridMap.CellToWorld(cx2, cy2, wx, wy);
-            waypoints.emplace_back(wx, wy, 0.0f);
-        }
+        for (auto& [cx2, cy2] : rawCells)
+            waypoints.push_back(celNaarWaypoint(cx2, cy2));
     } else {
-        // Eerste punt altijd meenemen
-        {
-            float wx, wy;
-            gridMap.CellToWorld(rawCells[0].first, rawCells[0].second, wx, wy);
-            waypoints.emplace_back(wx, wy, 0.0f);
-        }
+        waypoints.push_back(celNaarWaypoint(rawCells[0].first, rawCells[0].second));
 
         int prevDx = rawCells[1].first  - rawCells[0].first;
         int prevDy = rawCells[1].second - rawCells[0].second;
@@ -156,9 +159,7 @@ Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
             bool richtingVeranderd = (curDx != prevDx || curDy != prevDy);
 
             if (richtingVeranderd && segLen >= MIN_SEG) {
-                float wx, wy;
-                gridMap.CellToWorld(rawCells[i].first, rawCells[i].second, wx, wy);
-                waypoints.emplace_back(wx, wy, 0.0f);
+                waypoints.push_back(celNaarWaypoint(rawCells[i].first, rawCells[i].second));
                 segLen = 0;
             }
 
@@ -167,12 +168,7 @@ Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
             ++segLen;
         }
 
-        // Laatste punt altijd meenemen (het eigenlijke doel)
-        {
-            float wx, wy;
-            gridMap.CellToWorld(rawCells.back().first, rawCells.back().second, wx, wy);
-            waypoints.emplace_back(wx, wy, 0.0f);
-        }
+        waypoints.push_back(celNaarWaypoint(rawCells.back().first, rawCells.back().second));
     }
 
     currentPath = Path(waypoints);

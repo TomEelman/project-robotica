@@ -8,16 +8,21 @@
 
 class GridMap {
 public:
-    // ── Celstatussen ─────────────────────────────────────────
-    static constexpr int8_t  CELL_FREE     = -30;
-    static constexpr int8_t  CELL_OCCUPIED =  30;
-    static constexpr int8_t  CELL_UNKNOWN  =   0;
-
     // ── Log-odds update stappen ───────────────────────────────
-    static constexpr int8_t  L_OCC   =  10;
-    static constexpr int8_t  L_FREE  =  -5;
-    static constexpr int8_t  L_MIN   = -100;
-    static constexpr int8_t  L_MAX   =  100;
+    // L_OCC / L_FREE balans bepaalt hoe snel de kaart reageert.
+    // Tijdens bochten worden vrije stralen over muren gescand →
+    // L_FREE groter dan L_OCC zodat tijdelijke fouten snel gewist worden.
+    // CELL_OCCUPIED hoog genoeg zodat 1 meting niet meteen een muur maakt.
+    static constexpr int8_t  L_OCC   =   5;   // was 10 — langzamer bezet markeren
+    static constexpr int8_t  L_FREE  =  -4;   // was -5 — iets sneller vrijmaken
+    static constexpr int8_t  L_MIN   = -60;
+    static constexpr int8_t  L_MAX   =  60;
+
+    // Cel is bezet als log-odds ≥ CELL_OCCUPIED (20 = 4 opeenvolgende treffers)
+    // Cel is vrij   als log-odds ≤ CELL_FREE    (-20 = 5 vrij-metingen)
+    static constexpr int8_t  CELL_FREE     = -20;
+    static constexpr int8_t  CELL_OCCUPIED =  20;
+    static constexpr int8_t  CELL_UNKNOWN  =   0;
 
     // ── Constructor ───────────────────────────────────────────
     // width/height in cellen; resolution in meter/cel (bv. 0.05 = 5 cm)

@@ -95,27 +95,37 @@ void GridMap::IntegrateScan(float robotX, float robotY, float robotTheta,
                              const float angles[], const float ranges[], int count,
                              float maxRange)
 {
-    // Robotpositie naar cellen
-    int rx, ry;
-    WorldToCell(robotX, robotY, rx, ry);
-
-    constexpr float DEG2RAD = 3.14159265f / 180.0f;
+    // ── Eenheden ──────────────────────────────────────────────────
+    // robotX, robotY  : mm  (van Localisation)
+    // ranges[]        : mm  (van LIDAR)
+    // resolution      : meter/cel
+    // originX/Y       : meter
+    // → alles omzetten naar METER voor WorldToCell en eindpunt berekening
     constexpr float MM2M    = 0.001f;
+    constexpr float DEG2RAD = 3.14159265f / 180.0f;
+
+    float robotX_m = robotX * MM2M;
+    float robotY_m = robotY * MM2M;
+    float maxRange_m = maxRange * MM2M;
+
+    int rx, ry;
+    WorldToCell(robotX_m, robotY_m, rx, ry);
 
     for (int i = 0; i < count; ++i) {
-        float dist = ranges[i];
+        float dist_mm = ranges[i];
 
         // Ongeldige of te verre metingen negeren
-        if (dist <= 0.0f || dist > maxRange) continue;
+        if (dist_mm <= 0.0f || dist_mm > maxRange) continue;
 
-        // Wereldhoek = robotrichting + LIDARhoek
-        float globalAngle = robotTheta + angles[i] * DEG2RAD;
+        float dist_m = dist_mm * MM2M;
 
-        // Eindpunt in meter (wereld)
-        float wx = robotX + dist * MM2M * std::cos(globalAngle);
-        float wy = robotY + dist * MM2M * std::sin(globalAngle);
+        // Wereldhoek = robotrichting (graden → rad) + LIDARhoek (graden → rad)
+        float globalAngle = robotTheta * DEG2RAD + angles[i] * DEG2RAD;
 
-        // Eindpunt naar cellen
+        // Eindpunt in meter
+        float wx = robotX_m + dist_m * std::cos(globalAngle);
+        float wy = robotY_m + dist_m * std::sin(globalAngle);
+
         int ex, ey;
         WorldToCell(wx, wy, ex, ey);
 
@@ -140,10 +150,11 @@ bool GridMap::IsUnknown(int cx, int cy) const {
 }
 
 bool GridMap::IsPathValid(Path path) const {
+    constexpr float MM2M = 0.001f;
     while (!path.IsEmpty()) {
         Position p = path.GetCurrentWaypoint();
         int cx, cy;
-        WorldToCell(p.GetX(), p.GetY(), cx, cy);
+        WorldToCell(p.GetX() * MM2M, p.GetY() * MM2M, cx, cy);
 
         if (!InBounds(cx, cy))   return false;
         if (IsOccupied(cx, cy))  return false;

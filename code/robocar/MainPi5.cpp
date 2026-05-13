@@ -120,8 +120,9 @@ static bool initLidar(LIDAR& lidar) {
 // ════════════════════════════════════════════════════════════════
 
 static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
-    Localisation loc(235.0f);   // wheelBase in mm (was 0.235 m — fout)
-    Mapper       mapper(1200, 1200, 0.04f);
+    Localisation loc(235.0f);
+    // 13 m × 8 m testruimte, 5 cm per cel → 260 × 160 cellen
+    Mapper mapper(260, 160, 0.05f);
 
     constexpr float DT      = 0.1f;
     constexpr long  LOOP_US = 100000;
@@ -289,9 +290,13 @@ static Position KiesFrontierDoel(const Mapper& mapper, const Position& huidig)
 {
     // Zoek de cel het verst weg die FREE is maar een UNKNOWN buur heeft
     // (klassieke frontier exploration). Eenvoudige variant: verste FREE cel.
+    constexpr float MM2M = 0.001f;
     float bestDist = 0.0f;
-    float bestWx   = huidig.GetX();
-    float bestWy   = huidig.GetY();
+    // Startwaarden in meter
+    float huidigX_m = huidig.GetX() * MM2M;
+    float huidigY_m = huidig.GetY() * MM2M;
+    float bestWx_m  = huidigX_m;
+    float bestWy_m  = huidigY_m;
 
     int W = mapper.GetMap().GetWidth();
     int H = mapper.GetMap().GetHeight();
@@ -300,7 +305,6 @@ static Position KiesFrontierDoel(const Mapper& mapper, const Position& huidig)
         for (int cx = 0; cx < W; ++cx) {
             if (!mapper.GetMap().IsFree(cx, cy)) continue;
 
-            // Moet minstens één UNKNOWN buur hebben (frontier voorwaarde)
             bool heeftOnbekendeBuur = false;
             const int dx[4] = {-1,1,0,0};
             const int dy[4] = {0,0,-1,1};
@@ -314,81 +318,96 @@ static Position KiesFrontierDoel(const Mapper& mapper, const Position& huidig)
             }
             if (!heeftOnbekendeBuur) continue;
 
-            float wx, wy;
-            mapper.GetMap().CellToWorld(cx, cy, wx, wy);
+            // CellToWorld geeft meter terug
+            float wx_m, wy_m;
+            mapper.GetMap().CellToWorld(cx, cy, wx_m, wy_m);
 
-            float dx2 = wx - huidig.GetX();
-            float dy2 = wy - huidig.GetY();
+            float dx2 = wx_m - huidigX_m;
+            float dy2 = wy_m - huidigY_m;
             float dist = std::sqrt(dx2*dx2 + dy2*dy2);
 
             if (dist > bestDist) {
                 bestDist = dist;
-                bestWx   = wx;
-                bestWy   = wy;
+                bestWx_m = wx_m;
+                bestWy_m = wy_m;
             }
         }
     }
 
-    return Position(bestWx, bestWy, 0.0f);
+    // Geef terug in mm (consistent met de rest van het systeem)
+    return Position(bestWx_m / MM2M, bestWy_m / MM2M, 0.0f);
 }
 
 // ── Hulpfunctie: obstakel recht vooruit? ────────────────────────────────────
 // Kijkt in een kegel van ±HOEK_DEG graden voor de robot,
 // binnen AFSTAND_MM mm. Geeft true als er een OCCUPIED cel in zit.
 // ── ObstakelRichting ────────────────────────────────────────────────────────
-// Kijkt in een kegel van ±HOEK_DEG graden voor de robot binnen AFSTAND_MM mm.
-// Geeft terug:
-//   0  = vrij
-//  +1  = obstakel rechts → bocht links maken
-//  -1  = obstakel links  → bocht rechts maken
-//   2  = obstakel recht voorop → ruim van te voren afbuigen
-static int ObstakelRichting(const Mapper& mapper, const Position& pos,
-                             float afstandMm = 800.0f, float hoekDeg = 25.0f)
+// Scant een kegel vóór de robot in twee zones:
+//
+//   HARDE zone  (0 – HARD_MM):  obstakel direct voor de robot (<250 mm)
+//               → scherpe bocht nodig, robot mag bijna niet meer doorrijden
+//
+//   VROEGE zone (HARD_MM – VROEG_MM): obstakel nog ver (250–1000 mm)
+//               → begin alvast zachtjes te draaien voor de bocht
+//
+// Returnwaarde:
+//    0   = volledig vrij
+//   +1   = vroeg rechts geblokkeerd  → lichte bocht links
+//   -1   = vroeg links geblokkeerd   → lichte bocht rechts
+//   +2   = vroeg midden geblokkeerd  → lichte bocht links (default)
+//   +10  = hard rechts geblokkeerd   → scherpe bocht links
+//   -10  = hard links geblokkeerd    → scherpe bocht rechts
+//   +20  = hard midden geblokkeerd   → scherpe bocht links
+static int ObstakelRichting(const Mapper& mapper, const Position& pos)
 {
-    static constexpr float DEG2RAD = 3.14159265f / 180.0f;
-    float thetaRad = pos.GetTheta() * DEG2RAD;
-    float hoekRad  = hoekDeg * DEG2RAD;
+    static constexpr float DEG2RAD  = 3.14159265f / 180.0f;
+    static constexpr float MM2M     = 0.001f;
+    static constexpr float HARD_MM  =  250.0f;
+    static constexpr float VROEG_MM = 1000.0f;
+    static constexpr float HOEK_DEG =   25.0f;
 
-    constexpr int STAPPEN = 15;
-    bool linksVrij  = true;
-    bool rechtsVrij = true;
-    bool voorVrij   = true;
+    float thetaRad  = pos.GetTheta() * DEG2RAD;
+    float hoekRad   = HOEK_DEG * DEG2RAD;
+    // Robotpositie in meter voor WorldToCell
+    float robotX_m  = pos.GetX() * MM2M;
+    float robotY_m  = pos.GetY() * MM2M;
+
+    constexpr int STAPPEN = 20;
+    bool hardVoor = false, hardLinks = false, hardRechts = false;
+    bool vroegVoor = false, vroegLinks = false, vroegRechts = false;
 
     for (int s = 1; s <= STAPPEN; ++s) {
-        float r = afstandMm * static_cast<float>(s) / STAPPEN;
+        // Straallengte in meter
+        float r_m = VROEG_MM * MM2M * static_cast<float>(s) / STAPPEN;
+        bool isHard = (r_m <= HARD_MM * MM2M);
 
-        // Middenas
-        {
-            float wx = pos.GetX() + r * std::cos(thetaRad);
-            float wy = pos.GetY() + r * std::sin(thetaRad);
+        const float offsets[3] = { 0.0f, -hoekRad, +hoekRad };
+        for (int i = 0; i < 3; ++i) {
+            float wx_m = robotX_m + r_m * std::cos(thetaRad + offsets[i]);
+            float wy_m = robotY_m + r_m * std::sin(thetaRad + offsets[i]);
             int cx, cy;
-            mapper.GetMap().WorldToCell(wx, wy, cx, cy);
-            if (mapper.GetMap().InBounds(cx, cy) && mapper.GetMap().IsOccupied(cx, cy))
-                voorVrij = false;
-        }
-        // Linker rand
-        {
-            float wx = pos.GetX() + r * std::cos(thetaRad - hoekRad);
-            float wy = pos.GetY() + r * std::sin(thetaRad - hoekRad);
-            int cx, cy;
-            mapper.GetMap().WorldToCell(wx, wy, cx, cy);
-            if (mapper.GetMap().InBounds(cx, cy) && mapper.GetMap().IsOccupied(cx, cy))
-                linksVrij = false;
-        }
-        // Rechter rand
-        {
-            float wx = pos.GetX() + r * std::cos(thetaRad + hoekRad);
-            float wy = pos.GetY() + r * std::sin(thetaRad + hoekRad);
-            int cx, cy;
-            mapper.GetMap().WorldToCell(wx, wy, cx, cy);
-            if (mapper.GetMap().InBounds(cx, cy) && mapper.GetMap().IsOccupied(cx, cy))
-                rechtsVrij = false;
+            mapper.GetMap().WorldToCell(wx_m, wy_m, cx, cy);
+            if (!mapper.GetMap().InBounds(cx, cy) || !mapper.GetMap().IsOccupied(cx, cy))
+                continue;
+
+            if (isHard) {
+                if (i == 0) hardVoor   = true;
+                if (i == 1) hardLinks  = true;
+                if (i == 2) hardRechts = true;
+            } else {
+                if (i == 0) vroegVoor  = true;
+                if (i == 1) vroegLinks = true;
+                if (i == 2) vroegRechts = true;
+            }
         }
     }
 
-    if (!voorVrij)   return 2;   // midden geblokkeerd
-    if (!rechtsVrij) return +1;  // rechts geblokkeerd → stuur links
-    if (!linksVrij)  return -1;  // links geblokkeerd  → stuur rechts
+    if (hardVoor)    return +20;
+    if (hardRechts)  return +10;
+    if (hardLinks)   return -10;
+    if (vroegVoor)   return  +2;
+    if (vroegRechts) return  +1;
+    if (vroegLinks)  return  -1;
     return 0;
 }
 
@@ -513,12 +532,18 @@ static void PrintStatus(const RobotStatus& s)
     }
     printf("║  %s● %s\033[0m  ║\n", staatKleur, staatTekst);
 
-    // Obstakelrichting visueel
-    const char* obstSymbool =
-        (s.obstRichting ==  0) ? "        [voor: vrij ] [links: vrij ] [rechts: vrij ]" :
-        (s.obstRichting ==  2) ? "\033[31m        [voor: BLOK ] [links:  ?   ] [rechts:  ?  ]\033[0m" :
-        (s.obstRichting == +1) ? "\033[33m        [voor: vrij ] [links: vrij ] [rechts: BLOK]\033[0m" :
-                                 "\033[33m        [voor: vrij ] [links: BLOK ] [rechts: vrij]\033[0m";
+    // Obstakelrichting visueel — twee zones
+    const char* obstSymbool;
+    switch (s.obstRichting) {
+        case   0: obstSymbool = "        [voor: vrij ] [links: vrij ] [rechts: vrij ]              "; break;
+        case  +2: obstSymbool = "\033[33m        [voor: VROEG] [links:  -   ] [rechts:  -   ] bocht L\033[0m"; break;
+        case  +1: obstSymbool = "\033[33m        [voor: vrij ] [links:  -   ] [rechts: VROEG] bocht L\033[0m"; break;
+        case  -1: obstSymbool = "\033[33m        [voor: vrij ] [links: VROEG] [rechts:  -   ] bocht R\033[0m"; break;
+        case +20: obstSymbool = "\033[31m        [voor: HARD ] [links:  -   ] [rechts:  -   ] SCHERP L\033[0m"; break;
+        case +10: obstSymbool = "\033[31m        [voor: vrij ] [links:  -   ] [rechts: HARD ] SCHERP L\033[0m"; break;
+        case -10: obstSymbool = "\033[31m        [voor: vrij ] [links: HARD ] [rechts:  -   ] SCHERP R\033[0m"; break;
+        default:  obstSymbool = "        [onbekend]                                                 "; break;
+    }
     printf("║  %s  ║\n", obstSymbool);
 
     printf("╚══════════════════════════════════════════════════════════╝\n");
@@ -527,8 +552,9 @@ static void PrintStatus(const RobotStatus& s)
 
 static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
 {
-    Localisation loc(235.0f);   // wheelBase in mm (was 0.235 m — fout)
-    Mapper       mapper(1200, 1200, 0.04f);   // 48×48 m @ 4 cm/cel
+    Localisation loc(235.0f);   // wheelBase in mm
+    // 13 m × 8 m testruimte, 5 cm per cel → 260 × 160 cellen
+    Mapper mapper(260, 160, 0.05f);
 
     constexpr float DT             = 0.1f;
     constexpr long  LOOP_US        = 100000;
@@ -616,8 +642,9 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
         st.heeftPad    = heeftPad;
 
         {
+            constexpr float MM2M = 0.001f;
             int cx = 0, cy = 0;
-            mapper.GetMap().WorldToCell(pos.GetX(), pos.GetY(), cx, cy);
+            mapper.GetMap().WorldToCell(pos.GetX() * MM2M, pos.GetY() * MM2M, cx, cy);
             st.robotCelVrij = mapper.GetMap().InBounds(cx, cy) &&
                               mapper.GetMap().IsFree(cx, cy);
         }
@@ -640,17 +667,29 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
             st.hoekFout = err;
         }
 
-        // ── 3a. Obstakelcheck: zachte bocht, geen stop ────────────
+        // ── 3a. Obstakelcheck: twee zones ────────────────────────
         int obstRichting = ObstakelRichting(mapper, pos);
         st.obstRichting  = obstRichting;
 
         if (obstRichting != 0) {
-            float bocht = 0.0f;
-            if      (obstRichting ==  2) bocht = -8.0f;
-            else if (obstRichting == +1) bocht = -8.0f;
-            else if (obstRichting == -1) bocht = +8.0f;
+            float bocht     = 0.0f;
+            bool  scherp    = (obstRichting == +20 || obstRichting == +10 || obstRichting == -10);
 
-            ka.SetCommand(LIN_SPEED, bocht);
+            // Bepaal draairichting op basis van teken
+            float richting = (obstRichting > 0) ? -1.0f : +1.0f;
+
+            if (scherp) {
+                // Harde zone (<250 mm): scherpe bocht, iets langzamer
+                bocht = richting * 25.0f;
+                ka.SetCommand(LIN_SPEED * 0.5f, bocht);
+                // Pauzeer kaart-update tijdens scherpe bocht: verouderde
+                // positie + snelle draai geeft anders straalartifacten
+                nieuweScan = false;
+            } else {
+                // Vroege zone (250–1000 mm): zachte bocht, vol gas
+                bocht = richting * 8.0f;
+                ka.SetCommand(LIN_SPEED, bocht);
+            }
             st.staat = 2;
 
         // ── 3b. Navigator rijdt het pad ───────────────────────────
