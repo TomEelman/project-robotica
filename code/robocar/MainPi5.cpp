@@ -368,73 +368,90 @@ struct ScanAnalyse {
 
 // ── AnalyseerScan ────────────────────────────────────────────────────────────
 //
-//  Gebruikt de ruwe LIDAR-meting (360 waarden, index = hoek t.o.v. robot).
-//  Analyseert per 10° sector de vrije ruimte, kiest de veiligste uitwijkrichting.
+//  Gebruikt de ruwe LIDAR-meting (360 waarden, index = LIDAR-hoek in graden).
+//  robotTheta (graden) roteert de indices zodat sector 0 altijd "recht voor
+//  de robot" is, ongeacht de rijrichting.
+//
+//  Sectorindeling (na rotatie, t.o.v. robot):
+//    sector  0        =   0° – 10°   = recht voor
+//    sector  4        =  40° – 50°   = voor-rechts
+//    sector  9        =  90°–100°    = rechts
+//    sector 18        = 180°–190°    = achter
+//    sector 27        = 270°–280°    = links
+//    sector 31        = 310°–320°    = voor-links
 //
 //  Fysieke constraints:
 //    VEILIG_MM   = 900mm  — detectie begint hier, zacht bijsturen
 //    REMMEN_MM   = 600mm  — rem naar 40%, hard bijsturen
 //    KRITIEK_MM  = 350mm  — stop + draai op plek (chassis blokkeert <250mm)
-//    CHASSIS_MM  = 300mm  — minimale ruimte die nodig is voor de bocht
-//                           (als de zijkant minder ruimte heeft, die kant vermijden)
+//    CHASSIS_MM  = 300mm  — minimale zijruimte die de robot nodig heeft voor bocht
 //
-//  Bocht-kwaliteit berekening:
-//    Bij een bocht naar links kijken we naar sectoren 270°–360° (linker zijkant).
-//    Die moeten allemaal > CHASSIS_MM hebben. Anders is de bocht niet veilig.
-//
-static ScanAnalyse AnalyseerScan(const float ranges[360])
+static ScanAnalyse AnalyseerScan(const float ranges[360], float robotTheta = 0.0f)
 {
     static constexpr float KRITIEK_MM  = 350.0f;
     static constexpr float REMMEN_MM   = 600.0f;
     static constexpr float VEILIG_MM   = 900.0f;
-    static constexpr float CHASSIS_MM  = 300.0f;  // minimale zijruimte voor bocht
-    static constexpr float MAX_RANGE   = 8000.0f; // cap voor ongeldige metingen
+    static constexpr float CHASSIS_MM  = 300.0f;
+    static constexpr float MAX_RANGE   = 8000.0f;
 
-    // ── Stap 1: bouw sector-gemiddelden per 10° ───────────────
-    // sector[i] = gemiddelde afstand in graden [i*10, i*10+10)
-    // Index 0 = recht voor (0°), 9 = rechts (90°), 27 = links (270°)
+    // ── Stap 1: roteer LIDAR-indices naar robot-frame ─────────
+    // LIDAR index 0 = absolute 0°. De robot kijkt in richting robotTheta.
+    // Offset = hoeveel graden we moeten opschuiven zodat robot-voorwaarts
+    // op index 0 belandt.
+    //   robotForwardLidarAngle: welk LIDAR-index overeenkomt met "recht voor"
+    //   Als robotTheta = 90°, dan kijkt de robot naar 90° → LIDAR[90] is voor.
+    //   We willen sector[0] = robot-voor, dus rotatie = +robotTheta.
+    int rotOffset = static_cast<int>(std::fmod(robotTheta + 360.0f, 360.0f));
+
+    // ── Stap 2: bouw sector-gemiddelden per 10° in robot-frame ─
+    // sector[0]  = robot-voor (0°–10°)
+    // sector[9]  = robot-rechts (90°–100°)
+    // sector[27] = robot-links (270°–280°)
     float sector[36] = {};
     int   sectorN[36] = {};
 
     for (int a = 0; a < 360; ++a) {
         float r = ranges[a];
         if (r <= 0.0f || r > MAX_RANGE) r = MAX_RANGE;
-        int s = (a / 10) % 36;
+        // Roteer: robot-frame hoek = (LIDAR-hoek - rotOffset + 360) % 360
+        int robotAngle = (a - rotOffset + 360) % 360;
+        int s = (robotAngle / 10) % 36;
         sector[s]  += r;
         sectorN[s] += 1;
     }
     for (int s = 0; s < 36; ++s)
         if (sectorN[s] > 0) sector[s] /= static_cast<float>(sectorN[s]);
 
-    // ── Stap 2: minimale afstand in kritieke zones ────────────
-    // Voorwaarts = ±45° = sector 0–4 en 32–35
-    // Links      = 270°–360° = sector 27–35
-    // Rechts     = 0°–90°    = sector 1–9  (maar ook recht voor)
-    // Linker zijkant voor bocht: 225°–315° = sector 22–31
-    // Rechter zijkant voor bocht:  45°–135° = sector 4–13
-
+    // ── Stap 3: sectorMin helper (wraparound) ─────────────────
     auto sectorMin = [&](int van, int tot) -> float {
-        // van/tot zijn sectorindices, wraps rond 36
         float m = MAX_RANGE;
-        for (int s = van; s != tot; s = (s + 1) % 36)
+        for (int s = van; s != (tot % 36); s = (s + 1) % 36)
             if (sector[s] < m) m = sector[s];
         return m;
     };
 
-    float minVoor        = sectorMin(32, 5);   // 320°–50°  (voor)
-    float minLinksZijde  = sectorMin(22, 32);  // 220°–320° (linker zijkant)
-    float minRechtsZijde = sectorMin(5,  14);  // 50°–140°  (rechter zijkant)
-    float minLinks       = sectorMin(27, 36);  // 270°–360° (links voor)
-    float minRechts      = sectorMin(0,  9);   // 0°–90°    (rechts voor)
+    // ── Stap 4: minimale afstand per zone (in robot-frame) ────
+    //  Voorwaarts  = ±45° van robot-voor  → sector 0–4  en 32–35
+    //  Voor-rechts = 45°–135°             → sector 5–13  (strikte rechterhelft)
+    //  Voor-links  = 225°–315°            → sector 23–31 (strikte linkerhelft)
+    //  Rechter zijkant (voor bocht check) = 45°–135°  → sector 5–13
+    //  Linker  zijkant (voor bocht check) = 225°–315° → sector 23–31
+    float minVoor        = sectorMin(32, 5);   // 320°–50°   robot-voor ±45°
+    float minRechtsZijde = sectorMin(5,  14);  //  50°–140°  rechter zijkant
+    float minLinksZijde  = sectorMin(23, 32);  // 230°–320°  linker zijkant
+    // minLinks/minRechts exclusief het voor-gebied voor de display
+    float minLinks       = sectorMin(23, 32);  // 230°–320°  links voor
+    float minRechts      = sectorMin(5,  14);  //  50°–140°  rechts voor
 
-    // ── Stap 3: gemiddelde ruimte links en rechts ─────────────
+    // ── Stap 5: gemiddelde ruimte links en rechts ─────────────
+    // Linkerhelft = 180°–360° (sector 18–35), rechterhelft = 0°–180° (sector 0–17)
     float somLinks = 0.0f, somRechts = 0.0f;
-    for (int s = 18; s < 36; ++s) somLinks  += sector[s];  // 180°–360°
-    for (int s = 0;  s < 18; ++s) somRechts += sector[s];  // 0°–180°
+    for (int s = 18; s < 36; ++s) somLinks  += sector[s];
+    for (int s = 0;  s < 18; ++s) somRechts += sector[s];
     float ruimteLinks  = somLinks  / 18.0f;
     float ruimteRechts = somRechts / 18.0f;
 
-    // ── Stap 4: beoordeel staat ───────────────────────────────
+    // ── Stap 6: vul resultaat ─────────────────────────────────
     ScanAnalyse res{};
     res.ruimteLinks  = ruimteLinks;
     res.ruimteRechts = ruimteRechts;
@@ -447,30 +464,27 @@ static ScanAnalyse AnalyseerScan(const float ranges[360])
         return res;
     }
 
-    // ── Stap 5: kies uitwijkrichting ──────────────────────────
-    // Links uitwijken is veilig als de linker ZIJKANT genoeg ruimte heeft
-    // (de robot moet zijn breedte door die ruimte kunnen manoeuvreren)
+    // ── Stap 7: kies uitwijkrichting ──────────────────────────
+    // Links uitwijken vereist dat de linker zijkant > CHASSIS_MM heeft.
     bool linksVeilig  = (minLinksZijde  > CHASSIS_MM);
     bool rechtsVeilig = (minRechtsZijde > CHASSIS_MM);
 
-    // Voorkeur: kant met de meeste totale ruimte, mits zijkant ook vrij is
     float scoreLinks  = linksVeilig  ? ruimteLinks  : 0.0f;
     float scoreRechts = rechtsVeilig ? ruimteRechts : 0.0f;
 
-    // Positief = links uitwijken, negatief = rechts uitwijken
+    // +1 = links uitwijken, -1 = rechts uitwijken
     res.uitwijkHoek = (scoreLinks >= scoreRechts) ? +1.0f : -1.0f;
 
-    // Als beide zijden geblokkeerd zijn: kies de minst slechte
     if (!linksVeilig && !rechtsVeilig)
         res.uitwijkHoek = (ruimteLinks >= ruimteRechts) ? +1.0f : -1.0f;
 
-    // ── Stap 6: ernstklasse ───────────────────────────────────
+    // ── Stap 8: ernstklasse ───────────────────────────────────
     if (minVoor < KRITIEK_MM)
-        res.staat = 3;   // KRITIEK
+        res.staat = 3;
     else if (minVoor < REMMEN_MM)
-        res.staat = 2;   // REMMEN
+        res.staat = 2;
     else
-        res.staat = 1;   // VEILIG
+        res.staat = 1;
 
     return res;
 }
@@ -720,9 +734,10 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
         }
 
         // Analyseer 360° scan — altijd, ook als geen nieuwe scan
+        // Geef robotTheta mee zodat sector 0 altijd robot-voorwaarts is
         ScanAnalyse scan{};
         if (heeftRanges)
-            scan = AnalyseerScan(lastRanges);
+            scan = AnalyseerScan(lastRanges, loc.GetTheta());
 
         // ── 3. Autonoom rijden ────────────────────────────────────
         //
@@ -774,35 +789,40 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
         }
 
         // ── 3a. Obstakelcheck op basis van 360° LIDAR-analyse ────
+        //
+        //  Prioriteitsregels:
+        //    staat 3 (KRITIEK <350mm): altijd overschrijven, volledig stop + draai
+        //    staat 2 (REMMEN 350–600mm): overschrijven, rem + bijsturen
+        //    staat 1 (VEILIG 600–900mm): zachte bijsturing bovenop navigator
+        //    staat 0 (VRIJ ≥900mm): navigator of rechtdoor
+        //
         st.obstRichting     = scan.staat;
         st.scanMinVoor      = scan.minVoor;
         st.scanRuimteLinks  = scan.ruimteLinks;
         st.scanRuimteRechts = scan.ruimteRechts;
         st.scanUitwijkHoek  = scan.uitwijkHoek;
 
-        if (heeftRanges && scan.staat > 0) {
+        if (heeftRanges && scan.staat >= 3) {
+            // KRITIEK (<350mm): volledig stoppen, draai naar vrije kant
             float richting = scan.uitwijkHoek;  // +1 = links, -1 = rechts
-
-            if (scan.staat == 3) {
-                // KRITIEK (<350mm): volledig stoppen, draai naar vrije kant
-                ka.SetCommand(0.0f, richting * 40.0f);
-                nieuweScan = false;  // kaart niet bijwerken — positie verandert snel
-
-            } else if (scan.staat == 2) {
-                // REMMEN (350–600mm): rem naar 40%, hard bijsturen
-                ka.SetCommand(LIN_SPEED * 0.4f, richting * 20.0f);
-
-            } else {
-                // VEILIG (600–900mm): zacht bijsturen, vol gas
-                ka.SetCommand(LIN_SPEED, richting * 8.0f);
-            }
+            ka.SetCommand(0.0f, richting * 40.0f);
             st.staat = 2;
 
-        // ── 3b. Navigator rijdt het pad ───────────────────────────
+        } else if (heeftRanges && scan.staat == 2) {
+            // REMMEN (350–600mm): rem naar 40%, hard bijsturen
+            float richting = scan.uitwijkHoek;
+            ka.SetCommand(LIN_SPEED * 0.4f, richting * 20.0f);
+            st.staat = 2;
+
         } else if (heeftPad && !navigator.IsFinished()) {
+            // ── 3b. Navigator rijdt het pad ───────────────────────────
+            // Bij staat==1 (VEILIG): navigator-hoek + zachte obstakelcorrectie
             navigator.Update(pos);
             DriveCommand cmd = navigator.GetNextCommand(pos);
-            ka.SetCommand(cmd.GetLinVelocity(), cmd.GetAngVelocity());
+            float extraAng = 0.0f;
+            if (heeftRanges && scan.staat == 1)
+                extraAng = scan.uitwijkHoek * 8.0f;  // zachte bijsturing bovenop navigator
+            ka.SetCommand(cmd.GetLinVelocity(), cmd.GetAngVelocity() + extraAng);
             st.staat = 1;
 
         } else {
@@ -841,7 +861,11 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
                     }
                 }
             } else {
-                ka.SetCommand(LIN_SPEED, 0.0f);
+                // Geen pad of herplannen nodig
+                // Bij staat==1 (VEILIG): al zacht bijsturen terwijl we wachten op een pad
+                float extraAng = (heeftRanges && scan.staat == 1)
+                                 ? scan.uitwijkHoek * 8.0f : 0.0f;
+                ka.SetCommand(LIN_SPEED, extraAng);
                 st.staat = 0;
             }
         }
