@@ -662,13 +662,18 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
     // ── Ontwijkfase state-machine ─────────────────────────────
     //   NORMAAL    = gewoon rijden/navigeren
     //   DRAAIEN    = op plek draaien naar doelhoek (lin=0, ang=±40)
-    //   VRIJRIJDEN = na de draai een stukje rechtdoor (timer)
-    enum class OntwijkFase { NORMAAL, DRAAIEN, VRIJRIJDEN };
-    OntwijkFase ontwijkFase   = OntwijkFase::NORMAAL;
-    float       doelHoek      = 0.0f;   // gewenste theta na draai (graden, −180…180]
-    float       draaiRichting = 0.0f;   // +1=rechts (ang>0), −1=links (ang<0)
-    int         vrijrijTicks  = 0;      // afteller voor VRIJRIJDEN
-    constexpr int VRIJRIJ_TICKS = 25;   // ~2.5s bij 100ms loop ≈ 70cm
+    //   VRIJRIJDEN = na de draai een stukje vooruit (timer)
+    //   ACHTERUIT  = vastzit-escape: achteruit rijden + nieuwe draai
+    enum class OntwijkFase { NORMAAL, DRAAIEN, VRIJRIJDEN, ACHTERUIT };
+    OntwijkFase ontwijkFase    = OntwijkFase::NORMAAL;
+    float       doelHoek       = 0.0f;   // gewenste theta na draai (graden, −180…180]
+    float       draaiRichting  = 0.0f;   // +1=rechts (ang>0), −1=links (ang<0)
+    int         vrijrijTicks   = 0;      // afteller voor VRIJRIJDEN
+    int         achteruitTicks = 0;      // afteller voor ACHTERUIT
+    int         vastzitTeller  = 0;      // hoe vaak VRIJRIJDEN direct KRITIEK raakte
+    constexpr int VRIJRIJ_TICKS   = 25;  // ~2.5s vooruit  ≈ 70cm
+    constexpr int ACHTERUIT_TICKS = 18;  // ~1.8s achteruit ≈ 50cm
+    constexpr int VASTZIT_DREMPEL =  2;  // na 2× vastlopen → achteruit
 
     // Ontsnappositie-geheugen: na een ontwijkmanoeuvre slaan we op waar
     // we vandaan kwamen. De frontier-keuze slaat dit gebied over zodat
@@ -870,18 +875,28 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
             st.staat = 2;
 
         } else if (ontwijkFase == OntwijkFase::VRIJRIJDEN) {
-            // ── Fase VRIJRIJDEN: rijd een stuk rechtdoor ─────────
+            // ── Fase VRIJRIJDEN: rijd een stuk vooruit ───────────
             if (heeftRanges && scan.staat >= 3) {
-                // Alweer een kritiek obstakel → meteen terug naar draaien
-                draaiRichting = scan.uitwijkHoek;
-                doelHoek      = normDeg(loc.GetTheta() - draaiRichting * 90.0f);
-                ontwijkFase   = OntwijkFase::DRAAIEN;
-                ka.SetCommand(0.0f, draaiRichting * 40.0f);
+                // Direct KRITIEK na de draai → vastzitteller ophogen
+                ++vastzitTeller;
+                if (vastzitTeller >= VASTZIT_DREMPEL) {
+                    // Meerdere keren vastgelopen → achteruit uit de hoek
+                    vastzitTeller  = 0;
+                    achteruitTicks = ACHTERUIT_TICKS;
+                    ontwijkFase    = OntwijkFase::ACHTERUIT;
+                    ka.SetCommand(-LIN_SPEED, 0.0f);
+                } else {
+                    // Nog één kans: draai de andere kant op
+                    draaiRichting = -draaiRichting;
+                    doelHoek      = normDeg(loc.GetTheta() - draaiRichting * 90.0f);
+                    ontwijkFase   = OntwijkFase::DRAAIEN;
+                    ka.SetCommand(0.0f, draaiRichting * 40.0f);
+                }
             } else {
                 --vrijrijTicks;
                 if (vrijrijTicks <= 0) {
-                    // Klaar met vrijrijden → terug naar normaal, herplan
-                    // ontsnapX/Y blijft staan zodat frontier-keuze de hoek vermijdt
+                    // Klaar — ontsnapX/Y blijft voor frontier-keuze
+                    vastzitTeller     = 0;
                     ontwijkFase       = OntwijkFase::NORMAAL;
                     heeftPad          = false;
                     scansSindsHerplan = HERPLAN_SCANS;
@@ -889,6 +904,28 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
                 } else {
                     ka.SetCommand(LIN_SPEED, 0.0f);
                 }
+            }
+            st.staat = 2;
+
+        } else if (ontwijkFase == OntwijkFase::ACHTERUIT) {
+            // ── Fase ACHTERUIT: rijd achteruit uit de hoek ───────
+            // Geen obstakelcheck achteren — de kaart weet waar muren zijn
+            // en de LIDAR achter de robot zit in sector 170°–190°.
+            // We rijden blind achteruit voor een vaste tijd; kort genoeg
+            // dat de kans op achterwaartse botsing klein is (~50cm).
+            --achteruitTicks;
+            if (achteruitTicks <= 0) {
+                // Achteruit klaar → draai 180° en herplan
+                draaiRichting = (scan.uitwijkHoek != 0.0f)
+                                ? scan.uitwijkHoek : 1.0f;  // kies een kant
+                doelHoek      = normDeg(loc.GetTheta() - draaiRichting * 150.0f);
+                ontwijkFase   = OntwijkFase::DRAAIEN;
+                ka.SetCommand(0.0f, draaiRichting * 40.0f);
+                // Reset ontsnappositie — we zijn nu op een nieuwe plek
+                ontsnapX = loc.GetX();
+                ontsnapY = loc.GetY();
+            } else {
+                ka.SetCommand(-LIN_SPEED, 0.0f);
             }
             st.staat = 2;
 
