@@ -8,6 +8,7 @@
 #include <thread>
 #include <mutex>
 #include <cstring>
+#include <cstdarg>
 #include <atomic>
 #include <unistd.h>
 #include <cstdio>
@@ -19,6 +20,25 @@
 
 static std::atomic<bool> running{true};
 static Pi5UARTHandler*   g_uart = nullptr;  // voor noodstop in signal handler
+
+// ── Debug log (schrijft naar bestand, niet naar stdout) ──────────────────────
+//  Gebruik in RunRijdenEnMappen zodat het live-dashboard niet verstoord wordt.
+//  Bekijk met: tail -f debug.log
+static FILE* g_debugLog = nullptr;
+// g_tty: rechtstreekse verbinding met de terminal voor dashboard-output.
+// Wordt gezet in RunRijdenEnMappen vóór de rijloop.
+static FILE* g_tty = nullptr;
+
+static void DebugLog(const char* fmt, ...) __attribute__((format(printf,1,2)));
+static void DebugLog(const char* fmt, ...) {
+    if (!g_debugLog) g_debugLog = fopen("debug.log", "w");
+    if (!g_debugLog) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(g_debugLog, fmt, ap);
+    va_end(ap);
+    fflush(g_debugLog);
+}
 
 static void onSignal(int) {
     running = false;
@@ -541,65 +561,66 @@ struct RobotStatus {
 
 static void PrintStatus(const RobotStatus& s)
 {
-    // Cursor naar boven — refresh zonder scrollen
-    // \033[H = cursor naar (0,0), \033[2J = clear screen
-    printf("\033[H");
+    FILE* out = g_tty ? g_tty : stdout;
+
+    // Volledig clear + cursor naar boven — zorg dat niets van vóór het dashboard zichtbaar blijft
+    fprintf(out, "\033[2J\033[H");
 
     // ── Titel ──────────────────────────────────────────────────
-    printf("╔══════════════════════════════════════════════════════════╗\n");
-    printf("║           ROBOT AUTONOOM — LIVE STATUS                  ║\n");
-    printf("╠═══════════════════════════╦══════════════════════════════╣\n");
+    fprintf(out, "╔══════════════════════════════════════════════════════════╗\n");
+    fprintf(out, "║           ROBOT AUTONOOM — LIVE STATUS                  ║\n");
+    fprintf(out, "╠═══════════════════════════╦══════════════════════════════╣\n");
 
     // ── Kolom links: positie/oriëntatie | Kolom rechts: aansturing ──
-    printf("║  LOKALISATIE              ║  AANSTURING                  ║\n");
-    printf("║  X   : %8.0f mm        ║  Linear  : %7.1f mm/s      ║\n",
+    fprintf(out, "║  LOKALISATIE              ║  AANSTURING                  ║\n");
+    fprintf(out, "║  X   : %8.0f mm        ║  Linear  : %7.1f mm/s      ║\n",
            s.posX, s.cmdLin);
-    printf("║  Y   : %8.0f mm        ║  Angular : %7.1f deg/s     ║\n",
+    fprintf(out, "║  Y   : %8.0f mm        ║  Angular : %7.1f deg/s     ║\n",
            s.posY, s.cmdAng);
-    printf("║  θ   : %8.1f °          ║                              ║\n",
+    fprintf(out, "║  θ   : %8.1f °          ║                              ║\n",
            s.theta);
 
     // ── Sensoren ───────────────────────────────────────────────
-    printf("╠═══════════════════════════╬══════════════════════════════╣\n");
-    printf("║  SENSOREN                 ║  NAVIGATIE                   ║\n");
+    fprintf(out, "╠═══════════════════════════╬══════════════════════════════╣\n");
+    fprintf(out, "║  SENSOREN                 ║  NAVIGATIE                   ║\n");
 
     if (s.encGeldig) {
-        printf("║  ENC L: %7.1f mm/s      ║  Pad     : %s             ║\n",
+        fprintf(out, "║  ENC L: %7.1f mm/s      ║  Pad     : %s             ║\n",
                s.speedLinks, s.heeftPad ? "JA  " : "NEE ");
-        printf("║  ENC R: %7.1f mm/s      ║  Waypoint: %3d / %-3d        ║\n",
+        fprintf(out, "║  ENC R: %7.1f mm/s      ║  Waypoint: %3d / %-3d        ║\n",
                s.speedRechts, s.waypointHuidig, s.waypointTotaal);
-        printf("║  IMU θ: %7.1f °          ║  Doel    : (%6.0f,%6.0f)  ║\n",
+        fprintf(out, "║  IMU θ: %7.1f °          ║  Doel    : (%6.0f,%6.0f)  ║\n",
                s.imuYaw, s.doelX, s.doelY);
-        printf("║  ω    : %7.1f °/s        ║  Afstand : %7.0f mm       ║\n",
+        fprintf(out, "║  ω    : %7.1f °/s        ║  Afstand : %7.0f mm       ║\n",
                s.imuOmega, s.afstandTotDoel);
     } else {
-        printf("║  Sensoren: wacht op DATA  ║  Pad     : %s             ║\n",
+        fprintf(out, "║  Sensoren: wacht op DATA  ║  Pad     : %s             ║\n",
                s.heeftPad ? "JA  " : "NEE ");
-        printf("║  (Pico pusht elke 50ms)   ║  Waypoint: %3d / %-3d        ║\n",
+        fprintf(out, "║  (Pico pusht elke 50ms)   ║  Waypoint: %3d / %-3d        ║\n",
                s.waypointHuidig, s.waypointTotaal);
-        printf("║                           ║  Doel    : (%6.0f,%6.0f)  ║\n",
+        fprintf(out, "║                           ║  Doel    : (%6.0f,%6.0f)  ║\n",
                s.doelX, s.doelY);
-        printf("║                           ║  Afstand : %7.0f mm       ║\n",
+        fprintf(out, "║                           ║  Afstand : %7.0f mm       ║\n",
                s.afstandTotDoel);
     }
-    printf("║                           ║  HoekFout: %7.1f °         ║\n",
+    fprintf(out, "║                           ║  HoekFout: %7.1f °         ║\n",
            s.hoekFout);
 
     // ── Kaart & obstakel ───────────────────────────────────────
-    printf("╠═══════════════════════════╩══════════════════════════════╣\n");
-    printf("║  KAART   Scans: %4d   Dekking: %3d%%   Cel: %s       ║\n",
+    fprintf(out, "╠═══════════════════════════╩══════════════════════════════╣\n");
+    fprintf(out, "║  KAART   Scans: %4d   Dekking: %3d%%   Cel: %s       ║\n",
            s.scanCount, s.dekking, s.robotCelVrij ? "VRIJ " : "FOUT!");
 
     // Voortgangsbalk voor kaartdekking (40 tekens breed)
     {
         int gevuld = s.dekking * 40 / 100;
-        printf("║  [");
-        for (int i = 0; i < 40; ++i) printf(i < gevuld ? "█" : "░");
-        printf("]  %3d%%  ║\n", s.dekking);
+        fprintf(out, "║  [");
+        for (int i = 0; i < 40; ++i) fprintf(out, i < gevuld ? "█" : "░");
+        fprintf(out, "]  %3d%%  ║\n", s.dekking);
     }
 
     // Obstakelstaat en 360° ruimte
-    printf("╠══════════════════════════════════════════════════════════╣\n");
+    fprintf(out, "╠══════════════════════════════════════════════════════════╣\n");
     const char* staatTekst = "";
     const char* staatKleur = "";
     switch (s.staat) {
@@ -612,7 +633,7 @@ static void PrintStatus(const RobotStatus& s)
         case 3: staatTekst = "HERPLANNEN   (wacht op nieuw pad van A*)           ";
                 staatKleur = "\033[35m"; break;
     }
-    printf("║  %s● %s\033[0m  ║\n", staatKleur, staatTekst);
+    fprintf(out, "║  %s● %s\033[0m  ║\n", staatKleur, staatTekst);
 
     // 360° ruimte visueel
     const char* obstKleur =
@@ -625,13 +646,13 @@ static void PrintStatus(const RobotStatus& s)
         (s.obstRichting == 2) ? "REMMEN " : "KRITIEK";
     const char* uitwijkLabel = (s.scanUitwijkHoek >= 0.0f) ? "← LINKS " : "RECHTS →";
 
-    printf("║  %s%s\033[0m  Voor:%5.0fmm  Links:%5.0fmm  Rechts:%5.0fmm  %s  ║\n",
+    fprintf(out, "║  %s%s\033[0m  Voor:%5.0fmm  Links:%5.0fmm  Rechts:%5.0fmm  %s  ║\n",
            obstKleur, obstLabel,
            s.scanMinVoor, s.scanRuimteLinks, s.scanRuimteRechts,
            (s.obstRichting > 0) ? uitwijkLabel : "        ");
 
-    printf("╚══════════════════════════════════════════════════════════╝\n");
-    fflush(stdout);
+    fprintf(out, "╚══════════════════════════════════════════════════════════╝\n");
+    fflush(out);
 }
 
 static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
@@ -688,11 +709,15 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
     float lastRanges[360] = {};
     bool  heeftRanges     = false;
 
+    // Scherm leegmaken zodat het dashboard straks schoon start
+    printf("\033[2J\033[H");
     printf("LIDAR spin-up (1.2s)...\n");
+    fflush(stdout);
     usleep(1200000);
 
     // Wacht op eerste geldige scan VOORDAT de robot begint te rijden
     printf("Wacht op eerste LIDAR-scan...\n");
+    fflush(stdout);
     for (int pogingen = 0; !heeftRanges && running; ++pogingen) {
         if (lidar.Update()) {
             float angles[360];
@@ -701,13 +726,16 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
                 angles[a]     = static_cast<float>(a);
             }
             heeftRanges = true;
-            printf("Eerste scan ontvangen (poging %d). Start rijden.\n\n", pogingen + 1);
+            DebugLog("Eerste scan ontvangen (poging %d). Start rijden.\n", pogingen + 1);
         } else {
             if (pogingen % 10 == 0 && pogingen > 0)
-                printf("  Nog geen scan (%ds)...\n", pogingen / 10);
+                DebugLog("  Nog geen scan (%ds)...\n", pogingen / 10);
             usleep(100000);
             if (pogingen > 150) {
+                // Toon fout op scherm (scherm is nu leeg, dus dit is zichtbaar)
+                printf("\033[2J\033[H");
                 printf("FOUT: LIDAR geeft geen data na 15s. Controleer /dev/ttyUSB0.\n");
+                fflush(stdout);
                 ka.Stop();
                 ka.Shutdown();
                 return 1;
@@ -716,6 +744,22 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
     }
 
     ka.SetCommand(LIN_SPEED, 0.0f);   // begin rijden
+
+    // ── Stuur alle stdout (ook van PathPlanner, Pico, etc.) naar debug.log ──
+    //    zodat het live-dashboard niet verstoord wordt door losse printf's.
+    //    PrintStatus schrijft via g_tty rechtstreeks naar de echte terminal.
+    if (!g_debugLog) g_debugLog = fopen("debug.log", "w");
+    // Open de echte terminal voor dashboard-output (onafhankelijk van stdout-redirect)
+    g_tty = fopen("/dev/tty", "w");
+    if (!g_tty) g_tty = stderr;  // fallback
+
+    // Redirect stdout → debug.log (vangt PathPlanner, Pico-prints, etc. op)
+    fflush(stdout);
+    if (g_debugLog) dup2(fileno(g_debugLog), STDOUT_FILENO);
+
+    // Scherm leegmaken voor eerste PrintStatus
+    fprintf(g_tty, "\033[2J\033[H");
+    fflush(g_tty);
 
     while (running) {
         auto tStart = std::chrono::steady_clock::now();
@@ -995,6 +1039,12 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
 
     ka.Stop();
     ka.Shutdown();
+
+    // ── Herstel stdout naar terminal ─────────────────────────────────────────
+    fflush(stdout);
+    // Stdout was omgeleid naar debug.log; open /dev/tty opnieuw als stdout
+    freopen("/dev/tty", "w", stdout);
+    if (g_tty && g_tty != stderr) { fclose(g_tty); g_tty = nullptr; }
 
     // Stuur stop meerdere keren — zeker dat de Pico het ontvangt
     for (int i = 0; i < 10; ++i) {
