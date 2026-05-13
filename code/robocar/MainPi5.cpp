@@ -407,9 +407,24 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
     constexpr int   HERPLAN_SCANS = 15;
 
     // ── Exploratie-eindcondities ──────────────────────────────────────
-    constexpr int   FRONTIER_DREMPEL = 3;
-    constexpr int   MISLUKT_DREMPEL  = 5;
-    constexpr float HOME_DREMPEL_MM  = 300.0f;
+    // FRONTIER_DREMPEL: pas controleren als dekking >= MIN_DEKKING_PCT.
+    // Bij lage dekking zijn er sowieso weinig FREE cellen en dus weinig
+    // frontiers — dat is geen teken dat de kamer gescand is, maar dat
+    // de robot nog nauwelijks heeft gereden.
+    //
+    // MIN_DEKKING_PCT: minimale kaartdekking voordat de eindconditie
+    // mag triggeren. Zet dit op een realistisch getal voor jouw ruimte.
+    // Voor een kamer van ~13×8m met 5cm cellen (260×160=41600 cellen)
+    // betekent 30% dat ±12500 cellen bekend zijn — ruim genoeg om
+    // zeker te zijn dat de robot echt heeft rondgereden.
+    //
+    // FRONTIER_DREMPEL: aantal resterende frontiers waaronder we
+    // stoppen. 50 is ruim maar veilig — bij echte volledige exploratie
+    // is dit getal heel klein (< 10).
+    constexpr int   MIN_DEKKING_PCT   = 30;   // minimale dekking voor eindconditie
+    constexpr int   FRONTIER_DREMPEL  = 50;   // frontiers waaronder = klaar
+    constexpr int   MISLUKT_DREMPEL   = 8;    // achtereenvolgende A*-mislukkingen
+    constexpr float HOME_DREMPEL_MM   = 300.0f;
 
     // ── Vastzit-timeout ───────────────────────────────────────────────
     // Als de robot meer dan VASTZIT_TIMEOUT_TICKS aaneengesloten in
@@ -766,9 +781,15 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
                             scansSindsHerplan=0; st.staat=3;
 
                             int aantalFrontiers=TelFrontiers(mapper);
-                            if (aantalFrontiers<=FRONTIER_DREMPEL||mislukteTeller>=MISLUKT_DREMPEL) {
-                                printf("\n\033[34m→ Exploratie klaar (%d frontiers, %d mislukt). Rijdt terug.\033[0m\n",
-                                       aantalFrontiers, mislukteTeller);
+                            int huidigeDekking=mapper.GetCoverage();
+                            // Eindconditie: alleen triggeren als dekking hoog genoeg is.
+                            // Bij lage dekking heeft de robot gewoon nog niet genoeg
+                            // van de kamer gezien om frontiers te beoordelen.
+                            bool dekkingVoldoende = (huidigeDekking >= MIN_DEKKING_PCT);
+                            if (dekkingVoldoende &&
+                                (aantalFrontiers<=FRONTIER_DREMPEL||mislukteTeller>=MISLUKT_DREMPEL)) {
+                                printf("\n\033[34m→ Exploratie klaar (dekking=%d%%, frontiers=%d, mislukt=%d). Rijdt terug.\033[0m\n",
+                                       huidigeDekking, aantalFrontiers, mislukteTeller);
                                 exploratieStaat=ExploratieStaat::TERUG_HOME;
                                 heeftPad=false; mislukteTeller=0; scansSindsHerplan=HERPLAN_SCANS;
                                 Path pad=planner.PlanPath(pos, beginPunt, mapper.GetMap());
