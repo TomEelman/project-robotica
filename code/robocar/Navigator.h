@@ -48,10 +48,16 @@ private:
     static constexpr float SLOW_TURN_THRESHOLD  = 30.0f;  // graden
     static constexpr float SLOW_TURN_FACTOR     = 0.55f;  // fractie van LINEAR_SPEED
 
+    // Low-pass filter alfa voor angular output.
+    // 0.15 = traag (vloeiend), 1.0 = geen filter (direct).
+    // Bij 100ms loop: tijdconstante ≈ 0.1 / 0.15 ≈ 0.65s
+    static constexpr float ANG_FILTER_ALFA      = 0.15f;
+
     Path     path;
     Position currentTarget;
     bool     isUpdated;
     bool     hasPath;
+    float    gefilterdAng = 0.0f;   // low-pass filter toestand
 
     bool  ReachedPoint(Position current) const;
     float CalculateDistance  (Position a, Position b) const;

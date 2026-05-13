@@ -14,6 +14,7 @@ void Navigator::SetPath(const Path& newPath) {
     path = newPath;
     path.Reset();
     hasPath = !path.IsEmpty();
+    gefilterdAng = 0.0f;   // reset filter bij nieuw pad
     if (hasPath) {
         currentTarget = path.GetCurrentWaypoint();
         std::cout << "Navigator: nieuw pad geladen, eerste waypoint ("
@@ -46,10 +47,10 @@ DriveCommand Navigator::GetNextCommand(Position current) {
         return DriveCommand(0.0f, 0.0f);
 
     float dist     = CalculateDistance(current, currentTarget);
-    float angleErr = CalculateAngleError(current, currentTarget); // graden [-180, 180]
+    float angleErr = CalculateAngleError(current, currentTarget);
 
     if (dist < REACHED_THRESHOLD_MM)
-        return DriveCommand(LINEAR_SPEED_MM_S, 0.0f);  // doel bijna bereikt: rijd door
+        return DriveCommand(LINEAR_SPEED_MM_S, 0.0f);
 
     float absErr = std::fabs(angleErr);
 
@@ -58,18 +59,25 @@ DriveCommand Navigator::GetNextCommand(Position current) {
     if (absErr > SLOW_TURN_THRESHOLD)
         linSpeed = LINEAR_SPEED_MM_S * SLOW_TURN_FACTOR;
 
-    // Puur proportionele bijsturing, geen minimum-drempel.
-    // Kleine fout → kleine correctie → geen oscillatie.
-    float angularDegS = 0.0f;
+    // Gewenste bijsturing berekenen
+    float gewenstAng = 0.0f;
     if (absErr > ANGLE_DEADBAND_DEG) {
-        angularDegS = ANGULAR_GAIN * absErr;
-        if (angularDegS > MAX_ANGULAR_DEG_S) angularDegS = MAX_ANGULAR_DEG_S;
-        // Positieve hoekfout = doel is links → ang negatief (links)
-        // Negatieve hoekfout = doel is rechts → ang positief (rechts)
-        if (angleErr > 0.0f) angularDegS = -angularDegS;
+        gewenstAng = ANGULAR_GAIN * absErr;
+        if (gewenstAng > MAX_ANGULAR_DEG_S) gewenstAng = MAX_ANGULAR_DEG_S;
+        if (angleErr > 0.0f) gewenstAng = -gewenstAng;  // links = negatief
     }
 
-    return DriveCommand(linSpeed, angularDegS);
+    // Low-pass filter op het angular commando:
+    //   gefilterdAng = alfa * gewenstAng + (1-alfa) * vorigeAng
+    // alfa = 0.15 → het commando beweegt traag naar de gewenste waarde.
+    // Resultaat: geen abrupte sprongen elke 100ms, de robot rijdt vloeiend.
+    gefilterdAng = ANG_FILTER_ALFA * gewenstAng
+                 + (1.0f - ANG_FILTER_ALFA) * gefilterdAng;
+
+    // Snap naar 0 als het gefilterde signaal in de dode zone valt
+    if (std::fabs(gefilterdAng) < 0.5f) gefilterdAng = 0.0f;
+
+    return DriveCommand(linSpeed, gefilterdAng);
 }
 
 bool Navigator::ReachedPoint(Position current) const {
