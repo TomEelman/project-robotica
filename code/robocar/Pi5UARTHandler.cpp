@@ -47,7 +47,6 @@ bool Pi5UARTHandler::ConfigureerPoort() {
     cfsetispeed(&tty, baud);
     cfsetospeed(&tty, baud);
 
-    // 8N1
     tty.c_cflag  = (tty.c_cflag & ~CSIZE) | CS8;
     tty.c_cflag |=  (CLOCAL | CREAD);
     tty.c_cflag &= ~(PARENB | PARODD | CSTOPB | CRTSCTS);
@@ -68,19 +67,13 @@ bool Pi5UARTHandler::ConfigureerPoort() {
 }
 
 void Pi5UARTHandler::Close() {
-    if (fd >= 0) {
-        close(fd);
-        fd = -1;
-    }
+    if (fd >= 0) { close(fd); fd = -1; }
 }
 
 bool Pi5UARTHandler::IsOpen() const {
     return fd >= 0;
 }
 
-// ─────────────────────────────────────────────────────────────────
-//  LeesRegel  –  lees bytes tot '\n' of timeout
-// ─────────────────────────────────────────────────────────────────
 std::string Pi5UARTHandler::LeesRegel() {
     std::string antwoord;
     char c;
@@ -91,49 +84,34 @@ std::string Pi5UARTHandler::LeesRegel() {
     return antwoord;
 }
 
-// ─────────────────────────────────────────────────────────────────
-//  StuurRegel  –  stuur string zonder op antwoord te wachten
-// ─────────────────────────────────────────────────────────────────
 void Pi5UARTHandler::StuurRegel(const std::string& regel) {
     if (!IsOpen()) return;
     write(fd, regel.c_str(), regel.size());
 }
 
-// ─────────────────────────────────────────────────────────────────
-//  StuurVerzoek  –  stuur GET-verzoek en wacht op antwoord-regel
-//  (ongewijzigd t.o.v. origineel, nu intern gebruik van LeesRegel)
-// ─────────────────────────────────────────────────────────────────
 std::string Pi5UARTHandler::StuurVerzoek(const std::string& sensor) {
     if (!IsOpen()) return "";
     tcflush(fd, TCIOFLUSH);
-
     std::string verzoek = "GET:" + sensor + "\n";
     write(fd, verzoek.c_str(), verzoek.size());
-
     return LeesRegel();
 }
 
-// ─────────────────────────────────────────────────────────────────
-//  StuurCommand  –  stuur "CMD:lin,ang\n" en wacht op "ACK:..."
-// ─────────────────────────────────────────────────────────────────
 CommandAck Pi5UARTHandler::StuurCommand(float lin, float ang) {
     CommandAck result{false, 0.0f, 0.0f};
     if (!IsOpen()) return result;
 
-    // Formatteer het commando
     char buf[64];
     snprintf(buf, sizeof(buf), "CMD:%.3f,%.3f\n", lin, ang);
 
     tcflush(fd, TCIOFLUSH);
     write(fd, buf, strlen(buf));
 
-    // Wacht op ACK of ERR van de Pico
     std::string antwoord = LeesRegel();
     if (antwoord.empty()) {
         std::cerr << "Pi5UARTHandler: geen ACK ontvangen voor CMD\n";
         return result;
     }
-
     return ParseAck(antwoord);
 }
 
@@ -143,29 +121,20 @@ CommandAck Pi5UARTHandler::StuurStop() {
 
 bool Pi5UARTHandler::RebootPico() {
     if (!IsOpen()) return false;
-
     tcflush(fd, TCIOFLUSH);
     StuurRegel("REBOOT\n");
 
-    // Wacht op ACK:REBOOT
     std::string antwoord = LeesRegel();
     if (antwoord == "ACK:REBOOT") {
         std::cout << "Pi5UARTHandler: Pico reboot bevestigd\n";
         return true;
     }
-
-    std::cerr << "Pi5UARTHandler: geen reboot ACK ontvangen (kreeg: " 
-              << antwoord << ")\n";
+    std::cerr << "Pi5UARTHandler: geen reboot ACK (kreeg: " << antwoord << ")\n";
     return false;
 }
 
-// ─────────────────────────────────────────────────────────────────
-//  ParseAck  –  verwerk "ACK:lin,ang" van de Pico
-// ─────────────────────────────────────────────────────────────────
 CommandAck Pi5UARTHandler::ParseAck(const std::string& antwoord) {
     CommandAck result{false, 0.0f, 0.0f};
-
-    // Moet beginnen met "ACK:"
     if (antwoord.substr(0, 4) != "ACK:") return result;
 
     const char* data = antwoord.c_str() + 4;
@@ -175,7 +144,7 @@ CommandAck Pi5UARTHandler::ParseAck(const std::string& antwoord) {
     if (endPtr == data || *endPtr != ',') return result;
 
     const char* angStart = endPtr + 1;
-    result.ang  = strtof(angStart, &endPtr);
+    result.ang   = strtof(angStart, &endPtr);
     result.geldig = (endPtr != angStart);
     return result;
 }
@@ -228,12 +197,10 @@ IMUData Pi5UARTHandler::LeesIMU() {
         catch (...) {}
     }
 
-    if (waarden.size() < 1) return data;
+    if (waarden.empty()) return data;
 
-    constexpr float DEG2RAD = 3.14159265f / 180.0f;
-
+    // Pico stuurt al graden — geen conversie nodig
     data.yawGraden    = waarden[0];
-    data.yawRadialen  = waarden[0] * DEG2RAD;
     data.hoeksnelheid = (waarden.size() >= 2) ? waarden[1] : 0.0f;
     data.geldig       = true;
     return data;

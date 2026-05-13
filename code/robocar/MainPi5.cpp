@@ -139,7 +139,7 @@ static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
 
         IMUData imu = uart.LeesIMU();
         if (imu.geldig)
-            loc.UpdateIMU(imu.yawRadialen, DT);
+            loc.UpdateIMU(imu.yawGraden, DT);
 
         if (!lidar.Update()) { usleep(200000); continue; }
 
@@ -156,7 +156,7 @@ static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
         printf("Scans: %4d  Dekking: %2d%%  Pos: (%.2f, %.2f)  theta: %.1fdeg\n",
                scanCount, mapper.GetCoverage(),
                loc.GetX(), loc.GetY(),
-               loc.GetTheta() * 180.0f / 3.14159265f);
+               loc.GetTheta());
 
         mapper.PrintMap(loc.GetX(), loc.GetY(), scanCount, mapper.GetCoverage());
 
@@ -344,8 +344,9 @@ static Position KiesFrontierDoel(const Mapper& mapper, const Position& huidig)
 static bool ObstakelVooruit(const Mapper& mapper, const Position& pos,
                              float afstandMm = 600.0f, float hoekDeg = 30.0f)
 {
-    float theta   = pos.GetTheta();   // radialen
-    float hoekRad = hoekDeg * (3.14159265f / 180.0f);
+    static constexpr float DEG2RAD = 3.14159265f / 180.0f;
+    float thetaRad = pos.GetTheta() * DEG2RAD;  // graden → radialen voor cos/sin
+    float hoekRad  = hoekDeg * DEG2RAD;
 
     // Scan in kleine stappen langs de kegel
     constexpr int STAPPEN = 20;
@@ -354,8 +355,8 @@ static bool ObstakelVooruit(const Mapper& mapper, const Position& pos,
 
         // Linker- en rechterrand van de kegel + middenas
         for (float offset : {-hoekRad, 0.0f, hoekRad}) {
-            float wx = pos.GetX() + r * std::cos(theta + offset);
-            float wy = pos.GetY() + r * std::sin(theta + offset);
+            float wx = pos.GetX() + r * std::cos(thetaRad + offset);
+            float wy = pos.GetY() + r * std::sin(thetaRad + offset);
 
             int cx, cy;
             mapper.GetMap().WorldToCell(wx, wy, cx, cy);
@@ -418,7 +419,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
 
         IMUData imu = uart.LeesIMU();
         if (imu.geldig)
-            loc.UpdateIMU(imu.yawRadialen, DT);
+            loc.UpdateIMU(imu.yawGraden, DT);
 
         Position pos(loc.GetX(), loc.GetY(), loc.GetTheta());
 
@@ -556,14 +557,14 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
             printf("Scans:%4d  Dekking:%2d%%  Pos:(%.0f,%.0f)mm  theta:%.1f deg  t:%lds/%ds\n",
                    scanCount, mapper.GetCoverage(),
                    pos.GetX(), pos.GetY(),
-                   loc.GetTheta() * 180.0f / 3.14159265f,
+                   loc.GetTheta(),
                    verstreken, RIJD_SECONDEN);
             mapper.PrintMap(pos.GetX(), pos.GetY(), scanCount, mapper.GetCoverage());
         } else if (fase == Fase::AUTONOOM && nieuweScan) {
             printf("Scans:%4d  Dekking:%2d%%  Pos:(%.0f,%.0f)mm  theta:%.1f deg  CMD:%.0f/%.0f\n",
                    scanCount, mapper.GetCoverage(),
                    pos.GetX(), pos.GetY(),
-                   loc.GetTheta() * 180.0f / 3.14159265f,
+                   loc.GetTheta(),
                    ka.GetLin(), ka.GetAng());
             mapper.PrintMap(pos.GetX(), pos.GetY(), scanCount, mapper.GetCoverage());
         }
