@@ -338,48 +338,43 @@ static Position KiesFrontierDoel(const Mapper& mapper, const Position& huidig)
     return Position(bestWx_m / MM2M, bestWy_m / MM2M, 0.0f);
 }
 
-// ── Hulpfunctie: obstakel recht vooruit? ────────────────────────────────────
-// Kijkt in een kegel van ±HOEK_DEG graden voor de robot,
-// binnen AFSTAND_MM mm. Geeft true als er een OCCUPIED cel in zit.
-// ── ObstakelRichting ────────────────────────────────────────────────────────
-// Scant een kegel vóór de robot in twee zones:
+// ── ObstakelRichting ─────────────────────────────────────────────────────────
 //
-//   HARDE zone  (0 – HARD_MM):  obstakel direct voor de robot (<250 mm)
-//               → scherpe bocht nodig, robot mag bijna niet meer doorrijden
+//  Drie zones gebaseerd op fysieke maten:
 //
-//   VROEGE zone (HARD_MM – VROEG_MM): obstakel nog ver (250–1000 mm)
-//               → begin alvast zachtjes te draaien voor de bocht
+//  KRITIEK (0–350mm)  : chassis kan niet meer draaien → stop, draai op plek
+//  REMMEN  (350–600mm): rem af naar 40%, hard bijsturen
+//  VEILIG  (600–900mm): vroeg beginnen bijsturen, vol gas
 //
-// Returnwaarde:
-//    0   = volledig vrij
-//   +1   = vroeg rechts geblokkeerd  → lichte bocht links
-//   -1   = vroeg links geblokkeerd   → lichte bocht rechts
-//   +2   = vroeg midden geblokkeerd  → lichte bocht links (default)
-//   +10  = hard rechts geblokkeerd   → scherpe bocht links
-//   -10  = hard links geblokkeerd    → scherpe bocht rechts
-//   +20  = hard midden geblokkeerd   → scherpe bocht links
+//  Returns:
+//    0    = vrij
+//   ±1    = VEILIG zijkant    (zachte bocht, vol gas)
+//   ±2    = VEILIG midden     (zachte bocht, vol gas)
+//   ±20   = REMMEN            (harde bocht, halve snelheid)
+//   ±30   = KRITIEK           (stop + draai op plek)
 static int ObstakelRichting(const Mapper& mapper, const Position& pos)
 {
-    static constexpr float DEG2RAD  = 3.14159265f / 180.0f;
-    static constexpr float MM2M     = 0.001f;
-    static constexpr float HARD_MM  =  250.0f;
-    static constexpr float VROEG_MM = 1000.0f;
-    static constexpr float HOEK_DEG =   25.0f;
+    static constexpr float DEG2RAD    = 3.14159265f / 180.0f;
+    static constexpr float MM2M       = 0.001f;
+    static constexpr float KRITIEK_MM =  350.0f;
+    static constexpr float REMMEN_MM  =  600.0f;
+    static constexpr float VEILIG_MM  =  900.0f;
+    static constexpr float HOEK_DEG   =   20.0f;
 
-    float thetaRad  = pos.GetTheta() * DEG2RAD;
-    float hoekRad   = HOEK_DEG * DEG2RAD;
-    // Robotpositie in meter voor WorldToCell
-    float robotX_m  = pos.GetX() * MM2M;
-    float robotY_m  = pos.GetY() * MM2M;
+    float thetaRad = pos.GetTheta() * DEG2RAD;
+    float hoekRad  = HOEK_DEG * DEG2RAD;
+    float robotX_m = pos.GetX() * MM2M;
+    float robotY_m = pos.GetY() * MM2M;
 
-    constexpr int STAPPEN = 20;
-    bool hardVoor = false, hardLinks = false, hardRechts = false;
-    bool vroegVoor = false, vroegLinks = false, vroegRechts = false;
+    constexpr int STAPPEN = 18;
+
+    bool kritiekVoor = false, kritiekLinks = false, kritiekRechts = false;
+    bool remmenVoor  = false, remmenLinks  = false, remmenRechts  = false;
+    bool veiligVoor  = false, veiligLinks  = false, veiligRechts  = false;
 
     for (int s = 1; s <= STAPPEN; ++s) {
-        // Straallengte in meter
-        float r_m = VROEG_MM * MM2M * static_cast<float>(s) / STAPPEN;
-        bool isHard = (r_m <= HARD_MM * MM2M);
+        float r_mm = VEILIG_MM * static_cast<float>(s) / STAPPEN;
+        float r_m  = r_mm * MM2M;
 
         const float offsets[3] = { 0.0f, -hoekRad, +hoekRad };
         for (int i = 0; i < 3; ++i) {
@@ -390,24 +385,38 @@ static int ObstakelRichting(const Mapper& mapper, const Position& pos)
             if (!mapper.GetMap().InBounds(cx, cy) || !mapper.GetMap().IsOccupied(cx, cy))
                 continue;
 
-            if (isHard) {
-                if (i == 0) hardVoor   = true;
-                if (i == 1) hardLinks  = true;
-                if (i == 2) hardRechts = true;
+            if (r_mm <= KRITIEK_MM) {
+                if (i == 0) kritiekVoor   = true;
+                if (i == 1) kritiekLinks  = true;
+                if (i == 2) kritiekRechts = true;
+            } else if (r_mm <= REMMEN_MM) {
+                if (i == 0) remmenVoor    = true;
+                if (i == 1) remmenLinks   = true;
+                if (i == 2) remmenRechts  = true;
             } else {
-                if (i == 0) vroegVoor  = true;
-                if (i == 1) vroegLinks = true;
-                if (i == 2) vroegRechts = true;
+                if (i == 0) veiligVoor    = true;
+                if (i == 1) veiligLinks   = true;
+                if (i == 2) veiligRechts  = true;
             }
         }
     }
 
-    if (hardVoor)    return +20;
-    if (hardRechts)  return +10;
-    if (hardLinks)   return -10;
-    if (vroegVoor)   return  +2;
-    if (vroegRechts) return  +1;
-    if (vroegLinks)  return  -1;
+    // Kritiek — stop en draai, kies vrije kant
+    if (kritiekVoor || kritiekLinks || kritiekRechts) {
+        if (kritiekRechts && !kritiekLinks) return -30;  // rechts vol → links draaien
+        return +30;                                       // links/voor vol → rechts draaien
+    }
+
+    // Remmen — hard bijsturen, snelheid terug
+    if (remmenVoor)   return +20;
+    if (remmenRechts) return -20;
+    if (remmenLinks)  return +20;
+
+    // Veilig — vroeg zacht bijsturen
+    if (veiligVoor)   return  +2;
+    if (veiligRechts) return  -1;
+    if (veiligLinks)  return  +1;
+
     return 0;
 }
 
@@ -532,19 +541,20 @@ static void PrintStatus(const RobotStatus& s)
     }
     printf("║  %s● %s\033[0m  ║\n", staatKleur, staatTekst);
 
-    // Obstakelrichting visueel — twee zones
+    // Obstakelrichting visueel — drie zones
     const char* obstSymbool;
     switch (s.obstRichting) {
-        case   0: obstSymbool = "        [voor: vrij ] [links: vrij ] [rechts: vrij ]              "; break;
-        case  +2: obstSymbool = "\033[33m        [voor: VROEG] [links:  -   ] [rechts:  -   ] bocht L\033[0m"; break;
-        case  +1: obstSymbool = "\033[33m        [voor: vrij ] [links:  -   ] [rechts: VROEG] bocht L\033[0m"; break;
-        case  -1: obstSymbool = "\033[33m        [voor: vrij ] [links: VROEG] [rechts:  -   ] bocht R\033[0m"; break;
-        case +20: obstSymbool = "\033[31m        [voor: HARD ] [links:  -   ] [rechts:  -   ] SCHERP L\033[0m"; break;
-        case +10: obstSymbool = "\033[31m        [voor: vrij ] [links:  -   ] [rechts: HARD ] SCHERP L\033[0m"; break;
-        case -10: obstSymbool = "\033[31m        [voor: vrij ] [links: HARD ] [rechts:  -   ] SCHERP R\033[0m"; break;
-        default:  obstSymbool = "        [onbekend]                                                 "; break;
+        case   0: obstSymbool = "  VRIJ    [voor: ---] [links: ---] [rechts: ---]               "; break;
+        case  +1: obstSymbool = "\033[33m  VEILIG  [voor: ---] [links: ---] [rechts: 900mm] bocht L  \033[0m"; break;
+        case  -1: obstSymbool = "\033[33m  VEILIG  [voor: ---] [links: 900mm] [rechts: ---] bocht R  \033[0m"; break;
+        case  +2: obstSymbool = "\033[33m  VEILIG  [voor: 900mm] [links: ---] [rechts: ---] bocht L  \033[0m"; break;
+        case +20: obstSymbool = "\033[33m  REMMEN  [voor/L: 600mm] rem+bocht L — 40% snelheid         \033[0m"; break;
+        case -20: obstSymbool = "\033[33m  REMMEN  [rechts: 600mm] rem+bocht R — 40% snelheid         \033[0m"; break;
+        case +30: obstSymbool = "\033[31m  KRITIEK [<350mm] STOP + draai L — chassis beschermd        \033[0m"; break;
+        case -30: obstSymbool = "\033[31m  KRITIEK [<350mm] STOP + draai R — chassis beschermd        \033[0m"; break;
+        default:  obstSymbool = "  [onbekend code]                                                  "; break;
     }
-    printf("║  %s  ║\n", obstSymbool);
+    printf("║  %s║\n", obstSymbool);
 
     printf("╚══════════════════════════════════════════════════════════╝\n");
     fflush(stdout);
@@ -667,28 +677,27 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
             st.hoekFout = err;
         }
 
-        // ── 3a. Obstakelcheck: twee zones ────────────────────────
+        // ── 3a. Obstakelcheck: drie zones ────────────────────────
         int obstRichting = ObstakelRichting(mapper, pos);
         st.obstRichting  = obstRichting;
 
         if (obstRichting != 0) {
-            float bocht     = 0.0f;
-            bool  scherp    = (obstRichting == +20 || obstRichting == +10 || obstRichting == -10);
-
-            // Bepaal draairichting op basis van teken
             float richting = (obstRichting > 0) ? -1.0f : +1.0f;
+            int   absCode  = std::abs(obstRichting);
 
-            if (scherp) {
-                // Harde zone (<250 mm): scherpe bocht, iets langzamer
-                bocht = richting * 25.0f;
-                ka.SetCommand(LIN_SPEED * 0.5f, bocht);
-                // Pauzeer kaart-update tijdens scherpe bocht: verouderde
-                // positie + snelle draai geeft anders straalartifacten
-                nieuweScan = false;
+            if (absCode == 30) {
+                // KRITIEK (<350mm): volledig stoppen, alleen draaien op de plek
+                // Rijdt NIET vooruit — chassis kan niet meer draaien bij <250mm
+                ka.SetCommand(0.0f, richting * 40.0f);
+                nieuweScan = false;  // kaart niet bijwerken tijdens stilstaand draaien
+
+            } else if (absCode == 20) {
+                // REMMEN (350–600mm): rem af naar 40%, hard bijsturen
+                ka.SetCommand(LIN_SPEED * 0.4f, richting * 20.0f);
+
             } else {
-                // Vroege zone (250–1000 mm): zachte bocht, vol gas
-                bocht = richting * 8.0f;
-                ka.SetCommand(LIN_SPEED, bocht);
+                // VEILIG (600–900mm): zacht bijsturen, vol gas
+                ka.SetCommand(LIN_SPEED, richting * 8.0f);
             }
             st.staat = 2;
 
