@@ -341,32 +341,61 @@ static Position KiesFrontierDoel(const Mapper& mapper, const Position& huidig)
 // ── Hulpfunctie: obstakel recht vooruit? ────────────────────────────────────
 // Kijkt in een kegel van ±HOEK_DEG graden voor de robot,
 // binnen AFSTAND_MM mm. Geeft true als er een OCCUPIED cel in zit.
-static bool ObstakelVooruit(const Mapper& mapper, const Position& pos,
-                             float afstandMm = 600.0f, float hoekDeg = 30.0f)
+// ── ObstakelRichting ────────────────────────────────────────────────────────
+// Kijkt in een kegel van ±HOEK_DEG graden voor de robot binnen AFSTAND_MM mm.
+// Geeft terug:
+//   0  = vrij
+//  +1  = obstakel rechts → bocht links maken
+//  -1  = obstakel links  → bocht rechts maken
+//   2  = obstakel recht voorop → ruim van te voren afbuigen
+static int ObstakelRichting(const Mapper& mapper, const Position& pos,
+                             float afstandMm = 800.0f, float hoekDeg = 25.0f)
 {
     static constexpr float DEG2RAD = 3.14159265f / 180.0f;
-    float thetaRad = pos.GetTheta() * DEG2RAD;  // graden → radialen voor cos/sin
+    float thetaRad = pos.GetTheta() * DEG2RAD;
     float hoekRad  = hoekDeg * DEG2RAD;
 
-    // Scan in kleine stappen langs de kegel
-    constexpr int STAPPEN = 20;
+    constexpr int STAPPEN = 15;
+    bool linksVrij  = true;
+    bool rechtsVrij = true;
+    bool voorVrij   = true;
+
     for (int s = 1; s <= STAPPEN; ++s) {
         float r = afstandMm * static_cast<float>(s) / STAPPEN;
 
-        // Linker- en rechterrand van de kegel + middenas
-        for (float offset : {-hoekRad, 0.0f, hoekRad}) {
-            float wx = pos.GetX() + r * std::cos(thetaRad + offset);
-            float wy = pos.GetY() + r * std::sin(thetaRad + offset);
-
+        // Middenas
+        {
+            float wx = pos.GetX() + r * std::cos(thetaRad);
+            float wy = pos.GetY() + r * std::sin(thetaRad);
             int cx, cy;
             mapper.GetMap().WorldToCell(wx, wy, cx, cy);
-
-            if (mapper.GetMap().InBounds(cx, cy) &&
-                mapper.GetMap().IsOccupied(cx, cy))
-                return true;
+            if (mapper.GetMap().InBounds(cx, cy) && mapper.GetMap().IsOccupied(cx, cy))
+                voorVrij = false;
+        }
+        // Linker rand
+        {
+            float wx = pos.GetX() + r * std::cos(thetaRad - hoekRad);
+            float wy = pos.GetY() + r * std::sin(thetaRad - hoekRad);
+            int cx, cy;
+            mapper.GetMap().WorldToCell(wx, wy, cx, cy);
+            if (mapper.GetMap().InBounds(cx, cy) && mapper.GetMap().IsOccupied(cx, cy))
+                linksVrij = false;
+        }
+        // Rechter rand
+        {
+            float wx = pos.GetX() + r * std::cos(thetaRad + hoekRad);
+            float wy = pos.GetY() + r * std::sin(thetaRad + hoekRad);
+            int cx, cy;
+            mapper.GetMap().WorldToCell(wx, wy, cx, cy);
+            if (mapper.GetMap().InBounds(cx, cy) && mapper.GetMap().IsOccupied(cx, cy))
+                rechtsVrij = false;
         }
     }
-    return false;
+
+    if (!voorVrij)   return 2;   // midden geblokkeerd
+    if (!rechtsVrij) return +1;  // rechts geblokkeerd → stuur links
+    if (!linksVrij)  return -1;  // links geblokkeerd  → stuur rechts
+    return 0;
 }
 
 static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
@@ -377,34 +406,22 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
     constexpr float DT             = 0.1f;
     constexpr long  LOOP_US        = 100000;
     constexpr float LIN_SPEED      = 278.0f;
-    constexpr float TURN_SPEED     =  50.0f;
-    constexpr float TURN_TARGET    =  90.0f;
-    constexpr int   RIJD_SECONDEN  =  10;
     constexpr int   HERPLAN_SCANS  =  15;
 
-    enum class Fase { RECHTDOOR, DRAAIEN, AUTONOOM };
-    Fase     fase              = Fase::RECHTDOOR;
-    float    startYaw          = 0.0f;
-    bool     yawGezet          = false;
     int      scanCount         = 0;
-    int      scansSindsHerplan = 0;
+    int      scansSindsHerplan = HERPLAN_SCANS;  // direct herplannen bij start
 
     // Pathfinding objecten
     PathPlanner planner(mapper.GetMap());
     Navigator   navigator;
     bool        heeftPad   = false;
 
-    // CommandKeepAlive voor de autonome fase
     CommandKeepAlive ka(uart);
     ka.Start();
 
-    auto faseStart = std::chrono::steady_clock::now();
-
     std::cout << "\033[2J";
-    printf("Fase 1: rechtdoor rijden (%.0f mm/s) gedurende %d s.\n",
-           LIN_SPEED, RIJD_SECONDEN);
-    printf("Fase 2: 90 graden draaien naar rechts.\n");
-    printf("Fase 3: autonoom verkennen op basis van kaart.\n\n");
+    printf("Autonoom rijden + mappen gestart.\n");
+    printf("Strategie: altijd vooruit (278 mm/s), zachte bochten bij obstakels.\n\n");
     usleep(1200000);   // LIDAR spin-up
 
     ka.SetCommand(LIN_SPEED, 0.0f);   // begin rijden
@@ -437,131 +454,80 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
             nieuweScan = true;
         }
 
-        // ── 3. Fase-logica ────────────────────────────────────────
-        fase     = Fase::AUTONOOM;
+        // ── 3. Autonoom rijden ────────────────────────────────────
+        //
+        //  Strategie: altijd vooruit rijden (linear=278).
+        //  - Obstakel gedetecteerd → zachte bocht (angular ±8)
+        //  - Pad beschikbaar       → navigator stuurt bij via proportionele gain
+        //  - Geen pad / geen kaart → rechtdoor
+        // ─────────────────────────────────────────────────────────
 
-        // --- Fase 1: rechtdoor ---
-        // if (fase == Fase::RECHTDOOR) {
-        //     auto verstreken = std::chrono::duration_cast<std::chrono::seconds>(
-        //                           std::chrono::steady_clock::now() - faseStart).count();
+        // ── 3a. Obstakelcheck: zachte bocht, geen stop ────────────
+        int obstRichting = ObstakelRichting(mapper, pos);
+        if (obstRichting != 0) {
+            float bocht = 0.0f;
+            if      (obstRichting ==  2) bocht = -8.0f;  // recht voor: bocht links
+            else if (obstRichting == +1) bocht = -8.0f;  // rechts geblokkeerd: links
+            else if (obstRichting == -1) bocht = +8.0f;  // links geblokkeerd: rechts
 
-        //     if (verstreken >= RIJD_SECONDEN) {
-        //         printf("\nFase 2: 90 graden draaien...\n");
-        //         ka.Stop();
-        //         usleep(300000);
-        //         fase     = Fase::DRAAIEN;
-        //         yawGezet = false;
-        //     }
-        // }
+            ka.SetCommand(LIN_SPEED, bocht);
+            if (nieuweScan)
+                printf("[OBST] richting=%d bocht=%.0f deg/s\n", obstRichting, bocht);
 
-        // --- Fase 2: draaien ---
-        // else if (fase == Fase::DRAAIEN) {
-        //     if (!yawGezet) {
-        //         IMUData ref = uart.LeesIMU();
-        //         startYaw    = ref.geldig ? ref.yawGraden : 0.0f;
-        //         yawGezet    = true;
-        //         ka.SetCommand(0.0f, TURN_SPEED);
-        //         printf("Startyaw: %.1f graden\n", startYaw);
-        //     }
+        // ── 3b. Navigator rijdt het pad ───────────────────────────
+        } else if (heeftPad && !navigator.IsFinished()) {
+            navigator.Update(pos);
+            DriveCommand cmd = navigator.GetNextCommand(pos);
+            ka.SetCommand(cmd.GetLinVelocity(), cmd.GetAngVelocity());
 
-        //     IMUData cur = uart.LeesIMU();
-        //     if (cur.geldig) {
-        //         float gedraaid = cur.yawGraden - startYaw;
-        //         while (gedraaid >  180.0f) gedraaid -= 360.0f;
-        //         while (gedraaid < -180.0f) gedraaid += 360.0f;
-
-        //         printf("  Gedraaid: %.1f / %.0f graden\r", gedraaid, TURN_TARGET);
-        //         fflush(stdout);
-
-        //         if (gedraaid >= TURN_TARGET) {
-        //             ka.Stop();
-        //             usleep(300000);
-        //             printf("\nDraai klaar. Autonome fase gestart.\n");
-        //             scansSindsHerplan = HERPLAN_SCANS;
-        //             fase = Fase::AUTONOOM;
-        //         }
-        //     }
-        // }
-
-        // --- Fase 3: autonoom pathfinding ---
-        if (fase == Fase::AUTONOOM) {
-
-            // ── 3a. Obstakel recht vooruit? Herplan direct ────────
-            if (ObstakelVooruit(mapper, pos)) {
-                printf("\nObstakel gedetecteerd! Herplan...\n");
-                ka.Stop();
-                usleep(200000);
+        } else {
+            // ── 3c. Herplan als navigator klaar of geen pad ───────
+            if (heeftPad && navigator.IsFinished()) {
+                printf("[AUTO] Doel bereikt, herplan...\n");
                 heeftPad          = false;
                 scansSindsHerplan = HERPLAN_SCANS;
             }
 
-            // ── 3b. Herplan elke HERPLAN_SCANS scans ─────────────
             if (nieuweScan && scansSindsHerplan >= HERPLAN_SCANS) {
                 scansSindsHerplan = 0;
 
-                // Debug: robotpositie in wereldcoördinaten en gridcel
                 int robotCx = 0, robotCy = 0;
                 mapper.GetMap().WorldToCell(pos.GetX(), pos.GetY(), robotCx, robotCy);
                 bool robotCelVrij = mapper.GetMap().InBounds(robotCx, robotCy) &&
                                     mapper.GetMap().IsFree(robotCx, robotCy);
-                printf("[AUTO] pos=(%.0f,%.0f)mm  cel=(%d,%d)  vrij=%s  dekking=%d%%\n",
+                printf("[AUTO] pos=(%.0f,%.0f)mm cel=(%d,%d) vrij=%s dek=%d%%\n",
                        pos.GetX(), pos.GetY(), robotCx, robotCy,
                        robotCelVrij ? "ja" : "NEE", mapper.GetCoverage());
 
                 Position doel = KiesFrontierDoel(mapper, pos);
 
                 if (doel.GetX() == pos.GetX() && doel.GetY() == pos.GetY()) {
-                    printf("[AUTO] Geen frontier gevonden — dekking=%d%%\n",
-                           mapper.GetCoverage());
-                    // Nog niet klaar: te weinig kaart — rijd even vooruit en herplan
+                    // Nog geen kaart genoeg — rijd gewoon rechtdoor
                     ka.SetCommand(LIN_SPEED, 0.0f);
-                    scansSindsHerplan = HERPLAN_SCANS;  // herplan volgende scan
+                    scansSindsHerplan = HERPLAN_SCANS;
                 } else {
-                    printf("[AUTO] Frontier doel=(%.0f,%.0f)mm\n",
-                           doel.GetX(), doel.GetY());
-
+                    printf("[AUTO] Frontier=(%.0f,%.0f)mm\n", doel.GetX(), doel.GetY());
                     Path pad = planner.PlanPath(pos, doel, mapper.GetMap());
 
                     if (!pad.IsEmpty()) {
                         navigator.SetPath(pad);
                         heeftPad = true;
-                        printf("[AUTO] Pad gevonden: %d waypoints\n", pad.GetSize());
+                        printf("[AUTO] Pad: %d waypoints\n", pad.GetSize());
                     } else {
-                        printf("[AUTO] Geen pad naar frontier — rijd vooruit\n");
-                        heeftPad = false;
-                        // Geen pad: rijd gewoon vooruit i.p.v. rondjes draaien
+                        // Geen pad naar frontier: rijd rechtdoor en herplan snel
                         ka.SetCommand(LIN_SPEED, 0.0f);
                         scansSindsHerplan = HERPLAN_SCANS;
                     }
                 }
+            } else {
+                // Wacht op volgende scan, rijd ondertussen door
+                ka.SetCommand(LIN_SPEED, 0.0f);
             }
-
-            // ── 3c. Navigator → DriveCommand → keepalive ─────────
-            if (heeftPad && !navigator.IsFinished()) {
-                navigator.Update(pos);
-                DriveCommand cmd = navigator.GetNextCommand(pos);
-                ka.SetCommand(cmd.GetLinVelocity(), cmd.GetAngVelocity());
-            } else if (heeftPad && navigator.IsFinished()) {
-                // Waypoint bereikt, wacht op volgende herplan
-                printf("[AUTO] Doel bereikt, wacht op volgende scan...\n");
-                heeftPad = false;
-                ka.Stop();
-            }
-            // Geen else meer voor draaien — vooruit rijden wordt hierboven gezet
         }
 
         // ── 4. Status printen ─────────────────────────────────────
-        if (fase == Fase::RECHTDOOR) {
-            auto verstreken = std::chrono::duration_cast<std::chrono::seconds>(
-                                  std::chrono::steady_clock::now() - faseStart).count();
-            printf("Scans:%4d  Dekking:%2d%%  Pos:(%.0f,%.0f)mm  theta:%.1f deg  t:%lds/%ds\n",
-                   scanCount, mapper.GetCoverage(),
-                   pos.GetX(), pos.GetY(),
-                   loc.GetTheta(),
-                   verstreken, RIJD_SECONDEN);
-            mapper.PrintMap(pos.GetX(), pos.GetY(), scanCount, mapper.GetCoverage());
-        } else if (fase == Fase::AUTONOOM && nieuweScan) {
-            printf("Scans:%4d  Dekking:%2d%%  Pos:(%.0f,%.0f)mm  theta:%.1f deg  CMD:%.0f/%.0f\n",
+        if (nieuweScan) {
+            printf("Scans:%4d  Dek:%2d%%  Pos:(%.0f,%.0f)mm  theta:%.1f deg  CMD:%.0f/%.1f\n",
                    scanCount, mapper.GetCoverage(),
                    pos.GetX(), pos.GetY(),
                    loc.GetTheta(),

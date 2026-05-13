@@ -21,23 +21,23 @@ public:
 
 private:
     // Drempelafstand om een waypoint als bereikt te beschouwen.
-    static constexpr float REACHED_THRESHOLD_MM = 150.0f;
+    static constexpr float REACHED_THRESHOLD_MM = 200.0f;
 
-    // Rijsnelheid
+    // Rijsnelheid — altijd vooruit, nooit stoppen voor draaien
     static constexpr float LINEAR_SPEED_MM_S    = 278.0f;
 
-    // Maximum draaisnelheid (graden/s)
-    static constexpr float MAX_ANGULAR_DEG_S    = 90.0f;
+    // Proportionele gain voor zachte bijsturing (deg/s per graad fout)
+    // Bij 45° fout → 45 × 0.18 ≈ 8 deg/s bijsturing
+    static constexpr float ANGULAR_GAIN         = 0.18f;
 
-    // Minimale draaisnelheid in de remzone (graden/s)
-    static constexpr float MIN_ANGULAR_DEG_S    = 15.0f;
+    // Maximum bijsturing tijdens het rijden (graden/s)
+    static constexpr float MAX_ANGULAR_DEG_S    = 25.0f;
 
-    // Remzone: begin met afschalen binnen deze hoekfout (graden)
-    static constexpr float BRAKE_ZONE_DEG       = 20.0f;
+    // Minimum bijsturing boven motor-stall drempel (graden/s)
+    static constexpr float MIN_ANGULAR_DEG_S    = 5.0f;
 
-    // Stop vooruitrijden als hoekfout groter is dan dit (graden)
-    // 0.25 rad ≈ 14.3°
-    static constexpr float ANGLE_THRESHOLD_DEG  = 14.3f;
+    // Dode zone: onder dit geen bijsturing (graden)
+    static constexpr float ANGLE_DEADBAND_DEG   = 3.0f;
 
     Path     path;
     Position currentTarget;

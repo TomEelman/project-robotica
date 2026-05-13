@@ -49,25 +49,22 @@ DriveCommand Navigator::GetNextCommand(Position current) {
     float angleErr = CalculateAngleError(current, currentTarget); // graden [-180, 180]
 
     if (dist < REACHED_THRESHOLD_MM)
-        return DriveCommand(0.0f, 0.0f);
+        return DriveCommand(LINEAR_SPEED_MM_S, 0.0f);  // doel bijna bereikt: rijd door
 
     float absErr = std::fabs(angleErr);
-    float angularDegS;
 
-    if (absErr > BRAKE_ZONE_DEG) {
-        angularDegS = MAX_ANGULAR_DEG_S;
-    } else {
-        // Lineair afschalen van MAX naar MIN binnen de remzone.
-        float scale = absErr / BRAKE_ZONE_DEG;
-        angularDegS = MIN_ANGULAR_DEG_S + scale * (MAX_ANGULAR_DEG_S - MIN_ANGULAR_DEG_S);
+    // Dode zone: kleine afwijkingen negeren, rijdt dan puur rechtdoor
+    float angularDegS = 0.0f;
+    if (absErr > ANGLE_DEADBAND_DEG) {
+        // Proportioneel: gain × fout, begrensd op [MIN, MAX]
+        angularDegS = ANGULAR_GAIN * absErr;
+        if (angularDegS < MIN_ANGULAR_DEG_S) angularDegS = MIN_ANGULAR_DEG_S;
+        if (angularDegS > MAX_ANGULAR_DEG_S) angularDegS = MAX_ANGULAR_DEG_S;
+        if (angleErr < 0.0f) angularDegS = -angularDegS;
     }
 
-    if (angleErr < 0.0f) angularDegS = -angularDegS;
-
-    // Rijd alleen vooruit als de hoekfout klein genoeg is.
-    float linearMmS = (absErr > ANGLE_THRESHOLD_DEG) ? 0.0f : LINEAR_SPEED_MM_S;
-
-    return DriveCommand(linearMmS, angularDegS);
+    // Altijd vooruit rijden — Drive::ExecuteLinear verwerkt angular als zachte bocht
+    return DriveCommand(LINEAR_SPEED_MM_S, angularDegS);
 }
 
 bool Navigator::ReachedPoint(Position current) const {
