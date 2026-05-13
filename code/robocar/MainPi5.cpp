@@ -398,6 +398,145 @@ static int ObstakelRichting(const Mapper& mapper, const Position& pos,
     return 0;
 }
 
+// ════════════════════════════════════════════════════════════════
+//  PrintStatus  —  live dashboard voor de autonome rijmodus
+//
+//  Gebruikt ANSI escape codes om het scherm op te refreshen zonder
+//  te scrollen. Elke nieuweScan wordt het dashboard bijgewerkt.
+//
+//  Staat:
+//    0 = VRIJ (geen obstakel, geen pad)
+//    1 = NAVIGEERT (pad actief)
+//    2 = OBSTAKEL (bocht aan het maken)
+//    3 = HERPLAN (wacht op nieuw pad)
+// ════════════════════════════════════════════════════════════════
+
+struct RobotStatus {
+    // Positie & oriëntatie
+    float   posX, posY;          // mm
+    float   theta;               // graden
+    // Encoder
+    float   speedLinks;          // mm/s
+    float   speedRechts;         // mm/s
+    // IMU
+    float   imuYaw;              // graden
+    float   imuOmega;            // graden/s
+    // Aansturing
+    float   cmdLin;              // mm/s
+    float   cmdAng;              // deg/s
+    // Navigatie
+    bool    heeftPad;
+    int     waypointHuidig;
+    int     waypointTotaal;
+    float   doelX, doelY;        // mm
+    float   afstandTotDoel;      // mm
+    float   hoekFout;            // graden
+    // Obstakel
+    int     obstRichting;        // 0=vrij, ±1=zijkant, 2=voor
+    // Kaart
+    int     scanCount;
+    int     dekking;             // %
+    bool    robotCelVrij;
+    // Staat
+    int     staat;               // zie boven
+    // EKF beschikbaarheid
+    bool    encGeldig;
+    bool    imuGeldig;
+};
+
+static void PrintStatus(const RobotStatus& s)
+{
+    // Cursor naar boven — refresh zonder scrollen
+    // \033[H = cursor naar (0,0), \033[2J = clear screen
+    printf("\033[H");
+
+    // ── Titel ──────────────────────────────────────────────────
+    printf("╔══════════════════════════════════════════════════════════╗\n");
+    printf("║           ROBOT AUTONOOM — LIVE STATUS                  ║\n");
+    printf("╠═══════════════════════════╦══════════════════════════════╣\n");
+
+    // ── Kolom links: positie/oriëntatie | Kolom rechts: aansturing ──
+    printf("║  LOKALISATIE              ║  AANSTURING                  ║\n");
+    printf("║  X   : %8.0f mm        ║  Linear  : %7.1f mm/s      ║\n",
+           s.posX, s.cmdLin);
+    printf("║  Y   : %8.0f mm        ║  Angular : %7.1f deg/s     ║\n",
+           s.posY, s.cmdAng);
+    printf("║  θ   : %8.1f °          ║                              ║\n",
+           s.theta);
+
+    // ── Sensoren ───────────────────────────────────────────────
+    printf("╠═══════════════════════════╬══════════════════════════════╣\n");
+    printf("║  SENSOREN                 ║  NAVIGATIE                   ║\n");
+
+    if (s.encGeldig)
+        printf("║  ENC L: %7.1f mm/s      ║  Pad     : %s             ║\n",
+               s.speedLinks, s.heeftPad ? "JA  " : "NEE ");
+    else
+        printf("║  ENC L: [geen data]       ║  Pad     : %s             ║\n",
+               s.heeftPad ? "JA  " : "NEE ");
+
+    if (s.encGeldig)
+        printf("║  ENC R: %7.1f mm/s      ║  Waypoint: %3d / %-3d        ║\n",
+               s.speedRechts, s.waypointHuidig, s.waypointTotaal);
+    else
+        printf("║  ENC R: [geen data]       ║  Waypoint: --- / ---        ║\n");
+
+    if (s.imuGeldig)
+        printf("║  IMU θ: %7.1f °          ║  Doel    : (%6.0f,%6.0f)  ║\n",
+               s.imuYaw, s.doelX, s.doelY);
+    else
+        printf("║  IMU  : [geen data]       ║  Doel    : (  ----,  ----)  ║\n");
+
+    if (s.imuGeldig)
+        printf("║  ω    : %7.1f °/s        ║  Afstand : %7.0f mm       ║\n",
+               s.imuOmega, s.afstandTotDoel);
+    else
+        printf("║         [geen data]       ║  Afstand :    ----          ║\n");
+
+    printf("║                           ║  HoekFout: %7.1f °         ║\n",
+           s.hoekFout);
+
+    // ── Kaart & obstakel ───────────────────────────────────────
+    printf("╠═══════════════════════════╩══════════════════════════════╣\n");
+    printf("║  KAART   Scans: %4d   Dekking: %3d%%   Cel: %s       ║\n",
+           s.scanCount, s.dekking, s.robotCelVrij ? "VRIJ " : "FOUT!");
+
+    // Voortgangsbalk voor kaartdekking (40 tekens breed)
+    {
+        int gevuld = s.dekking * 40 / 100;
+        printf("║  [");
+        for (int i = 0; i < 40; ++i) printf(i < gevuld ? "█" : "░");
+        printf("]  %3d%%  ║\n", s.dekking);
+    }
+
+    // ── Staat ──────────────────────────────────────────────────
+    printf("╠══════════════════════════════════════════════════════════╣\n");
+    const char* staatTekst = "";
+    const char* staatKleur = "";
+    switch (s.staat) {
+        case 0: staatTekst = "VRIJ RIJDEN  (geen obstakel, geen pad — rechtdoor)";
+                staatKleur = "\033[32m"; break;   // groen
+        case 1: staatTekst = "NAVIGEERT    (pad actief, bijsturing via navigator)";
+                staatKleur = "\033[36m"; break;   // cyaan
+        case 2: staatTekst = "OBSTAKEL     (zachte bocht, obstakel gedetecteerd) ";
+                staatKleur = "\033[33m"; break;   // geel
+        case 3: staatTekst = "HERPLANNEN   (wacht op nieuw pad van A*)           ";
+                staatKleur = "\033[35m"; break;   // magenta
+    }
+    printf("║  %s● %s\033[0m  ║\n", staatKleur, staatTekst);
+
+    // Obstakelrichting visueel
+    const char* obstSymbool =
+        (s.obstRichting ==  0) ? "        [voor: vrij ] [links: vrij ] [rechts: vrij ]" :
+        (s.obstRichting ==  2) ? "\033[31m        [voor: BLOK ] [links:  ?   ] [rechts:  ?  ]\033[0m" :
+        (s.obstRichting == +1) ? "\033[33m        [voor: vrij ] [links: vrij ] [rechts: BLOK]\033[0m" :
+                                 "\033[33m        [voor: vrij ] [links: BLOK ] [rechts: vrij]\033[0m";
+    printf("║  %s  ║\n", obstSymbool);
+
+    printf("╚══════════════════════════════════════════════════════════╝\n");
+    fflush(stdout);
+}
+
 static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
 {
     Localisation loc(235.0f);   // wheelBase in mm (was 0.235 m — fout)
@@ -462,78 +601,113 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar)
         //  - Geen pad / geen kaart → rechtdoor
         // ─────────────────────────────────────────────────────────
 
+        // Status struct — elke iteratie vers gevuld voor PrintStatus
+        RobotStatus st{};
+        st.posX        = pos.GetX();
+        st.posY        = pos.GetY();
+        st.theta       = loc.GetTheta();
+        st.speedLinks  = enc.geldig ? enc.speedLinks  : 0.0f;
+        st.speedRechts = enc.geldig ? enc.speedRechts : 0.0f;
+        st.imuYaw      = imu.geldig ? imu.yawGraden   : 0.0f;
+        st.imuOmega    = imu.geldig ? imu.hoeksnelheid : 0.0f;
+        st.encGeldig   = enc.geldig;
+        st.imuGeldig   = imu.geldig;
+        st.scanCount   = scanCount;
+        st.dekking     = mapper.GetCoverage();
+        st.heeftPad    = heeftPad;
+
+        {
+            int cx = 0, cy = 0;
+            mapper.GetMap().WorldToCell(pos.GetX(), pos.GetY(), cx, cy);
+            st.robotCelVrij = mapper.GetMap().InBounds(cx, cy) &&
+                              mapper.GetMap().IsFree(cx, cy);
+        }
+
+        // Navigatie-info voor de status
+        if (heeftPad && !navigator.IsFinished()) {
+            Position doel = navigator.GetCurrentTarget();
+            st.doelX          = doel.GetX();
+            st.doelY          = doel.GetY();
+            st.waypointHuidig = navigator.GetPath().GetCurrentIndex() + 1;
+            st.waypointTotaal = navigator.GetPath().GetSize();
+            // Bereken afstand en hoekfout tot huidig waypoint
+            float dx = doel.GetX() - pos.GetX();
+            float dy = doel.GetY() - pos.GetY();
+            st.afstandTotDoel = std::sqrt(dx*dx + dy*dy);
+            float desired     = std::atan2(dy, dx) * (180.0f / static_cast<float>(M_PI));
+            float err         = desired - loc.GetTheta();
+            while (err >  180.0f) err -= 360.0f;
+            while (err < -180.0f) err += 360.0f;
+            st.hoekFout = err;
+        }
+
         // ── 3a. Obstakelcheck: zachte bocht, geen stop ────────────
         int obstRichting = ObstakelRichting(mapper, pos);
+        st.obstRichting  = obstRichting;
+
         if (obstRichting != 0) {
             float bocht = 0.0f;
-            if      (obstRichting ==  2) bocht = -8.0f;  // recht voor: bocht links
-            else if (obstRichting == +1) bocht = -8.0f;  // rechts geblokkeerd: links
-            else if (obstRichting == -1) bocht = +8.0f;  // links geblokkeerd: rechts
+            if      (obstRichting ==  2) bocht = -8.0f;
+            else if (obstRichting == +1) bocht = -8.0f;
+            else if (obstRichting == -1) bocht = +8.0f;
 
             ka.SetCommand(LIN_SPEED, bocht);
-            if (nieuweScan)
-                printf("[OBST] richting=%d bocht=%.0f deg/s\n", obstRichting, bocht);
+            st.staat = 2;
 
         // ── 3b. Navigator rijdt het pad ───────────────────────────
         } else if (heeftPad && !navigator.IsFinished()) {
             navigator.Update(pos);
             DriveCommand cmd = navigator.GetNextCommand(pos);
             ka.SetCommand(cmd.GetLinVelocity(), cmd.GetAngVelocity());
+            st.staat = 1;
 
         } else {
             // ── 3c. Herplan als navigator klaar of geen pad ───────
             if (heeftPad && navigator.IsFinished()) {
-                printf("[AUTO] Doel bereikt, herplan...\n");
                 heeftPad          = false;
+                st.heeftPad       = false;
                 scansSindsHerplan = HERPLAN_SCANS;
             }
 
             if (nieuweScan && scansSindsHerplan >= HERPLAN_SCANS) {
                 scansSindsHerplan = 0;
-
-                int robotCx = 0, robotCy = 0;
-                mapper.GetMap().WorldToCell(pos.GetX(), pos.GetY(), robotCx, robotCy);
-                bool robotCelVrij = mapper.GetMap().InBounds(robotCx, robotCy) &&
-                                    mapper.GetMap().IsFree(robotCx, robotCy);
-                printf("[AUTO] pos=(%.0f,%.0f)mm cel=(%d,%d) vrij=%s dek=%d%%\n",
-                       pos.GetX(), pos.GetY(), robotCx, robotCy,
-                       robotCelVrij ? "ja" : "NEE", mapper.GetCoverage());
+                st.staat          = 3;
 
                 Position doel = KiesFrontierDoel(mapper, pos);
 
                 if (doel.GetX() == pos.GetX() && doel.GetY() == pos.GetY()) {
-                    // Nog geen kaart genoeg — rijd gewoon rechtdoor
                     ka.SetCommand(LIN_SPEED, 0.0f);
                     scansSindsHerplan = HERPLAN_SCANS;
+                    st.staat = 0;
                 } else {
-                    printf("[AUTO] Frontier=(%.0f,%.0f)mm\n", doel.GetX(), doel.GetY());
+                    st.doelX = doel.GetX();
+                    st.doelY = doel.GetY();
                     Path pad = planner.PlanPath(pos, doel, mapper.GetMap());
 
                     if (!pad.IsEmpty()) {
                         navigator.SetPath(pad);
-                        heeftPad = true;
-                        printf("[AUTO] Pad: %d waypoints\n", pad.GetSize());
+                        heeftPad          = true;
+                        st.heeftPad       = true;
+                        st.waypointTotaal = pad.GetSize();
+                        st.staat          = 1;
                     } else {
-                        // Geen pad naar frontier: rijd rechtdoor en herplan snel
                         ka.SetCommand(LIN_SPEED, 0.0f);
                         scansSindsHerplan = HERPLAN_SCANS;
+                        st.staat = 0;
                     }
                 }
             } else {
-                // Wacht op volgende scan, rijd ondertussen door
                 ka.SetCommand(LIN_SPEED, 0.0f);
+                st.staat = 0;
             }
         }
 
-        // ── 4. Status printen ─────────────────────────────────────
-        if (nieuweScan) {
-            printf("Scans:%4d  Dek:%2d%%  Pos:(%.0f,%.0f)mm  theta:%.1f deg  CMD:%.0f/%.1f\n",
-                   scanCount, mapper.GetCoverage(),
-                   pos.GetX(), pos.GetY(),
-                   loc.GetTheta(),
-                   ka.GetLin(), ka.GetAng());
-            mapper.PrintMap(pos.GetX(), pos.GetY(), scanCount, mapper.GetCoverage());
-        }
+        st.cmdLin = ka.GetLin();
+        st.cmdAng = ka.GetAng();
+
+        // ── 4. Dashboard printen (elke nieuwe scan) ───────────────
+        if (nieuweScan)
+            PrintStatus(st);
 
         // ── 5. Loop timing ────────────────────────────────────────
         auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -566,7 +740,7 @@ static void PrintMenu() {
     std::cout << "╠══════════════════════════════════════╣\n";
     std::cout << "║  1. Mappen                           ║\n";
     std::cout << "║  2. Pico communiceren                ║\n";
-    std::cout << "║  3. Rijden + Mappen (10s + 90° draai)║\n";
+    std::cout << "║  3. Autonoom rijden                  ║\n";
     std::cout << "║  4. Stoppen                          ║\n";
     std::cout << "╚══════════════════════════════════════╝\n";
     std::cout << "Keuze: ";
