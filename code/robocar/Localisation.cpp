@@ -1,6 +1,16 @@
 #include "Localisation.h"
 #include <cmath>
 
+static constexpr float DEG2RAD = static_cast<float>(M_PI) / 180.0f;
+static constexpr float RAD2DEG = 180.0f / static_cast<float>(M_PI);
+
+// Normaliseer graden naar (-180, 180]
+static float NormalizeDeg(float deg) {
+    while (deg >  180.0f) deg -= 360.0f;
+    while (deg < -180.0f) deg += 360.0f;
+    return deg;
+}
+
 Localisation::Localisation(float wheelBase)
     : x(0.0f), y(0.0f), theta(0.0f), wheelBase(wheelBase)
 {
@@ -17,24 +27,22 @@ Localisation::Localisation(float wheelBase)
 void Localisation::Predict(float vLeft, float vRight, float dt)
 {
     float v     = 0.5f * (vLeft + vRight);
-    float omega = (vRight - vLeft) / wheelBase;
+    float omega = (vRight - vLeft) / wheelBase; // graden/s (als vLeft/vRight in mm/s zijn en wheelBase in mm)
 
-    float c = std::cos(theta);
-    float s = std::sin(theta);
+    float thetaRad = theta * DEG2RAD;
+    float c = std::cos(thetaRad);
+    float s = std::sin(thetaRad);
 
     x     += v * c * dt;
     y     += v * s * dt;
-    theta += omega * dt;
+    theta  = NormalizeDeg(theta + omega * RAD2DEG * dt);
 
-    // Normaliseer hoek naar (-π, π]
-    while (theta >  M_PI) theta -= 2.0f * static_cast<float>(M_PI);
-    while (theta < -M_PI) theta += 2.0f * static_cast<float>(M_PI);
-
-    // Jacobiaan F (3×3)
+    // Jacobiaan F (3×3) — hoekterm in graden/s dus omgerekend
+    float vdt = v * dt;
     float F[3][3] = {
-        {1.0f, 0.0f, -v * s * dt},
-        {0.0f, 1.0f,  v * c * dt},
-        {0.0f, 0.0f,  1.0f      }
+        {1.0f, 0.0f, -vdt * s * DEG2RAD},
+        {0.0f, 1.0f,  vdt * c * DEG2RAD},
+        {0.0f, 0.0f,  1.0f             }
     };
 
     // P ← F·P·Fᵀ + Q
@@ -53,37 +61,30 @@ void Localisation::Predict(float vLeft, float vRight, float dt)
 }
 
 // ── EKF update-stap (IMU yaw) ─────────────────────────────────────
-// BUGFIX: origineel gebruikte 'y' als zowel lokale variabele als lidvariabele.
 void Localisation::UpdateIMU(float imuYawDeg, float /*dt*/)
 {
-    // Innovatie (hoekfout)
-     float imuYawRad = imuYawDeg * (static_cast<float>(M_PI) / 180.0f);
-    float innov = imuYawRad - theta;
-
-    // Normaliseer naar (-π, π]
-    while (innov >  M_PI) innov -= 2.0f * static_cast<float>(M_PI);
-    while (innov < -M_PI) innov += 2.0f * static_cast<float>(M_PI);
+    // Innovatie: verschil in graden, genormaliseerd
+    float innov = NormalizeDeg(imuYawDeg - theta);
 
     // Innovatiecovariantie S = P[2][2] + R
     float S = P[2][2] + R;
-    if (S < 1e-9f) return;  // degenerate case afvangen
+    if (S < 1e-9f) return;
 
     // Kalman-gain voor x, y, theta
     float Kx = P[0][2] / S;
     float Ky = P[1][2] / S;
     float Kt = P[2][2] / S;
 
-    // Toestand bijwerken (let op: y is nu de lidvariabele, niet de innovatie)
     x     += Kx * innov;
     y     += Ky * innov;
-    theta += Kt * innov;
+    theta  = NormalizeDeg(theta + Kt * innov);
 
-    // Covariatie bijwerken (Joseph-vorm vereenvoudigd voor 1D meting)
+    // Covariantie bijwerken
     P[0][2] -= Kx * P[2][2];
     P[1][2] -= Ky * P[2][2];
-    P[2][2] *= (1.0f - Kt);   // = P[2][2] - Kt*P[2][2]
+    P[2][2] *= (1.0f - Kt);
 }
 
 float Localisation::GetX()     const { return x;     }
 float Localisation::GetY()     const { return y;     }
-float Localisation::GetTheta() const { return theta * (180.0f / static_cast<float>(M_PI)); }
+float Localisation::GetTheta() const { return theta; } // al in graden

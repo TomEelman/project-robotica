@@ -90,9 +90,8 @@ float Navigator::CalculateDistance(Position a, Position b) const {
 float Navigator::CalculateAngleError(Position current, Position target) const {
     float dx      = target.GetX() - current.GetX();
     float dy      = target.GetY() - current.GetY();
-    // atan2 geeft radialen — direct omzetten naar graden.
     float desired = std::atan2(dy, dx) * (180.0f / static_cast<float>(M_PI));
-    float theta   = current.GetTheta(); // verwacht graden van de IMU
+    float theta   = current.GetTheta(); // graden (geleverd door Localisation::GetTheta)
     return NormalizeDeg(desired - theta);
 }
 

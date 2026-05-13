@@ -5,23 +5,22 @@ class Localisation {
 public:
     Localisation(float wheelBase);
 
+    // vLeft / vRight in mm/s, dt in seconden
     void Predict(float vLeft, float vRight, float dt);
-    void UpdateIMU(float imuYaw, float dt);
 
-    float GetX() const;
-    float GetY() const;
-    float GetTheta() const;
+    // imuYawDeg: yaw van de IMU in graden
+    void UpdateIMU(float imuYawDeg, float dt);
+
+    float GetX()     const; // mm
+    float GetY()     const; // mm
+    float GetTheta() const; // graden, genormaliseerd naar (-180, 180]
 
 private:
-    // state
     float x;
     float y;
-    float theta;
+    float theta; // intern opgeslagen in graden
 
-    // covariance (simplified 3x3)
     float P[3][3];
-
-    // noise
     float Q[3][3];
     float R;
 
