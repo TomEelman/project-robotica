@@ -131,6 +131,66 @@ void GridMap::IntegrateScan(float robotX, float robotY, float robotTheta,
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════
+//  IntegrateScanMotionCorrected
+//
+//  Een LIDAR-scan duurt scanDuurSec seconden (typisch 0.10-0.20s).
+//  In die tijd draait de robot met omegaDegS graden per seconde.
+//  Punt bij index 0 werd gemeten aan het BEGIN van de scan,
+//  punt bij index (count-1) aan het EINDE.
+//
+//  Per straal berekenen we de robothoek op het moment van meten:
+//    t_i = (i / count) * scanDuurSec          [seconden na scanstart]
+//    theta_i = robotThetaDeg + omegaDegS * (t_i - scanDuurSec/2)
+//
+//  We gebruiken de positie van het MIDDEN van de scan als anker
+//  (dat is al ingebakken in robotX/Y/robotThetaDeg die je meegeeft).
+//  De positietranslatie tijdens de scan negeren we (bij 278mm/s en
+//  0.15s scanduur = 42mm = < 1 cel — verwaarloosbaar).
+// ═══════════════════════════════════════════════════════════════════
+
+void GridMap::IntegrateScanMotionCorrected(
+    float robotX, float robotY, float robotThetaDeg,
+    float omegaDegS, float scanDuurSec,
+    const float angles[], const float ranges[], int count,
+    float maxRange)
+{
+    constexpr float MM2M    = 0.001f;
+    constexpr float DEG2RAD = 3.14159265f / 180.0f;
+
+    float robotX_m = robotX * MM2M;
+    float robotY_m = robotY * MM2M;
+
+    int rx, ry;
+    WorldToCell(robotX_m, robotY_m, rx, ry);
+
+    float halfDuur = scanDuurSec * 0.5f;
+
+    for (int i = 0; i < count; ++i) {
+        float dist_mm = ranges[i];
+        if (dist_mm <= 0.0f || dist_mm > maxRange) continue;
+
+        // Tijdstip van deze straal binnen de scan (0 = begin, scanDuurSec = einde)
+        float t_i = (static_cast<float>(i) / static_cast<float>(count)) * scanDuurSec;
+
+        // Gecorrigeerde robothoek op dit moment
+        // (t_i - halfDuur): offset t.o.v. het midden van de scan
+        float thetaCorrected = robotThetaDeg + omegaDegS * (t_i - halfDuur);
+
+        // Wereldhoek van deze straal
+        float globalAngle = thetaCorrected * DEG2RAD + angles[i] * DEG2RAD;
+
+        float dist_m = dist_mm * MM2M;
+        float wx = robotX_m + dist_m * std::cos(globalAngle);
+        float wy = robotY_m + dist_m * std::sin(globalAngle);
+
+        int ex, ey;
+        WorldToCell(wx, wy, ex, ey);
+
+        RaycastUpdate(rx, ry, ex, ey);
+    }
+}
+
 bool GridMap::IsOccupied(int cx, int cy) const {
     if (!InBounds(cx, cy)) return false;
     return logOdds[cy][cx] >= CELL_OCCUPIED;

@@ -16,6 +16,11 @@ public:
     void PrintMap(float robotX, float robotY,
                   int scanCount, int coverage) const;
 
+    // In Mapper.h, public sectie:
+    void UpdateMotionCorrected(const float ranges[], const float angles[],
+                    int count, const Position& position,
+                    float omegaDegS, float scanDuurSec);
+                    
     int            GetCoverage()  const;
     GridMap&       GetMap();
     const GridMap& GetMap()       const;

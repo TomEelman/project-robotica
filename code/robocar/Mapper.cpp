@@ -32,6 +32,19 @@ void Mapper::Update(const float scan360[], const Position& position) {
     Update(scan360, angles, 360, position);
 }
 
+// In Mapper.cpp:
+void Mapper::UpdateMotionCorrected(const float ranges[], const float angles[],
+                                    int count, const Position& position,
+                                    float omegaDegS, float scanDuurSec)
+{
+    map.IntegrateScanMotionCorrected(
+        position.GetX(), position.GetY(), position.GetTheta(),
+        omegaDegS, scanDuurSec,
+        angles, ranges, count
+    );
+    updated = true;
+}
+
 // ── Visualisatie ──────────────────────────────────────────────────
 
 void Mapper::PrintMap(float robotX, float robotY,

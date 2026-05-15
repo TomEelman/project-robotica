@@ -194,6 +194,14 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
     int   vastzitTicks      = 0;
     float vastzitRefX       = 0.0f;
     float vastzitRefY       = 0.0f;
+    // Voor motion-correctie: sla hoeksnelheid op bij elke sensormeting
+    float lastOmegaDegS = 0.0f;
+    static auto lastScanTime = std::chrono::steady_clock::now();
+
+    // LIDAR-scanduur: meet dit eenmalig of gebruik de typische waarde voor jouw LIDAR.
+    // LD06/LD19: ~0.10s   |   RPLidar A1: ~0.20s   |   RPLidar A2/A3: ~0.13s
+    // Pas aan op jouw hardware:
+    constexpr float SCAN_DUUR_SEC = 0.10f;
 
     PathPlanner planner(mapper.GetMap());
     Navigator   navigator;
@@ -248,6 +256,8 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
         if (sens.geldig) {
             loc.Predict(sens.speedLinks, sens.speedRechts, DT);
             loc.UpdateIMU(sens.yawGraden, DT);
+            lastOmegaDegS = sens.hoeksnelheid;
+
             if (!beginPuntVergrendeld) {
                 beginPunt = Position(loc.GetX(), loc.GetY(), loc.GetTheta());
                 beginPuntVergrendeld = true;
@@ -258,12 +268,23 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
         // ── 2. LIDAR → kaart ─────────────────────────────────────
         bool nieuweScan = false;
         if (lidar.Update()) {
+            auto now = std::chrono::steady_clock::now();
+            float dt = std::chrono::duration<float>(now - lastScanTime).count();
+            lastScanTime = now;
+            printf("LIDAR scanduur: %.3f s\n", dt);
+            // ... rest van scan verwerking
+
             float angles[360];
             for (int a = 0; a < 360; ++a) {
                 lastRanges[a] = lidar.GetDistance(a).distance;
                 angles[a]     = static_cast<float>(a);
             }
-            mapper.Update(lastRanges, angles, 360, pos);
+
+            // Sla kaartupdate over als robot te snel draait
+            if (std::fabs(lastOmegaDegS) < 60.0f) {
+                mapper.UpdateMotionCorrected(lastRanges, angles, 360, pos, lastOmegaDegS, SCAN_DUUR_SEC);
+            }           
+
             heeftRanges = true;
             ++scanCount; ++scansSindsHerplan;
             nieuweScan = true;

@@ -34,6 +34,11 @@ public:
     void IntegrateScan(float robotX, float robotY, float robotTheta,
                        const float angles[], const float ranges[], int count,
                        float maxRange = 12000.0f);
+    void IntegrateScanMotionCorrected(
+        float robotX, float robotY, float robotThetaDeg,
+        float omegaDegS, float scanDuurSec,
+        const float angles[], const float ranges[], int count,
+        float maxRange = 12000.0f);
     bool IsPathValid(Path path) const;
 
     // ── Queries ───────────────────────────────────────────────
