@@ -197,7 +197,8 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
     // Voor motion-correctie: sla hoeksnelheid op bij elke sensormeting
     float lastOmegaDegS = 0.0f;
     static auto lastScanTime = std::chrono::steady_clock::now();
-
+    std::vector<BlacklistItem> frontierBlacklist;  // gefaalde doelen tijdelijk uitsluiten
+    
     // LIDAR-scanduur: meet dit eenmalig of gebruik de typische waarde voor jouw LIDAR.
     // LD06/LD19: ~0.10s   |   RPLidar A1: ~0.20s   |   RPLidar A2/A3: ~0.13s
     // Pas aan op jouw hardware:
@@ -471,8 +472,9 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
                         Path pad = planner.PlanPath(pos, beginPunt, mapper.GetMap());
                         if (!pad.IsEmpty()) { navigator.SetPath(pad); heeftPad = true; }
                     } else {
-                        Position doel = KiesFrontierDoel(mapper, pos, lastRanges);
-
+                        TickBlacklist(frontierBlacklist);
+                        Position doel = KiesFrontierDoel(mapper, pos, lastRanges, frontierBlacklist);
+                        
                         // Sla frontiers over die te dicht bij de ontsnappositie liggen
                         float dx = doel.GetX()-ontsnapX, dy = doel.GetY()-ontsnapY;
                         if ((dx*dx+dy*dy) < (ONTSNAP_RADIUS*ONTSNAP_RADIUS) && ontsnapX < 1e8f) {
@@ -495,6 +497,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
                                 mislukteTeller = 0;
                             } else {
                                 ++mislukteTeller;
+                                VoegToeAanBlacklist(frontierBlacklist, doel.GetX(), doel.GetY());
                                 ka.SetCommand(LIN_SPEED, 0.0f);
                                 scansSindsHerplan = HERPLAN_SCANS;
                             }
