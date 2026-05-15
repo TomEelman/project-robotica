@@ -80,6 +80,10 @@ static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
     constexpr float DT = 0.1f, LOOP_US = 100000;
     int scanCount = 0;
 
+    // ── IMU-offset: nul de yaw bij opstart ───────────────────────
+    float imuOffset  = 0.0f;
+    bool  imuGenulld = false;
+
     usleep(1200000);  // spin-up
 
     while (running) {
@@ -88,8 +92,12 @@ static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
         uart.LeesData();
         SensorData sens = uart.GetSensorData();
         if (sens.geldig) {
+            if (!imuGenulld) {
+                imuOffset  = sens.yawGraden;
+                imuGenulld = true;
+            }
             loc.Predict(sens.speedLinks, sens.speedRechts, DT);
-            loc.UpdateIMU(sens.yawGraden, DT);
+            loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
         }
 
         if (!lidar.Update()) { usleep(200000); continue; }
@@ -173,14 +181,14 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
     constexpr int   HERPLAN_SCANS = 15;
 
     // Exploratie-eindcondities
-    constexpr int   MIN_DEKKING_PCT  = 20;   // minimale dekking voordat eindconditie mag triggeren
-    constexpr int   FRONTIER_DREMPEL = 3;    // frontiers waaronder = klaar
-    constexpr int   MISLUKT_DREMPEL  = 5;    // achtereenvolgende A*-mislukkingen = klaar
+    constexpr int   MIN_DEKKING_PCT  = 20;
+    constexpr int   FRONTIER_DREMPEL = 3;
+    constexpr int   MISLUKT_DREMPEL  = 5;
     constexpr float HOME_DREMPEL_MM  = 300.0f;
     constexpr float ONTSNAP_RADIUS   = 700.0f;
 
-    // Vastzit-timeout: na 40s zonder voldoende beweging → naar huis
-    constexpr int   VASTZIT_TIMEOUT  = 400;  // ticks (100ms elk)
+    // Vastzit-timeout
+    constexpr int   VASTZIT_TIMEOUT  = 400;
     constexpr float VASTZIT_BEWEG_MM = 150.0f;
 
     // Ontwijkfase-parameters
@@ -194,17 +202,13 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
     int   vastzitTicks      = 0;
     float vastzitRefX       = 0.0f;
     float vastzitRefY       = 0.0f;
-    // Voor motion-correctie: sla hoeksnelheid op bij elke sensormeting
-    float lastOmegaDegS = 0.0f;
-    static auto lastScanTime = std::chrono::steady_clock::now();
-    std::vector<BlacklistItem> frontierBlacklist;  // gefaalde doelen tijdelijk uitsluiten
-    float imuOffset = 0.0f;
+
+    // ── IMU-offset: nul de yaw bij opstart ───────────────────────
+    float imuOffset  = 0.0f;
     bool  imuGenulld = false;
 
-    // LIDAR-scanduur: meet dit eenmalig of gebruik de typische waarde voor jouw LIDAR.
-    // LD06/LD19: ~0.10s   |   RPLidar A1: ~0.20s   |   RPLidar A2/A3: ~0.13s
-    // Pas aan op jouw hardware:
-    constexpr float SCAN_DUUR_SEC = 0.10f;
+    // ── Frontier blacklist ────────────────────────────────────────
+    std::vector<BlacklistItem> frontierBlacklist;
 
     PathPlanner planner(mapper.GetMap());
     Navigator   navigator;
@@ -237,11 +241,8 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
 
     while (!heeftRanges && running) {
         if (lidar.Update()) {
-            float angles[360];
-            for (int a = 0; a < 360; ++a) {
+            for (int a = 0; a < 360; ++a)
                 lastRanges[a] = lidar.GetDistance(a).distance;
-                angles[a]     = static_cast<float>(a);
-            }
             heeftRanges = true;
         } else {
             usleep(100000);
@@ -257,42 +258,29 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
         uart.LeesData();
         SensorData sens = uart.GetSensorData();
         if (sens.geldig) {
+            // Nul de IMU bij de eerste geldige meting
             if (!imuGenulld) {
                 imuOffset  = sens.yawGraden;
                 imuGenulld = true;
             }
             loc.Predict(sens.speedLinks, sens.speedRechts, DT);
-            loc.UpdateIMU(sens.yawGraden, DT);
-            lastOmegaDegS = sens.hoeksnelheid;
-
+            loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
             if (!beginPuntVergrendeld) {
                 beginPunt = Position(loc.GetX(), loc.GetY(), loc.GetTheta());
                 beginPuntVergrendeld = true;
             }
         }
-
         Position pos(loc.GetX(), loc.GetY(), loc.GetTheta());
 
         // ── 2. LIDAR → kaart ─────────────────────────────────────
         bool nieuweScan = false;
         if (lidar.Update()) {
-            auto now = std::chrono::steady_clock::now();
-            float dt = std::chrono::duration<float>(now - lastScanTime).count();
-            lastScanTime = now;
-            printf("LIDAR scanduur: %.3f s\n", dt);
-            // ... rest van scan verwerking
-
             float angles[360];
             for (int a = 0; a < 360; ++a) {
                 lastRanges[a] = lidar.GetDistance(a).distance;
                 angles[a]     = static_cast<float>(a);
             }
-
-            // Sla kaartupdate over als robot te snel draait
-            if (std::fabs(lastOmegaDegS) < 60.0f) {
-                mapper.UpdateMotionCorrected(lastRanges, angles, 360, pos, lastOmegaDegS, SCAN_DUUR_SEC);
-            }           
-
+            mapper.Update(lastRanges, angles, 360, pos);
             heeftRanges = true;
             ++scanCount; ++scansSindsHerplan;
             nieuweScan = true;
@@ -380,7 +368,6 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
             }
 
         } else if (ontwijkFase == OntwijkFase::ACHTERUIT) {
-            // Kies richting met meeste vrije LIDAR-ruimte
             auto kiesBesteHoek = [&]() {
                 float besteRuimte = 0.0f, besteHoek = 0.0f;
                 for (int s = 0; s < 36; ++s) {
@@ -454,8 +441,25 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
             } else if (heeftPad && !navigator.IsFinished()) {
                 navigator.Update(pos);
                 DriveCommand cmd = navigator.GetNextCommand(pos);
+
+                // ── Gangcentrering ────────────────────────────────
+                // Als beide zijmuren < 1200mm: stuur zacht bij op
+                // het verschil zodat de robot gecentreerd blijft.
+                // Alleen actief als scan.staat == 0 (geen obstakel).
+                float gangCorr = 0.0f;
+                if (scan.staat == 0 &&
+                    scan.ruimteLinks  < 1200.0f &&
+                    scan.ruimteRechts < 1200.0f)
+                {
+                    float verschil = scan.ruimteRechts - scan.ruimteLinks;
+                    gangCorr = verschil * 0.015f;
+                    if (gangCorr >  8.0f) gangCorr =  8.0f;
+                    if (gangCorr < -8.0f) gangCorr = -8.0f;
+                }
+
                 float extraAng = (scan.staat == 1) ? scan.uitwijkHoek * 8.0f : 0.0f;
-                ka.SetCommand(cmd.GetLinVelocity(), cmd.GetAngVelocity() + extraAng);
+                ka.SetCommand(cmd.GetLinVelocity(),
+                              cmd.GetAngVelocity() + extraAng + gangCorr);
 
             } else {
                 if (heeftPad && navigator.IsFinished()) {
@@ -480,20 +484,23 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
                         if (!pad.IsEmpty()) { navigator.SetPath(pad); heeftPad = true; }
                     } else {
                         TickBlacklist(frontierBlacklist);
-                        Position doel = KiesFrontierDoel(mapper, pos, lastRanges, frontierBlacklist);
-                        
+                        Position doel = KiesFrontierDoel(mapper, pos, lastRanges,
+                                                         frontierBlacklist);
+
                         // Sla frontiers over die te dicht bij de ontsnappositie liggen
-                        float dx = doel.GetX()-ontsnapX, dy = doel.GetY()-ontsnapY;
-                        if ((dx*dx+dy*dy) < (ONTSNAP_RADIUS*ONTSNAP_RADIUS) && ontsnapX < 1e8f) {
+                        float ddx = doel.GetX()-ontsnapX, ddy = doel.GetY()-ontsnapY;
+                        if ((ddx*ddx+ddy*ddy) < (ONTSNAP_RADIUS*ONTSNAP_RADIUS) && ontsnapX < 1e8f) {
                             Position nepPos(ontsnapX, ontsnapY, pos.GetTheta());
-                            Position alt = KiesFrontierDoel(mapper, nepPos, lastRanges);
+                            Position alt = KiesFrontierDoel(mapper, nepPos, lastRanges,
+                                                            frontierBlacklist);
                             float dx2=alt.GetX()-ontsnapX, dy2=alt.GetY()-ontsnapY;
-                            if (dx2*dx2+dy2*dy2 > dx*dx+dy*dy) doel = alt;
+                            if (dx2*dx2+dy2*dy2 > ddx*ddx+ddy*ddy) doel = alt;
                             else ontsnapX = ontsnapY = 1e9f;
                         }
 
                         if (doel.GetX() == pos.GetX() && doel.GetY() == pos.GetY()) {
                             ++mislukteTeller;
+                            // Geen blacklist — er was geen doel gevonden
                             ka.SetCommand(LIN_SPEED, 0.0f);
                             scansSindsHerplan = HERPLAN_SCANS;
                         } else {
@@ -504,7 +511,8 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
                                 mislukteTeller = 0;
                             } else {
                                 ++mislukteTeller;
-                                VoegToeAanBlacklist(frontierBlacklist, doel.GetX(), doel.GetY());
+                                VoegToeAanBlacklist(frontierBlacklist,
+                                                    doel.GetX(), doel.GetY());
                                 ka.SetCommand(LIN_SPEED, 0.0f);
                                 scansSindsHerplan = HERPLAN_SCANS;
                             }

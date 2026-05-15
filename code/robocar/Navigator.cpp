@@ -67,7 +67,16 @@ ScanAnalyse AnalyseerScan(const float ranges[360]) {
     res.minAchter    = minAchter;
     res.uitwijkHoek  = g_vorigeUitwijk;
 
-    if (minVoor >= VEILIG_MM || inGang) {
+    // Volledig vrij veld: geen obstakellogica nodig
+    if (minVoor >= VEILIG_MM) {
+        res.staat = 0;
+        g_vorigeUitwijk = 0.0f;
+        return res;
+    }
+
+    // In een gang: staat=0 zodat de hoofdlus gangcentrering kan doen
+    // via ruimteLinks/ruimteRechts, maar geen uitwijkhoek forceren
+    if (inGang) {
         res.staat = 0;
         g_vorigeUitwijk = 0.0f;
         return res;

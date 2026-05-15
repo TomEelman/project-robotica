@@ -49,15 +49,15 @@ public:
     Path     GetPath()          const;
 
 private:
-    static constexpr float REACHED_THRESHOLD_MM = 200.0f;
+    static constexpr float REACHED_THRESHOLD_MM = 150.0f;  // was 200 — eerder next waypoint
     static constexpr float LINEAR_SPEED_MM_S    = 278.0f;
-    static constexpr float ANGULAR_GAIN         = 0.10f;
-    static constexpr float MAX_ANGULAR_DEG_S    = 15.0f;
+    static constexpr float ANGULAR_GAIN         = 2.5f;    // was 0.10 — responsiever
+    static constexpr float MAX_ANGULAR_DEG_S    = 45.0f;   // was 15 — genoeg bijsturing
     static constexpr float MIN_ANGULAR_DEG_S    = 0.0f;
-    static constexpr float ANGLE_DEADBAND_DEG   = 8.0f;
-    static constexpr float SLOW_TURN_THRESHOLD  = 30.0f;
-    static constexpr float SLOW_TURN_FACTOR     = 0.55f;
-    static constexpr float ANG_FILTER_ALFA      = 0.15f;
+    static constexpr float ANGLE_DEADBAND_DEG   = 5.0f;    // was 8 — eerder corrigeren
+    static constexpr float SLOW_TURN_THRESHOLD  = 25.0f;   // was 30
+    static constexpr float SLOW_TURN_FACTOR     = 0.6f;    // was 0.55
+    static constexpr float ANG_FILTER_ALFA      = 0.4f;    // was 0.15 — sneller reageren
 
     Path     path;
     Position currentTarget;
