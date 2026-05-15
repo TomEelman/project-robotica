@@ -23,50 +23,104 @@ struct ScanAnalyse {
     float minAchter;
 };
 
-// Analyseer een 360° LIDAR-scan. Indices zijn robot-relatief:
-// 0 = recht voor, 90 = rechts, 270 = links.
 ScanAnalyse AnalyseerScan(const float ranges[360]);
-
-// Normaliseer graden naar (−180, 180].
 float NormDeg(float deg);
 
 
 // ─────────────────────────────────────────────────────────────────
-//  Navigator — volgt een pad van waypoints
+//  WallStaat — toestand van de muurvolger
+//
+//  RECHTS_VOLGEN : rijdt langs de rechter muur op streefafstand
+//  BUITENHOEK    : rechter muur verdween → boog naar rechts
+//  BINNENHOEK    : muur voor → stop + draai links
+//  OPEN_RUIMTE   : geen muren zichtbaar → hoofdlus moet frontier kiezen
+// ─────────────────────────────────────────────────────────────────
+enum class WallStaat {
+    RECHTS_VOLGEN,
+    BUITENHOEK,
+    BINNENHOEK,
+    OPEN_RUIMTE,
+};
+
+struct WallResult {
+    DriveCommand cmd;
+    WallStaat    staat;
+    float        fout_mm;  // afwijking van streefafstand (debug)
+};
+
+
+// ─────────────────────────────────────────────────────────────────
+//  Navigator — waypoint-volger + rechterhandmuurvolger
 // ─────────────────────────────────────────────────────────────────
 class Navigator {
 public:
     Navigator();
 
-    void SetPath(const Path& newPath);
-    void Update(Position current);
+    // ── Waypoint-volger (ongewijzigd) ─────────────────────────────
+    void         SetPath(const Path& newPath);
+    void         Update(Position current);
     DriveCommand GetNextCommand(Position current);
+    bool         IsFinished() const;
+    bool         IsUpdated()  const;
+    Position     GetCurrentTarget() const;
+    Path         GetPath()          const;
 
-    bool IsFinished() const;
-    bool IsUpdated()  const;
+    // ── Muurvolger ────────────────────────────────────────────────
+    // Geeft één rij-commando op basis van de huidige LIDAR-scan.
+    // Roep elke lus-iteratie aan in plaats van GetNextCommand wanneer
+    // je in muurvolgmodus zit. Geen pad nodig.
+    //
+    // ranges[]:  robot-relatief, 0=voor, 90=rechts, 270=links
+    WallResult BerekenMuurCommando(const float ranges[360]);
 
-    Position GetCurrentTarget() const;
-    Path     GetPath()          const;
+    // Reset de interne muurvolger-state (bijv. bij overschakelen van modus)
+    void ResetMuurvolger();
+
+    WallStaat GetWallStaat() const { return wallStaat; }
 
 private:
-    static constexpr float REACHED_THRESHOLD_MM = 150.0f;  // was 200 — eerder next waypoint
+    // ── Waypoint-volger constanten ────────────────────────────────
+    static constexpr float REACHED_THRESHOLD_MM = 150.0f;
     static constexpr float LINEAR_SPEED_MM_S    = 278.0f;
-    static constexpr float ANGULAR_GAIN         = 2.5f;    // was 0.10 — responsiever
-    static constexpr float MAX_ANGULAR_DEG_S    = 45.0f;   // was 15 — genoeg bijsturing
+    static constexpr float ANGULAR_GAIN         = 2.5f;
+    static constexpr float MAX_ANGULAR_DEG_S    = 45.0f;
     static constexpr float MIN_ANGULAR_DEG_S    = 0.0f;
-    static constexpr float ANGLE_DEADBAND_DEG   = 5.0f;    // was 8 — eerder corrigeren
-    static constexpr float SLOW_TURN_THRESHOLD  = 25.0f;   // was 30
-    static constexpr float SLOW_TURN_FACTOR     = 0.6f;    // was 0.55
-    static constexpr float ANG_FILTER_ALFA      = 0.4f;    // was 0.15 — sneller reageren
+    static constexpr float ANGLE_DEADBAND_DEG   = 5.0f;
+    static constexpr float SLOW_TURN_THRESHOLD  = 25.0f;
+    static constexpr float SLOW_TURN_FACTOR     = 0.6f;
+    static constexpr float ANG_FILTER_ALFA      = 0.4f;
 
+    // ── Muurvolger constanten ─────────────────────────────────────
+    static constexpr float WF_TARGET_DIST_MM    = 300.0f;  // streefafstand rechter muur
+    static constexpr float WF_MUUR_AANWEZIG_MM  = 600.0f;  // max afstand om muur "aanwezig" te noemen
+    static constexpr float WF_VOOR_KRITIEK_MM   = 350.0f;  // stop + draai links
+    static constexpr float WF_VOOR_REMMEN_MM    = 500.0f;  // langzamer
+    static constexpr float WF_LIN_NORMAAL       = 250.0f;  // rijsnelheid normaal (mm/s)
+    static constexpr float WF_LIN_LANGZAAM      = 150.0f;  // rijsnelheid bij bochten
+    static constexpr float WF_KP                = 0.08f;   // P-gain muurfout → hoeksnelheid
+    static constexpr float WF_MAX_CORR          = 30.0f;   // max bijsturing (deg/s)
+    static constexpr float WF_EMA               = 0.25f;   // EMA-filter op muurfout
+    static constexpr float WF_BUITENHOEK_DRAAI  = 25.0f;   // hoeksnelheid buitenhoek (deg/s)
+    static constexpr float WF_BINNENHOEK_DRAAI  = 35.0f;   // hoeksnelheid binnenhoek (deg/s)
+
+    // ── Waypoint-volger state ─────────────────────────────────────
     Path     path;
     Position currentTarget;
     bool     isUpdated;
     bool     hasPath;
     float    gefilterdAng = 0.0f;
 
+    // ── Muurvolger state ──────────────────────────────────────────
+    WallStaat wallStaat      = WallStaat::OPEN_RUIMTE;
+    float     wfGefilterdFout = 0.0f;
+
+    // ── Gedeelde hulpfuncties ─────────────────────────────────────
     bool  ReachedPoint(Position current) const;
     float CalculateDistance  (Position a, Position b) const;
     float CalculateAngleError(Position current, Position target) const;
     float NormalizeDeg(float deg) const;
+
+    // ── Muurvolger hulpfuncties ───────────────────────────────────
+    float WfSectorMin(const float ranges[360], int van, int tot) const;
+    float WfSectorGem(const float ranges[360], int van, int tot) const;
 };

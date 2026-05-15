@@ -1,5 +1,6 @@
 #include "Navigator.h"
 #include <cmath>
+#include <cstdio>
 
 // ─────────────────────────────────────────────────────────────────
 //  NormDeg
@@ -53,7 +54,7 @@ ScanAnalyse AnalyseerScan(const float ranges[360]) {
     float minLinks       = sectorMin(19, 35);
     float ruimteRechts   = sectorMin(1,  18);
     float ruimteLinks    = sectorMin(19, 36);
-    float minAchter      = sectorMin(15, 21);  // 150°–210°
+    float minAchter      = sectorMin(15, 21);
 
     bool inGang = (minVoor >= REMMEN_MM) &&
                   (minRechtsZijde < VEILIG_MM) && (minLinksZijde < VEILIG_MM);
@@ -67,15 +68,11 @@ ScanAnalyse AnalyseerScan(const float ranges[360]) {
     res.minAchter    = minAchter;
     res.uitwijkHoek  = g_vorigeUitwijk;
 
-    // Volledig vrij veld: geen obstakellogica nodig
     if (minVoor >= VEILIG_MM) {
         res.staat = 0;
         g_vorigeUitwijk = 0.0f;
         return res;
     }
-
-    // In een gang: staat=0 zodat de hoofdlus gangcentrering kan doen
-    // via ruimteLinks/ruimteRechts, maar geen uitwijkhoek forceren
     if (inGang) {
         res.staat = 0;
         g_vorigeUitwijk = 0.0f;
@@ -104,7 +101,7 @@ ScanAnalyse AnalyseerScan(const float ranges[360]) {
 
 
 // ─────────────────────────────────────────────────────────────────
-//  Navigator
+//  Navigator — constructor
 // ─────────────────────────────────────────────────────────────────
 
 Navigator::Navigator()
@@ -112,7 +109,15 @@ Navigator::Navigator()
     , currentTarget(0.0f, 0.0f, 0.0f)
     , isUpdated(false)
     , hasPath(false)
+    , gefilterdAng(0.0f)
+    , wallStaat(WallStaat::OPEN_RUIMTE)
+    , wfGefilterdFout(0.0f)
 {}
+
+
+// ─────────────────────────────────────────────────────────────────
+//  Waypoint-volger
+// ─────────────────────────────────────────────────────────────────
 
 void Navigator::SetPath(const Path& newPath) {
     path = newPath;
@@ -126,7 +131,6 @@ void Navigator::SetPath(const Path& newPath) {
 
 void Navigator::Update(Position current) {
     if (!hasPath || path.IsEmpty()) return;
-
     while (ReachedPoint(current) && !path.IsEmpty()) {
         path.Advance();
         if (!path.IsEmpty())
@@ -165,16 +169,15 @@ DriveCommand Navigator::GetNextCommand(Position current) {
     return DriveCommand(linSpeed, gefilterdAng);
 }
 
+bool Navigator::IsFinished() const { return !hasPath || path.IsEmpty(); }
+bool Navigator::IsUpdated()  const { return isUpdated; }
+Position Navigator::GetCurrentTarget() const { return currentTarget; }
+Path     Navigator::GetPath()          const { return path; }
+
 bool Navigator::ReachedPoint(Position current) const {
     return !path.IsEmpty() &&
            CalculateDistance(current, currentTarget) < REACHED_THRESHOLD_MM;
 }
-
-bool Navigator::IsFinished() const { return !hasPath || path.IsEmpty(); }
-bool Navigator::IsUpdated()  const { return isUpdated; }
-
-Position Navigator::GetCurrentTarget() const { return currentTarget; }
-Path     Navigator::GetPath()          const { return path; }
 
 float Navigator::CalculateDistance(Position a, Position b) const {
     float dx = b.GetX() - a.GetX(), dy = b.GetY() - a.GetY();
@@ -188,6 +191,131 @@ float Navigator::CalculateAngleError(Position current, Position target) const {
     return NormalizeDeg(desired - current.GetTheta());
 }
 
-float Navigator::NormalizeDeg(float deg) const {
-    return NormDeg(deg);
+float Navigator::NormalizeDeg(float deg) const { return NormDeg(deg); }
+
+
+// ─────────────────────────────────────────────────────────────────
+//  Muurvolger — hulpfuncties
+// ─────────────────────────────────────────────────────────────────
+
+float Navigator::WfSectorMin(const float ranges[360], int van, int tot) const {
+    static constexpr float MAX_R = 8000.0f;
+    float m = MAX_R;
+    for (int a = van; a < tot; ++a) {
+        int   idx = ((a % 360) + 360) % 360;
+        float r   = ranges[idx];
+        if (r > 0.0f && r < m) m = r;
+    }
+    return m;
+}
+
+float Navigator::WfSectorGem(const float ranges[360], int van, int tot) const {
+    static constexpr float MAX_R = 8000.0f;
+    float sum = 0.0f;
+    int   cnt = 0;
+    for (int a = van; a < tot; ++a) {
+        int   idx = ((a % 360) + 360) % 360;
+        float r   = ranges[idx];
+        if (r > 0.0f && r < MAX_R) { sum += r; ++cnt; }
+    }
+    return cnt > 0 ? sum / static_cast<float>(cnt) : MAX_R;
+}
+
+void Navigator::ResetMuurvolger() {
+    wallStaat       = WallStaat::OPEN_RUIMTE;
+    wfGefilterdFout = 0.0f;
+}
+
+
+// ─────────────────────────────────────────────────────────────────
+//  BerekenMuurCommando
+// ─────────────────────────────────────────────────────────────────
+
+WallResult Navigator::BerekenMuurCommando(const float ranges[360]) {
+
+    // ── Sectoren lezen ────────────────────────────────────────────
+    float minVoorSmal   = std::min(WfSectorMin(ranges, 350, 360),
+                                    WfSectorMin(ranges,   0,  10));
+    float minVoor       = std::min(WfSectorMin(ranges, 330, 360),
+                                    WfSectorMin(ranges,   0,  30));
+    float muurRechts    = WfSectorGem(ranges,  75, 105);
+    float muurRechtsMin = WfSectorMin(ranges,  75, 105);
+    float rechtsvoor    = WfSectorMin(ranges,  30,  75);
+
+    (void)muurRechtsMin;
+
+    bool muurVoor           = (minVoorSmal < WF_VOOR_KRITIEK_MM);
+    bool muurVoorWaarsch    = (minVoor     < WF_VOOR_REMMEN_MM);
+    bool rechterMuurAanwezig = (muurRechts  < WF_MUUR_AANWEZIG_MM);
+    bool rechtsVoorVrij     = (rechtsvoor  > WF_MUUR_AANWEZIG_MM * 1.3f);
+
+    // FIX: Initialize WallResult using a constructor-style list since DriveCommand lacks a default constructor.
+    WallResult res{DriveCommand(0.0f, 0.0f), WallStaat::OPEN_RUIMTE, 0.0f};
+
+    // ── GEVAL 1: Muur voor → binnenhoek, draai links ──────────────
+    if (muurVoor) {
+        wallStaat       = WallStaat::BINNENHOEK;
+        wfGefilterdFout = 0.0f;
+
+        res.cmd    = DriveCommand(0.0f, -WF_BINNENHOEK_DRAAI);
+        res.staat  = WallStaat::BINNENHOEK;
+        res.fout_mm = 0.0f;
+
+        printf("[WALL] BINNENHOEK voor=%.0fmm → linksaf %.1f deg/s\n",
+               minVoorSmal, -WF_BINNENHOEK_DRAAI);
+        return res;
+    }
+
+    // ── GEVAL 2: Rechter muur weg + rechtsvoor open → buitenhoek ──
+    if (!rechterMuurAanwezig && rechtsVoorVrij &&
+        wallStaat != WallStaat::BUITENHOEK)
+    {
+        wallStaat       = WallStaat::BUITENHOEK;
+        wfGefilterdFout = 0.0f;
+        printf("[WALL] BUITENHOEK muurR=%.0fmm rechtsV=%.0fmm → rechtsaf\n",
+               muurRechts, rechtsvoor);
+    }
+
+    if (wallStaat == WallStaat::BUITENHOEK) {
+        if (rechterMuurAanwezig && muurRechts < WF_TARGET_DIST_MM * 1.5f) {
+            wallStaat = WallStaat::RECHTS_VOLGEN;
+            printf("[WALL] Muur teruggevonden op %.0fmm → RECHTS_VOLGEN\n", muurRechts);
+        } else {
+            res.cmd    = DriveCommand(WF_LIN_LANGZAAM, WF_BUITENHOEK_DRAAI);
+            res.staat  = WallStaat::BUITENHOEK;
+            res.fout_mm = 0.0f;
+            return res;
+        }
+    }
+
+    // ── GEVAL 3: Geen muur rechts, geen buitenhoek → open ruimte ──
+    if (!rechterMuurAanwezig) {
+        wallStaat = WallStaat::OPEN_RUIMTE;
+        float lin = muurVoorWaarsch ? WF_LIN_LANGZAAM : WF_LIN_NORMAAL;
+        printf("[WALL] OPEN_RUIMTE voor=%.0fmm rechts=%.0fmm\n", minVoor, muurRechts);
+        res.cmd    = DriveCommand(lin, 0.0f);
+        res.staat  = WallStaat::OPEN_RUIMTE;
+        res.fout_mm = 0.0f;
+        return res;
+    }
+
+    // ── GEVAL 4: Normale rechter muurvolging ─────────────────────
+    wallStaat = WallStaat::RECHTS_VOLGEN;
+
+    float ruweFout = muurRechts - WF_TARGET_DIST_MM;
+    wfGefilterdFout = WF_EMA * ruweFout + (1.0f - WF_EMA) * wfGefilterdFout;
+
+    float corrDegS = WF_KP * wfGefilterdFout;
+    if (corrDegS >  WF_MAX_CORR) corrDegS =  WF_MAX_CORR;
+    if (corrDegS < -WF_MAX_CORR) corrDegS = -WF_MAX_CORR;
+
+    float lin = muurVoorWaarsch ? WF_LIN_LANGZAAM : WF_LIN_NORMAAL;
+
+    printf("[WALL] RECHTS_VOLGEN muurR=%.0fmm fout=%.0fmm corr=%.1fdeg/s lin=%.0f\n",
+           muurRechts, wfGefilterdFout, corrDegS, lin);
+
+    res.cmd    = DriveCommand(lin, corrDegS);
+    res.staat  = WallStaat::RECHTS_VOLGEN;
+    res.fout_mm = wfGefilterdFout;
+    return res;
 }
