@@ -249,8 +249,6 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
         }
     }
 
-    ka.SetCommand(LIN_SPEED, 0.0f);
-
     while (running) {
         auto tStart = std::chrono::steady_clock::now();
 
