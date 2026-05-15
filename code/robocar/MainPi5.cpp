@@ -198,7 +198,9 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
     float lastOmegaDegS = 0.0f;
     static auto lastScanTime = std::chrono::steady_clock::now();
     std::vector<BlacklistItem> frontierBlacklist;  // gefaalde doelen tijdelijk uitsluiten
-    
+    float imuOffset = 0.0f;
+    bool  imuGenulld = false;
+
     // LIDAR-scanduur: meet dit eenmalig of gebruik de typische waarde voor jouw LIDAR.
     // LD06/LD19: ~0.10s   |   RPLidar A1: ~0.20s   |   RPLidar A2/A3: ~0.13s
     // Pas aan op jouw hardware:
@@ -255,6 +257,10 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
         uart.LeesData();
         SensorData sens = uart.GetSensorData();
         if (sens.geldig) {
+            if (!imuGenulld) {
+                imuOffset  = sens.yawGraden;
+                imuGenulld = true;
+            }
             loc.Predict(sens.speedLinks, sens.speedRechts, DT);
             loc.UpdateIMU(sens.yawGraden, DT);
             lastOmegaDegS = sens.hoeksnelheid;
@@ -264,6 +270,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
                 beginPuntVergrendeld = true;
             }
         }
+
         Position pos(loc.GetX(), loc.GetY(), loc.GetTheta());
 
         // ── 2. LIDAR → kaart ─────────────────────────────────────
