@@ -286,13 +286,13 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
     constexpr long LOOP_US = 100000;
     constexpr float LIN_SPEED = 278.0f;
     constexpr int HERPLAN_SCANS = 15;
-    constexpr int MIN_DEKKING_PCT  = 5; 
-    constexpr int FRONTIER_DREMPEL = 10; 
-
+    constexpr int MIN_DEKKING_PCT  = 5;
+    constexpr int FRONTIER_DREMPEL = 10;
     constexpr int MISLUKT_DREMPEL = 5;
     constexpr float HOME_DREMPEL_MM = 300.0f;
     constexpr float ONTSNAP_RADIUS = 700.0f;
     constexpr int MIN_OMLOOP_SCANS = 300;
+    constexpr float scanDuurSec = 0.1f;
 
     HoofdModus hoofdModus = HoofdModus::MUUR_VOLGEN;
     int scanCount = 0;
@@ -308,8 +308,10 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
 
     float imuOffset = 0.0f;
     bool imuGenulld = false;
+
+    // ── FIX: directe IMU-yaw bijhouden voor gebruik in scan ──────
+    float huidigeImuYaw = 0.0f;  // meest recente IMU-yaw, direct uit sensor
     float omegaDegS = 0.0f;
-    constexpr float scanDuurSec = 0.1f;
 
     std::vector<BlacklistItem> frontierBlacklist;
     PathPlanner planner(mapper.GetMap());
@@ -350,12 +352,21 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
             omegaDegS = (sens.speedRechts - sens.speedLinks) / 235.0f * (180.0f / M_PI);
             loc.Predict(sens.speedLinks, sens.speedRechts, DT);
             loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
+
+            // ── FIX: sla de actuele IMU-yaw op voor gebruik bij scan ──
+            huidigeImuYaw = sens.yawGraden - imuOffset;
+
             if (!beginPuntVergrendeld) {
                 beginPunt = Position(loc.GetX(), loc.GetY(), loc.GetTheta());
                 beginPuntVergrendeld = true;
             }
         }
-        Position pos(loc.GetX(), loc.GetY(), loc.GetTheta());
+
+        // ── FIX: gebruik actuele IMU-yaw voor positie bij de scan ─
+        // loc.GetX() en loc.GetY() komen uit de EKF (odometrie),
+        // maar voor theta gebruiken we de directe IMU-waarde —
+        // die heeft geen loop-vertraging van 100ms.
+        Position pos(loc.GetX(), loc.GetY(), huidigeImuYaw);
 
         bool nieuweScan = false;
         if (lidar.Update()) {
@@ -365,7 +376,6 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
                 angles[a] = static_cast<float>(a);
             }
             mapper.UpdateMotionCorrected(lastRanges, angles, 360, pos, omegaDegS, scanDuurSec);
-            //mapper.Update(lastRanges, angles, 360, pos);
             heeftRanges = true;
             ++scanCount;
             ++scansSindsHerplan;
@@ -426,27 +436,32 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
         long rest = LOOP_US - elapsed;
         if (rest > 0) usleep(static_cast<useconds_t>(rest));
     }
-	
+
     mapper.SaveDebugMap("kaart.pgm");
-  
-    ka.Stop(); 
+
+    ka.Stop();
     ka.Shutdown();
     for (int i = 0; i < 10; ++i) { uart.StuurStop(); usleep(50000); }
     lidar.Disconnect();
     return 0;
 }
 
+// ─────────────────────────────────────────────────────────────────
+// RunMappen
+// ─────────────────────────────────────────────────────────────────
 static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
     Localisation loc(235.0f);
     Mapper mapper(260, 160, 0.05f);
     constexpr float DT = 0.1f, LOOP_US = 100000;
     int scanCount = 0;
 
-    // ── IMU-offset: nul de yaw bij opstart ───────────────────────
     float imuOffset  = 0.0f;
     bool  imuGenulld = false;
 
-    usleep(1200000);  // spin-up
+    // ── FIX: directe IMU-yaw bijhouden voor gebruik in scan ──────
+    float huidigeImuYaw = 0.0f;
+
+    usleep(1200000);
 
     while (running) {
         auto tStart = std::chrono::steady_clock::now();
@@ -460,6 +475,9 @@ static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
             }
             loc.Predict(sens.speedLinks, sens.speedRechts, DT);
             loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
+
+            // ── FIX: sla de actuele IMU-yaw op voor gebruik bij scan ──
+            huidigeImuYaw = sens.yawGraden - imuOffset;
         }
 
         if (!lidar.Update()) { usleep(200000); continue; }
@@ -469,7 +487,9 @@ static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
             ranges[a] = lidar.GetDistance(a).distance;
             angles[a] = static_cast<float>(a);
         }
-        Position pos(loc.GetX(), loc.GetY(), loc.GetTheta());
+
+        // ── FIX: gebruik actuele IMU-yaw, niet de vertraagde EKF-theta ──
+        Position pos(loc.GetX(), loc.GetY(), huidigeImuYaw);
         mapper.Update(ranges, angles, 360, pos);
         ++scanCount;
 
@@ -542,4 +562,3 @@ int main() {
     }
     return 0;
 }
-
