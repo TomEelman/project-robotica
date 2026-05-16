@@ -451,7 +451,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
 // ─────────────────────────────────────────────────────────────────
 static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
     Localisation loc(235.0f);
-    Mapper mapper(260, 160, 0.05f);
+    Mapper mapper(260, 160, 0.03f);
     constexpr float DT = 0.1f, LOOP_US = 100000;
     int scanCount = 0;
 
