@@ -112,6 +112,7 @@ Navigator::Navigator()
     , gefilterdAng(0.0f)
     , wallStaat(WallStaat::OPEN_RUIMTE)
     , wfGefilterdFout(0.0f)
+    , buitenhoekTicks(0)
 {}
 
 
@@ -156,6 +157,7 @@ DriveCommand Navigator::GetNextCommand(Position current) {
                      ? LINEAR_SPEED_MM_S * SLOW_TURN_FACTOR
                      : LINEAR_SPEED_MM_S;
 
+    // Alleen sturen bij significante hoekfout
     float gewenstAng = 0.0f;
     if (absErr > ANGLE_DEADBAND_DEG) {
         gewenstAng = ANGULAR_GAIN * absErr;
@@ -164,7 +166,8 @@ DriveCommand Navigator::GetNextCommand(Position current) {
     }
 
     gefilterdAng = ANG_FILTER_ALFA * gewenstAng + (1.0f - ANG_FILTER_ALFA) * gefilterdAng;
-    if (std::fabs(gefilterdAng) < 0.5f) gefilterdAng = 0.0f;
+    // Harde drempel: kleine residu's weggooien zodat hij niet blijft zwaaien
+    if (std::fabs(gefilterdAng) < 1.5f) gefilterdAng = 0.0f;
 
     return DriveCommand(linSpeed, gefilterdAng);
 }
@@ -224,6 +227,7 @@ float Navigator::WfSectorGem(const float ranges[360], int van, int tot) const {
 void Navigator::ResetMuurvolger() {
     wallStaat       = WallStaat::OPEN_RUIMTE;
     wfGefilterdFout = 0.0f;
+    buitenhoekTicks = 0;
 }
 
 
@@ -244,21 +248,21 @@ WallResult Navigator::BerekenMuurCommando(const float ranges[360]) {
 
     (void)muurRechtsMin;
 
-    bool muurVoor           = (minVoorSmal < WF_VOOR_KRITIEK_MM);
-    bool muurVoorWaarsch    = (minVoor     < WF_VOOR_REMMEN_MM);
+    bool muurVoor            = (minVoorSmal < WF_VOOR_KRITIEK_MM);
+    bool muurVoorWaarsch     = (minVoor     < WF_VOOR_REMMEN_MM);
     bool rechterMuurAanwezig = (muurRechts  < WF_MUUR_AANWEZIG_MM);
-    bool rechtsVoorVrij     = (rechtsvoor  > WF_MUUR_AANWEZIG_MM * 1.3f);
+    bool rechtsVoorVrij      = (rechtsvoor  > WF_MUUR_AANWEZIG_MM * 1.3f);
 
-    // FIX: Initialize WallResult using a constructor-style list since DriveCommand lacks a default constructor.
     WallResult res{DriveCommand(0.0f, 0.0f), WallStaat::OPEN_RUIMTE, 0.0f};
 
     // ── GEVAL 1: Muur voor → binnenhoek, draai links ──────────────
     if (muurVoor) {
         wallStaat       = WallStaat::BINNENHOEK;
         wfGefilterdFout = 0.0f;
+        buitenhoekTicks = 0;
 
-        res.cmd    = DriveCommand(0.0f, -WF_BINNENHOEK_DRAAI);
-        res.staat  = WallStaat::BINNENHOEK;
+        res.cmd     = DriveCommand(0.0f, -WF_BINNENHOEK_DRAAI);
+        res.staat   = WallStaat::BINNENHOEK;
         res.fout_mm = 0.0f;
 
         printf("[WALL] BINNENHOEK voor=%.0fmm → linksaf %.1f deg/s\n",
@@ -266,57 +270,46 @@ WallResult Navigator::BerekenMuurCommando(const float ranges[360]) {
         return res;
     }
 
-    // GEVAL 2: Rechter muur weg + rechtsvoor open → buitenhoek
-// Alleen als we écht een muur aan het volgen waren
-if (!rechterMuurAanwezig && rechtsVoorVrij &&
-    wallStaat == WallStaat::RECHTS_VOLGEN)  // ← was: wallStaat != WallStaat::BUITENHOEK
-{
-    wallStaat = WallStaat::BUITENHOEK;
-    buitenhoekTicks = 0;
-    wfGefilterdFout = 0.0f;
-    printf("[WALL] BUITENHOEK muurR=%.0fmm rechtsV=%.0fmm → rechtsaf\n",
-           muurRechts, rechtsvoor);
-}
-
-    // In BerekenMuurCommando, vervang het BUITENHOEK blok:
-if (wallStaat == WallStaat::BUITENHOEK) {
-    if (rechterMuurAanwezig && muurRechts < WF_TARGET_DIST_MM * 1.5f) {
-        wallStaat = WallStaat::RECHTS_VOLGEN;
-        printf("[WALL] Muur teruggevonden op %.0fmm → RECHTS_VOLGEN\n", muurRechts);
-    } else if (++buitenhoekTicks > WF_BUITENHOEK_MAX_TICKS) {
-        // Geen muur gevonden na timeout → geef op, open ruimte
-        wallStaat = WallStaat::OPEN_RUIMTE;
-        printf("[WALL] BUITENHOEK timeout → OPEN_RUIMTE\n");
-    } else {
-        res.cmd     = DriveCommand(WF_LIN_LANGZAAM, WF_BUITENHOEK_DRAAI);
-        res.staat   = WallStaat::BUITENHOEK;
-        res.fout_mm = 0.0f;
-        return res;
+    // ── GEVAL 2: Buitenhoek — alleen activeren vanuit RECHTS_VOLGEN ──
+    if (!rechterMuurAanwezig && rechtsVoorVrij &&
+        wallStaat == WallStaat::RECHTS_VOLGEN)
+    {
+        wallStaat       = WallStaat::BUITENHOEK;
+        buitenhoekTicks = 0;
+        wfGefilterdFout = 0.0f;
+        printf("[WALL] BUITENHOEK muurR=%.0fmm rechtsV=%.0fmm → rechtsaf\n",
+               muurRechts, rechtsvoor);
     }
-}
-/*
+
     if (wallStaat == WallStaat::BUITENHOEK) {
         if (rechterMuurAanwezig && muurRechts < WF_TARGET_DIST_MM * 1.5f) {
-            wallStaat = WallStaat::RECHTS_VOLGEN;
+            // Muur teruggevonden
+            wallStaat       = WallStaat::RECHTS_VOLGEN;
+            buitenhoekTicks = 0;
             printf("[WALL] Muur teruggevonden op %.0fmm → RECHTS_VOLGEN\n", muurRechts);
+        } else if (++buitenhoekTicks > WF_BUITENHOEK_MAX_TICKS) {
+            // Timeout: geen muur gevonden → open ruimte
+            wallStaat       = WallStaat::OPEN_RUIMTE;
+            buitenhoekTicks = 0;
+            printf("[WALL] BUITENHOEK timeout → OPEN_RUIMTE\n");
         } else {
-            res.cmd    = DriveCommand(WF_LIN_LANGZAAM, WF_BUITENHOEK_DRAAI);
-            res.staat  = WallStaat::BUITENHOEK;
+            res.cmd     = DriveCommand(WF_LIN_LANGZAAM, WF_BUITENHOEK_DRAAI);
+            res.staat   = WallStaat::BUITENHOEK;
             res.fout_mm = 0.0f;
             return res;
         }
     }
-*/
-    // GEVAL 3: Geen muur rechts, geen buitenhoek → open ruimte
-if (!rechterMuurAanwezig && wallStaat != WallStaat::BUITENHOEK) {
-    wallStaat = WallStaat::OPEN_RUIMTE;
-    float lin = muurVoorWaarsch ? WF_LIN_LANGZAAM : WF_LIN_NORMAAL;
-    printf("[WALL] OPEN_RUIMTE voor=%.0fmm rechts=%.0fmm\n", minVoor, muurRechts);
-    res.cmd    = DriveCommand(lin, 0.0f);
-    res.staat  = WallStaat::OPEN_RUIMTE;
-    res.fout_mm = 0.0f;
-    return res;
-}
+
+    // ── GEVAL 3: Geen muur rechts, niet in buitenhoek → open ruimte ──
+    if (!rechterMuurAanwezig) {
+        wallStaat = WallStaat::OPEN_RUIMTE;
+        float lin = muurVoorWaarsch ? WF_LIN_LANGZAAM : WF_LIN_NORMAAL;
+        printf("[WALL] OPEN_RUIMTE voor=%.0fmm rechts=%.0fmm\n", minVoor, muurRechts);
+        res.cmd     = DriveCommand(lin, 0.0f);
+        res.staat   = WallStaat::OPEN_RUIMTE;
+        res.fout_mm = 0.0f;
+        return res;
+    }
 
     // ── GEVAL 4: Normale rechter muurvolging ─────────────────────
     wallStaat = WallStaat::RECHTS_VOLGEN;
@@ -327,14 +320,16 @@ if (!rechterMuurAanwezig && wallStaat != WallStaat::BUITENHOEK) {
     float corrDegS = WF_KP * wfGefilterdFout;
     if (corrDegS >  WF_MAX_CORR) corrDegS =  WF_MAX_CORR;
     if (corrDegS < -WF_MAX_CORR) corrDegS = -WF_MAX_CORR;
+    // Kleine correcties weggooien zodat hij niet blijft zwaaien
+    if (std::fabs(corrDegS) < WF_MIN_CORR) corrDegS = 0.0f;
 
     float lin = muurVoorWaarsch ? WF_LIN_LANGZAAM : WF_LIN_NORMAAL;
 
     printf("[WALL] RECHTS_VOLGEN muurR=%.0fmm fout=%.0fmm corr=%.1fdeg/s lin=%.0f\n",
            muurRechts, wfGefilterdFout, corrDegS, lin);
 
-    res.cmd    = DriveCommand(lin, corrDegS);
-    res.staat  = WallStaat::RECHTS_VOLGEN;
+    res.cmd     = DriveCommand(lin, corrDegS);
+    res.staat   = WallStaat::RECHTS_VOLGEN;
     res.fout_mm = wfGefilterdFout;
     return res;
 }

@@ -81,6 +81,8 @@ public:
 private:
     // ── Waypoint-volger constanten ────────────────────────────────
     int buitenhoekTicks = 0;
+    static constexpr float ANGLE_DEADBAND_DEG = 12.0f;  // was 5.0f
+    static constexpr float WF_MIN_CORR        = 3.0f;   // nieuw: minimale correctie
     static constexpr int WF_BUITENHOEK_MAX_TICKS = 20;  // ~2 seconden bij 10Hz
     static constexpr float REACHED_THRESHOLD_MM = 150.0f;
     static constexpr float LINEAR_SPEED_MM_S    = 278.0f;
