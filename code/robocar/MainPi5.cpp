@@ -280,7 +280,7 @@ static void HandleReturnToHome(Navigator& navigator, Mapper& mapper, Position po
 // RunRijdenEnMappen
 // ─────────────────────────────────────────────────────────────────
 static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
-    Localisation loc(235.0f);
+    Localisation loc(219.0f);
     Mapper mapper(260, 160, 0.03f);
 
     constexpr float DT = 0.1f;
