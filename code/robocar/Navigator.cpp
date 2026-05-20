@@ -151,7 +151,18 @@ DriveCommand Navigator::GetNextCommand(Position current) {
     if (dist < REACHED_THRESHOLD_MM)
         return DriveCommand(LINEAR_SPEED_MM_S, 0.0f);
 
-    float absErr   = std::fabs(angleErr);
+    float absErr = std::fabs(angleErr);
+
+    // Eerst draaien, dan rijden — bij grote hoekfout sta je stil
+    // zodat je niet met volle snelheid de verkeerde kant op rijdt.
+    if (absErr > 30.0f) {
+        float draai = ANGULAR_GAIN * absErr;
+        if (draai > MAX_ANGULAR_DEG_S) draai = MAX_ANGULAR_DEG_S;
+        if (angleErr > 0.0f) draai = -draai;
+        gefilterdAng = ANG_FILTER_ALFA * draai + (1.0f - ANG_FILTER_ALFA) * gefilterdAng;
+        return DriveCommand(0.0f, gefilterdAng);  // stilstaan + draaien
+    }
+
     float linSpeed = (absErr > SLOW_TURN_THRESHOLD)
                      ? LINEAR_SPEED_MM_S * SLOW_TURN_FACTOR
                      : LINEAR_SPEED_MM_S;

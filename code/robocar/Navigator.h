@@ -79,18 +79,17 @@ public:
     WallStaat GetWallStaat() const { return wallStaat; }
 
 private:
-    // ── Waypoint-volger constanten ────────────────────────────────
+        // ── Waypoint-volger constanten ────────────────────────────────
     static constexpr float REACHED_THRESHOLD_MM = 150.0f;
     static constexpr float LINEAR_SPEED_MM_S    = 278.0f;
-    static constexpr float ANGULAR_GAIN         = 2.5f;
-    static constexpr float MAX_ANGULAR_DEG_S    = 45.0f;
+    static constexpr float ANGULAR_GAIN         = 1.5f;   // was 2.5 → minder agressief
+    static constexpr float MAX_ANGULAR_DEG_S    = 25.0f;  // was 45 → zachter bijsturen
     static constexpr float MIN_ANGULAR_DEG_S    = 0.0f;
     static constexpr float ANGLE_DEADBAND_DEG   = 5.0f;
-    static constexpr float SLOW_TURN_THRESHOLD  = 25.0f;
-    static constexpr float SLOW_TURN_FACTOR     = 0.6f;
-    static constexpr float ANG_FILTER_ALFA      = 0.4f;
-
-    // ── Muurvolger constanten ─────────────────────────────────────
+    static constexpr float SLOW_TURN_THRESHOLD  = 15.0f;  // was 25 → eerder afremmen
+    static constexpr float SLOW_TURN_FACTOR     = 0.5f;   // was 0.6 → iets langzamer in bocht
+    static constexpr float ANG_FILTER_ALFA      = 0.3f;   // was 0.4 → trager filter, minder zwaaien
+        // ── Muurvolger constanten ─────────────────────────────────────
     static constexpr float WF_TARGET_DIST_MM    = 300.0f;  // streefafstand rechter muur
     static constexpr float WF_MUUR_AANWEZIG_MM  = 600.0f;  // max afstand om muur "aanwezig" te noemen
     static constexpr float WF_VOOR_KRITIEK_MM   = 350.0f;  // stop + draai links
