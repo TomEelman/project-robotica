@@ -25,9 +25,7 @@ struct ScanAnalyse {
 
 ScanAnalyse AnalyseerScan(const float ranges[360]);
 float NormDeg(float deg);
-// In Navigator.h, voeg toe:
-int buitenhoekTicks3 = 0;
-static constexpr int WF_BUITENHOEK_MAX_TICKS = 20;  // ~2 seconden bij 10Hz
+
 
 // ─────────────────────────────────────────────────────────────────
 //  WallStaat — toestand van de muurvolger
@@ -82,6 +80,8 @@ public:
 
 private:
     // ── Waypoint-volger constanten ────────────────────────────────
+    int buitenhoekTicks = 0;
+    static constexpr int WF_BUITENHOEK_MAX_TICKS = 20;  // ~2 seconden bij 10Hz
     static constexpr float REACHED_THRESHOLD_MM = 150.0f;
     static constexpr float LINEAR_SPEED_MM_S    = 278.0f;
     static constexpr float ANGULAR_GAIN         = 2.5f;
