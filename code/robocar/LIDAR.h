@@ -19,6 +19,7 @@ public:
 
     bool Connect();
     void Disconnect();
+
     bool Update();
 
     ScanEntry GetDistance(int angle) const;
