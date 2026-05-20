@@ -189,7 +189,8 @@ static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position po
     int& scansSindsHerplan, int& mislukteTeller, HoofdModus& hoofdModus, bool& heeftPad,
     float ontsnapX, float ontsnapY, CommandKeepAlive& ka, PathPlanner& planner,
     std::vector<BlacklistItem>& frontierBlacklist, int HERPLAN_SCANS, int MIN_DEKKING_PCT,
-    int FRONTIER_DREMPEL, int MISLUKT_DREMPEL, float ONTSNAP_RADIUS, const float* lastRanges) {
+    int FRONTIER_DREMPEL, int MISLUKT_DREMPEL, float ONTSNAP_RADIUS, const float* lastRanges,
+    float minVoor) {
 
     WallResult wf = navigator.BerekenMuurCommando(lastRanges);
     if (wf.staat != WallStaat::OPEN_RUIMTE) {
@@ -203,12 +204,7 @@ static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position po
 
     if (heeftPad && !navigator.IsFinished()) {
         navigator.Update(pos);
-        // Wordt:
-float minVoorFrontier = std::min(
-    navigator.WfSectorMin(lastRanges, 330, 360),  // maar WfSectorMin is private...
-    navigator.WfSectorMin(lastRanges,   0,  30)
-);
-DriveCommand cmd = navigator.GetNextCommand(pos, minVoorFrontier);
+        DriveCommand cmd = navigator.GetNextCommand(pos, minVoor);
         ka.SetCommand(cmd.GetLinVelocity(), cmd.GetAngVelocity());
     } else {
         if (heeftPad && navigator.IsFinished()) {
@@ -246,11 +242,8 @@ DriveCommand cmd = navigator.GetNextCommand(pos, minVoorFrontier);
                     }
                 }
             }
-        } else {
-             // Geen nieuwe scan, geen nieuw commando — ka herhaalt het laatste vanzelf
-    (void)0;
-            //ka.SetCommand(150.0f, 0.0f);
         }
+        // Geen nieuwe scan → ka herhaalt het laatste commando vanzelf
     }
 }
 
@@ -443,11 +436,11 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
                         MIN_DEKKING_PCT, FRONTIER_DREMPEL, mapper);
                     break;
                 case HoofdModus::FRONTIER:
-                    HandleFrontierMode(navigator, mapper, pos, nieuweScan, scansSindsHerplan,
-                        mislukteTeller, hoofdModus, heeftPad, ontsnapX, ontsnapY, ka, planner,
-                        frontierBlacklist, HERPLAN_SCANS, MIN_DEKKING_PCT, FRONTIER_DREMPEL,
-                        MISLUKT_DREMPEL, ONTSNAP_RADIUS, lastRanges);
-                    break;
+    HandleFrontierMode(navigator, mapper, pos, nieuweScan, scansSindsHerplan,
+        mislukteTeller, hoofdModus, heeftPad, ontsnapX, ontsnapY, ka, planner,
+        frontierBlacklist, HERPLAN_SCANS, MIN_DEKKING_PCT, FRONTIER_DREMPEL,
+        MISLUKT_DREMPEL, ONTSNAP_RADIUS, lastRanges, scan.minVoor);
+    break;
                 case HoofdModus::TERUG_HOME:
                     HandleReturnToHome(navigator, mapper, pos, beginPunt, heeftPad, ka, planner, HOME_DREMPEL_MM);
                     break;
