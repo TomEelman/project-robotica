@@ -109,7 +109,10 @@ Navigator::Navigator()
     , currentTarget(0.0f, 0.0f, 0.0f)
     , isUpdated(false)
     , hasPath(false)
-    , gefilterdAng(0.0f)
+    , stabielLin(0.0f)
+    , stabielAng(0.0f)
+    , heeftStabielCmd(false)
+    , cmdTicks(0)
     , wallStaat(WallStaat::OPEN_RUIMTE)
     , wfGefilterdFout(0.0f)
     , buitenhoekTicks(0)
@@ -123,8 +126,9 @@ Navigator::Navigator()
 void Navigator::SetPath(const Path& newPath) {
     path = newPath;
     path.Reset();
-    hasPath      = !path.IsEmpty();
-    gefilterdAng = 0.0f;
+    hasPath           = !path.IsEmpty();
+    heeftStabielCmd   = false;
+    cmdTicks          = 0;
     if (hasPath)
         currentTarget = path.GetCurrentWaypoint();
     isUpdated = true;
@@ -134,42 +138,79 @@ void Navigator::Update(Position current) {
     if (!hasPath || path.IsEmpty()) return;
     while (ReachedPoint(current) && !path.IsEmpty()) {
         path.Advance();
-        if (!path.IsEmpty())
-            currentTarget = path.GetCurrentWaypoint();
-        else
+        if (!path.IsEmpty()) {
+            currentTarget   = path.GetCurrentWaypoint();
+            // Nieuw waypoint → herbereken commando meteen
+            heeftStabielCmd = false;
+            cmdTicks        = 0;
+        } else {
             hasPath = false;
+        }
     }
     isUpdated = true;
 }
 
-DriveCommand Navigator::GetNextCommand(Position current) {
+DriveCommand Navigator::GetNextCommand(Position current, float minVoor) {
     if (!hasPath || path.IsEmpty())
         return DriveCommand(0.0f, 0.0f);
+
+    // ── Obstakel interrupt ────────────────────────────────────────
+    // Gooit het stabiele commando weg zodat MainPi5 obstacle avoidance
+    // kan overnemen. Geeft 0,0 terug als signaal.
+    if (minVoor < OBSTAKEL_INTERRUPT_MM) {
+        heeftStabielCmd = false;
+        cmdTicks        = 0;
+        printf("[NAV] OBSTAKEL interrupt voor=%.0fmm\n", minVoor);
+        return DriveCommand(0.0f, 0.0f);
+    }
 
     float dist     = CalculateDistance(current, currentTarget);
     float angleErr = CalculateAngleError(current, currentTarget);
 
-    if (dist < REACHED_THRESHOLD_MM)
-        return DriveCommand(LINEAR_SPEED_MM_S, 0.0f);
-
-    float absErr   = std::fabs(angleErr);
-    float linSpeed = (absErr > SLOW_TURN_THRESHOLD)
-                     ? LINEAR_SPEED_MM_S * SLOW_TURN_FACTOR
-                     : LINEAR_SPEED_MM_S;
-
-    // Alleen sturen bij significante hoekfout
-    float gewenstAng = 0.0f;
-    if (absErr > ANGLE_DEADBAND_DEG) {
-        gewenstAng = ANGULAR_GAIN * absErr;
-        if (gewenstAng > MAX_ANGULAR_DEG_S) gewenstAng = MAX_ANGULAR_DEG_S;
-        if (angleErr > 0.0f) gewenstAng = -gewenstAng;
+    // ── Waypoint bereikt ──────────────────────────────────────────
+    if (dist < REACHED_THRESHOLD_MM) {
+        heeftStabielCmd = false;
+        cmdTicks        = 0;
+        return DriveCommand(0.0f, 0.0f);
     }
 
-    gefilterdAng = ANG_FILTER_ALFA * gewenstAng + (1.0f - ANG_FILTER_ALFA) * gefilterdAng;
-    // Harde drempel: kleine residu's weggooien zodat hij niet blijft zwaaien
-    if (std::fabs(gefilterdAng) < 1.5f) gefilterdAng = 0.0f;
+    // ── Herhaal stabiel commando zolang het nog geldig is ─────────
+    if (heeftStabielCmd && cmdTicks < CMD_STABIEL_TICKS) {
+        ++cmdTicks;
+        return DriveCommand(stabielLin, stabielAng);
+    }
 
-    return DriveCommand(linSpeed, gefilterdAng);
+    // ── Herbereken nieuw commando ─────────────────────────────────
+    float absErr = std::fabs(angleErr);
+
+    float nieuwLin, nieuwAng;
+
+    if (absErr > SLOW_TURN_THRESHOLD) {
+        // Grote hoekfout → stilstaan en draaien
+        nieuwLin = 0.0f;
+        nieuwAng = MAX_ANGULAR_DEG_S;
+        if (angleErr > 0.0f) nieuwAng = -nieuwAng;
+    } else if (absErr > ANGLE_DEADBAND_DEG) {
+        // Kleine hoekfout → langzaam rijden met bijsturing
+        nieuwLin = LINEAR_SPEED_MM_S * SLOW_TURN_FACTOR;
+        nieuwAng = ANGULAR_GAIN * absErr;
+        if (nieuwAng > MAX_ANGULAR_DEG_S) nieuwAng = MAX_ANGULAR_DEG_S;
+        if (angleErr > 0.0f) nieuwAng = -nieuwAng;
+    } else {
+        // Goed gericht → rechtdoor
+        nieuwLin = LINEAR_SPEED_MM_S;
+        nieuwAng = 0.0f;
+    }
+
+    stabielLin      = nieuwLin;
+    stabielAng      = nieuwAng;
+    heeftStabielCmd = true;
+    cmdTicks        = 0;
+
+    printf("[NAV] Nieuw commando: lin=%.0f ang=%.1f (dist=%.0fmm err=%.1fdeg)\n",
+           nieuwLin, nieuwAng, dist, angleErr);
+
+    return DriveCommand(stabielLin, stabielAng);
 }
 
 bool Navigator::IsFinished() const { return !hasPath || path.IsEmpty(); }
@@ -237,7 +278,6 @@ void Navigator::ResetMuurvolger() {
 
 WallResult Navigator::BerekenMuurCommando(const float ranges[360]) {
 
-    // ── Sectoren lezen ────────────────────────────────────────────
     float minVoorSmal   = std::min(WfSectorMin(ranges, 350, 360),
                                     WfSectorMin(ranges,   0,  10));
     float minVoor       = std::min(WfSectorMin(ranges, 330, 360),
@@ -270,7 +310,7 @@ WallResult Navigator::BerekenMuurCommando(const float ranges[360]) {
         return res;
     }
 
-    // ── GEVAL 2: Buitenhoek — alleen activeren vanuit RECHTS_VOLGEN ──
+    // ── GEVAL 2: Buitenhoek — alleen vanuit RECHTS_VOLGEN ─────────
     if (!rechterMuurAanwezig && rechtsVoorVrij &&
         wallStaat == WallStaat::RECHTS_VOLGEN)
     {
@@ -283,12 +323,10 @@ WallResult Navigator::BerekenMuurCommando(const float ranges[360]) {
 
     if (wallStaat == WallStaat::BUITENHOEK) {
         if (rechterMuurAanwezig && muurRechts < WF_TARGET_DIST_MM * 1.5f) {
-            // Muur teruggevonden
             wallStaat       = WallStaat::RECHTS_VOLGEN;
             buitenhoekTicks = 0;
             printf("[WALL] Muur teruggevonden op %.0fmm → RECHTS_VOLGEN\n", muurRechts);
         } else if (++buitenhoekTicks > WF_BUITENHOEK_MAX_TICKS) {
-            // Timeout: geen muur gevonden → open ruimte
             wallStaat       = WallStaat::OPEN_RUIMTE;
             buitenhoekTicks = 0;
             printf("[WALL] BUITENHOEK timeout → OPEN_RUIMTE\n");
@@ -300,7 +338,7 @@ WallResult Navigator::BerekenMuurCommando(const float ranges[360]) {
         }
     }
 
-    // ── GEVAL 3: Geen muur rechts, niet in buitenhoek → open ruimte ──
+    // ── GEVAL 3: Geen muur rechts → open ruimte ───────────────────
     if (!rechterMuurAanwezig) {
         wallStaat = WallStaat::OPEN_RUIMTE;
         float lin = muurVoorWaarsch ? WF_LIN_LANGZAAM : WF_LIN_NORMAAL;
@@ -320,7 +358,6 @@ WallResult Navigator::BerekenMuurCommando(const float ranges[360]) {
     float corrDegS = WF_KP * wfGefilterdFout;
     if (corrDegS >  WF_MAX_CORR) corrDegS =  WF_MAX_CORR;
     if (corrDegS < -WF_MAX_CORR) corrDegS = -WF_MAX_CORR;
-    // Kleine correcties weggooien zodat hij niet blijft zwaaien
     if (std::fabs(corrDegS) < WF_MIN_CORR) corrDegS = 0.0f;
 
     float lin = muurVoorWaarsch ? WF_LIN_LANGZAAM : WF_LIN_NORMAAL;
