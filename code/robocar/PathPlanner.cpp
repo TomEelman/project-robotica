@@ -16,6 +16,12 @@ struct AStarNode {
 };
 }
 
+// Robot-breedte in cellen. Bij een gridresolutie van 0.03m/cel en een
+// chassisbreedte van ~280mm = 0.28m → 0.28/0.03 ≈ 9 cellen.
+// We gebruiken de helft als "clearance" (straal): 5 cellen = 150mm buffer.
+// Verhoog dit als de robot nog steeds smalle stukken inrijdt.
+static constexpr int INFLATIE_RADIUS = 5;
+
 PathPlanner::PathPlanner(const GridMap& map, bool allowUnknownIn)
     : gridMap(map), currentPath(), allowUnknown(allowUnknownIn)
 {
@@ -44,23 +50,40 @@ Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
         return Path();
     }
 
-    auto walkable = [&](int x, int y) -> bool {
-        if (!gridMap.InBounds(x, y))    return false;
-        if (gridMap.IsOccupied(x, y))   return false;
-        if (gridMap.IsUnknown(x, y) && !allowUnknown) return false;
+    // ── Basis walkable: niet bezet, niet onbekend (tenzij allowUnknown) ──
+    auto basisWalkable = [&](int x, int y) -> bool {
+        if (!gridMap.InBounds(x, y))                      return false;
+        if (gridMap.IsOccupied(x, y))                     return false;
+        if (gridMap.IsUnknown(x, y) && !allowUnknown)     return false;
         return true;
     };
 
-    // ── FIX Bug 3: als startcel bezet is, zoek dichtstbijzijnde vrije cel ──
+    // ── Inflatie: cel is alleen betreedbaar als er binnen INFLATIE_RADIUS
+    //    geen bezette buurcel is. Zo blijft de robot automatisch uit smalle
+    //    gangen en rijdt hij niet langs muren. ────────────────────────────
+    auto walkable = [&](int x, int y) -> bool {
+        if (!basisWalkable(x, y)) return false;
+        for (int ddx = -INFLATIE_RADIUS; ddx <= INFLATIE_RADIUS; ++ddx) {
+            for (int ddy = -INFLATIE_RADIUS; ddy <= INFLATIE_RADIUS; ++ddy) {
+                if (ddx*ddx + ddy*ddy > INFLATIE_RADIUS*INFLATIE_RADIUS) continue;
+                int nx = x + ddx, ny = y + ddy;
+                if (!gridMap.InBounds(nx, ny)) continue;
+                if (gridMap.IsOccupied(nx, ny)) return false;
+            }
+        }
+        return true;
+    };
+
+    // ── Als startcel te dicht bij muur is, zoek dichtstbijzijnde vrije cel ──
     if (!walkable(sx, sy)) {
         bool gevonden = false;
-        for (int r = 1; r <= 5 && !gevonden; ++r) {
+        for (int r = 1; r <= INFLATIE_RADIUS + 3 && !gevonden; ++r) {
             for (int ddx = -r; ddx <= r && !gevonden; ++ddx) {
                 for (int ddy = -r; ddy <= r && !gevonden; ++ddy) {
                     if (std::abs(ddx) != r && std::abs(ddy) != r) continue;
                     int nx = sx + ddx, ny = sy + ddy;
                     if (walkable(nx, ny)) {
-                        std::cerr << "PathPlanner: start cel bezet, fallback naar ("
+                        std::cerr << "PathPlanner: start te dicht bij muur, fallback naar ("
                                   << nx << ", " << ny << ")\n";
                         sx = nx; sy = ny;
                         gevonden = true;
@@ -74,9 +97,27 @@ Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
         }
     }
 
+    // ── Goal-cel: als die ook te dicht bij muur is, zoek iets vrijs ────────
     if (!walkable(gx, gy)) {
-        std::cerr << "PathPlanner: goal cel niet betreedbaar\n";
-        return Path();
+        bool gevonden = false;
+        for (int r = 1; r <= INFLATIE_RADIUS + 3 && !gevonden; ++r) {
+            for (int ddx = -r; ddx <= r && !gevonden; ++ddx) {
+                for (int ddy = -r; ddy <= r && !gevonden; ++ddy) {
+                    if (std::abs(ddx) != r && std::abs(ddy) != r) continue;
+                    int nx = gx + ddx, ny = gy + ddy;
+                    if (walkable(nx, ny)) {
+                        std::cerr << "PathPlanner: goal te dicht bij muur, fallback naar ("
+                                  << nx << ", " << ny << ")\n";
+                        gx = nx; gy = ny;
+                        gevonden = true;
+                    }
+                }
+            }
+        }
+        if (!gevonden) {
+            std::cerr << "PathPlanner: goal cel niet betreedbaar\n";
+            return Path();
+        }
     }
 
     const int W = gridMap.GetWidth();
@@ -88,11 +129,18 @@ Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
     std::vector<std::vector<int>>  parentX(W, std::vector<int> (H, -1));
     std::vector<std::vector<int>>  parentY(W, std::vector<int> (H, -1));
 
-    const int dx[4] = {-1, 1,  0, 0};
-    const int dy[4] = { 0, 0, -1, 1};
+    // ── 8-richting beweging: diagonaal + rechtlijnig ─────────────────────
+    // Diagonale stap kost 14 (≈ sqrt(2)*10), rechtlijnig kost 10.
+    // Dit geeft vloeiendere paden dan pure 4-richting.
+    const int ddx[8] = {-1, 1,  0, 0, -1, -1,  1,  1};
+    const int ddy[8] = { 0, 0, -1, 1, -1,  1, -1,  1};
+    const int cost[8]= { 10,10, 10,10,  14, 14, 14, 14};
 
     auto heuristic = [&](int x, int y) {
-        return std::abs(x - gx) + std::abs(y - gy);
+        // Octile distance: betere heuristiek voor 8-richting
+        int dx = std::abs(x - gx);
+        int dy = std::abs(y - gy);
+        return 10 * (dx + dy) + (14 - 2*10) * std::min(dx, dy);
     };
 
     gScore[sx][sy] = 0;
@@ -106,12 +154,20 @@ Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
 
         if (cur.x == gx && cur.y == gy) { found = true; break; }
 
-        for (int i = 0; i < 4; ++i) {
-            int nx = cur.x + dx[i];
-            int ny = cur.y + dy[i];
+        for (int i = 0; i < 8; ++i) {
+            int nx = cur.x + ddx[i];
+            int ny = cur.y + ddy[i];
             if (!walkable(nx, ny) || closed[nx][ny]) continue;
 
-            int newG = gScore[cur.x][cur.y] + 1;
+            // Bij diagonale stap: controleer ook de twee aangrenzende
+            // rechtlijnige cellen om door smalle hoeken te snijden te voorkomen.
+            if (i >= 4) {
+                if (!walkable(cur.x + ddx[i], cur.y) ||
+                    !walkable(cur.x, cur.y + ddy[i]))
+                    continue;
+            }
+
+            int newG = gScore[cur.x][cur.y] + cost[i];
             if (newG < gScore[nx][ny]) {
                 gScore[nx][ny]  = newG;
                 parentX[nx][ny] = cur.x;
@@ -126,7 +182,7 @@ Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
         return Path();
     }
 
-    // ── Reconstrueer pad goal → start ──
+    // ── Reconstrueer pad goal → start ──────────────────────────────────────
     std::vector<std::pair<int,int>> rawCells;
     {
         int cx = gx, cy = gy;
@@ -141,13 +197,32 @@ Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
         std::reverse(rawCells.begin(), rawCells.end());
     }
 
-    // ── Waypoint-verdunning: bewaar alleen hoekpunten ──
-    constexpr int MIN_SEG = 5;
-
+    // ── Waypoint-verdunning via "string pulling" (Theta*-achtig) ──────────
+    // Ipv elk hoekpunt bewaren: trek een rechte lijn van het huidige waypoint
+    // naar steeds verder weg gelegen cellen. Zolang die lijn vrij is (geen
+    // muren raakt), sla je alle tussenpunten over. Zo krijg je lange rechte
+    // stukken en vermijd je scherpe hoeken in smalle gangen.
     auto celNaarWaypoint = [&](int cx2, int cy2) -> Position {
         float wx_m, wy_m;
         gridMap.CellToWorld(cx2, cy2, wx_m, wy_m);
         return Position(wx_m * M2MM, wy_m * M2MM, 0.0f);
+    };
+
+    // Bresenham-lijn check: geeft true als alle cellen op de lijn walkable zijn
+    auto lijVrij = [&](int x0, int y0, int x1, int y1) -> bool {
+        int dx = std::abs(x1-x0), dy = std::abs(y1-y0);
+        int sx2 = (x0 < x1) ? 1 : -1;
+        int sy2 = (y0 < y1) ? 1 : -1;
+        int err = dx - dy;
+        int cx2 = x0, cy2 = y0;
+        while (true) {
+            if (!walkable(cx2, cy2)) return false;
+            if (cx2 == x1 && cy2 == y1) break;
+            int e2 = 2 * err;
+            if (e2 > -dy) { err -= dy; cx2 += sx2; }
+            if (e2 <  dx) { err += dx; cy2 += sy2; }
+        }
+        return true;
     };
 
     std::vector<Position> waypoints;
@@ -155,33 +230,28 @@ Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
         for (auto& [cx2, cy2] : rawCells)
             waypoints.push_back(celNaarWaypoint(cx2, cy2));
     } else {
+        size_t anker = 0;
         waypoints.push_back(celNaarWaypoint(rawCells[0].first, rawCells[0].second));
 
-        int prevDx = rawCells[1].first  - rawCells[0].first;
-        int prevDy = rawCells[1].second - rawCells[0].second;
-        int segLen = 1;
-
-        for (size_t i = 1; i + 1 < rawCells.size(); ++i) {
-            int curDx = rawCells[i+1].first  - rawCells[i].first;
-            int curDy = rawCells[i+1].second - rawCells[i].second;
-
-            bool richtingVeranderd = (curDx != prevDx || curDy != prevDy);
-
-            if (richtingVeranderd && segLen >= MIN_SEG) {
-                waypoints.push_back(celNaarWaypoint(rawCells[i].first, rawCells[i].second));
-                segLen = 0;
+        while (anker + 1 < rawCells.size()) {
+            // Zoek het verste punt waarnaar een vrije rechte lijn bestaat
+            size_t verste = anker + 1;
+            for (size_t j = anker + 2; j < rawCells.size(); ++j) {
+                if (lijVrij(rawCells[anker].first,  rawCells[anker].second,
+                            rawCells[j].first,      rawCells[j].second))
+                    verste = j;
+                else
+                    break; // pad geblokeerd, niet verder zoeken
             }
-
-            prevDx = curDx;
-            prevDy = curDy;
-            ++segLen;
+            waypoints.push_back(celNaarWaypoint(rawCells[verste].first,
+                                                rawCells[verste].second));
+            anker = verste;
         }
-
-        waypoints.push_back(celNaarWaypoint(rawCells.back().first, rawCells.back().second));
     }
 
     currentPath = Path(waypoints);
-    std::cout << "PathPlanner: pad gevonden met " << waypoints.size() << " waypoints\n";
+    std::cout << "PathPlanner: pad gevonden met " << waypoints.size()
+              << " waypoints (van " << rawCells.size() << " raw cellen)\n";
     return currentPath;
 }
 

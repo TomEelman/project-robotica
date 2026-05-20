@@ -191,57 +191,60 @@ static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position po
     std::vector<BlacklistItem>& frontierBlacklist, int HERPLAN_SCANS, int MIN_DEKKING_PCT,
     int FRONTIER_DREMPEL, int MISLUKT_DREMPEL, float ONTSNAP_RADIUS, const float* lastRanges) {
 
-    WallResult wf = navigator.BerekenMuurCommando(lastRanges);
-    if (wf.staat != WallStaat::OPEN_RUIMTE) {
-        hoofdModus = HoofdModus::MUUR_VOLGEN;
-        heeftPad = false;
-        navigator.ResetMuurvolger();
-        printf("[MAIN] Muur teruggevonden → MUUR_VOLGEN\n");
-        ka.SetCommand(wf.cmd.GetLinVelocity(), wf.cmd.GetAngVelocity());
-        return;
-    }
+    (void)ontsnapX; (void)ontsnapY; (void)ONTSNAP_RADIUS; (void)lastRanges;
+
+    // De muurcheck die hier stond is verwijderd. Die liet de robot terugvallen
+    // naar muurvolgen zodra er een muur in de buurt was — ook midden in een
+    // A*-pad. Echte obstakels worden al afgehandeld door HandleObstacleAvoidance
+    // in de hoofdlus via AnalyseerScan.
 
     if (heeftPad && !navigator.IsFinished()) {
         navigator.Update(pos);
         DriveCommand cmd = navigator.GetNextCommand(pos);
         ka.SetCommand(cmd.GetLinVelocity(), cmd.GetAngVelocity());
-    } else {
-        if (heeftPad && navigator.IsFinished()) {
-            heeftPad = false;
-            scansSindsHerplan = HERPLAN_SCANS;
-        }
-        if (nieuweScan) {
-            scansSindsHerplan = 0;
-            int aantalFrontiers = TelFrontiers(mapper);
-            int dekking = mapper.GetCoverage();
+        return;
+    }
 
-            if (dekking >= MIN_DEKKING_PCT && (aantalFrontiers <= FRONTIER_DREMPEL || mislukteTeller >= MISLUKT_DREMPEL)) {
-                hoofdModus = HoofdModus::TERUG_HOME;
-                heeftPad = false;
-                mislukteTeller = 0;
-                printf("[MAIN] Klaar → TERUG_HOME\n");
-                Path pad = planner.PlanPath(pos, Position(0.0f, 0.0f, 0.0f), mapper.GetMap());
-                if (!pad.IsEmpty()) { navigator.SetPath(pad); heeftPad = true; }
-            } else {
-                TickBlacklist(frontierBlacklist);
-                Position doel = KiesFrontierDoel(mapper, pos, lastRanges, frontierBlacklist);
-                if (doel.GetX() == pos.GetX() && doel.GetY() == pos.GetY()) {
-                    ++mislukteTeller;
-                    ka.SetCommand(200.0f, 0.0f);
-                } else {
-                    Path pad = planner.PlanPath(pos, doel, mapper.GetMap());
-                    if (!pad.IsEmpty()) {
-                        navigator.SetPath(pad);
-                        heeftPad = true;
-                        mislukteTeller = 0;
-                    } else {
-                        ++mislukteTeller;
-                        VoegToeAanBlacklist(frontierBlacklist, doel.GetX(), doel.GetY());
-                        ka.SetCommand(200.0f, 0.0f);
-                    }
-                }
-            }
+    if (heeftPad && navigator.IsFinished()) {
+        heeftPad = false;
+        scansSindsHerplan = HERPLAN_SCANS;
+    }
+
+    if (!nieuweScan) {
+        ka.SetCommand(150.0f, 0.0f);
+        return;
+    }
+
+    scansSindsHerplan = 0;
+    int aantalFrontiers = TelFrontiers(mapper);
+    int dekking = mapper.GetCoverage();
+
+    if (dekking >= MIN_DEKKING_PCT && (aantalFrontiers <= FRONTIER_DREMPEL || mislukteTeller >= MISLUKT_DREMPEL)) {
+        hoofdModus = HoofdModus::TERUG_HOME;
+        heeftPad = false;
+        mislukteTeller = 0;
+        printf("[MAIN] Klaar → TERUG_HOME (dekking=%d%%, frontiers=%d)\n", dekking, aantalFrontiers);
+        Path pad = planner.PlanPath(pos, Position(0.0f, 0.0f, 0.0f), mapper.GetMap());
+        if (!pad.IsEmpty()) { navigator.SetPath(pad); heeftPad = true; }
+        return;
+    }
+
+    TickBlacklist(frontierBlacklist);
+    Position doel = KiesFrontierDoel(mapper, pos, lastRanges, frontierBlacklist);
+    if (doel.GetX() == pos.GetX() && doel.GetY() == pos.GetY()) {
+        ++mislukteTeller;
+        printf("[MAIN] Geen frontier gevonden (mislukt=%d)\n", mislukteTeller);
+        ka.SetCommand(150.0f, 0.0f);
+    } else {
+        Path pad = planner.PlanPath(pos, doel, mapper.GetMap());
+        if (!pad.IsEmpty()) {
+            navigator.SetPath(pad);
+            heeftPad = true;
+            mislukteTeller = 0;
         } else {
+            ++mislukteTeller;
+            VoegToeAanBlacklist(frontierBlacklist, doel.GetX(), doel.GetY());
+            printf("[MAIN] A* mislukt naar frontier, op blacklist (mislukt=%d)\n", mislukteTeller);
             ka.SetCommand(150.0f, 0.0f);
         }
     }
@@ -280,7 +283,7 @@ static void HandleReturnToHome(Navigator& navigator, Mapper& mapper, Position po
 // RunRijdenEnMappen
 // ─────────────────────────────────────────────────────────────────
 static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
-    Localisation loc(219.0f);
+    Localisation loc(235.0f);
     Mapper mapper(260, 160, 0.03f);
 
     constexpr float DT = 0.1f;
