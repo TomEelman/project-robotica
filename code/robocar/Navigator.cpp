@@ -266,15 +266,17 @@ WallResult Navigator::BerekenMuurCommando(const float ranges[360]) {
         return res;
     }
 
-    // ── GEVAL 2: Rechter muur weg + rechtsvoor open → buitenhoek ──
-    if (!rechterMuurAanwezig && rechtsVoorVrij &&
-        wallStaat != WallStaat::BUITENHOEK)
-    {
-        wallStaat       = WallStaat::BUITENHOEK;
-        wfGefilterdFout = 0.0f;
-        printf("[WALL] BUITENHOEK muurR=%.0fmm rechtsV=%.0fmm → rechtsaf\n",
-               muurRechts, rechtsvoor);
-    }
+    // GEVAL 2: Rechter muur weg + rechtsvoor open → buitenhoek
+// Alleen als we écht een muur aan het volgen waren
+if (!rechterMuurAanwezig && rechtsVoorVrij &&
+    wallStaat == WallStaat::RECHTS_VOLGEN)  // ← was: wallStaat != WallStaat::BUITENHOEK
+{
+    wallStaat = WallStaat::BUITENHOEK;
+    buitenhoekTicks = 0;
+    wfGefilterdFout = 0.0f;
+    printf("[WALL] BUITENHOEK muurR=%.0fmm rechtsV=%.0fmm → rechtsaf\n",
+           muurRechts, rechtsvoor);
+}
 
     // In BerekenMuurCommando, vervang het BUITENHOEK blok:
 if (wallStaat == WallStaat::BUITENHOEK) {
@@ -305,16 +307,16 @@ if (wallStaat == WallStaat::BUITENHOEK) {
         }
     }
 */
-    // ── GEVAL 3: Geen muur rechts, geen buitenhoek → open ruimte ──
-    if (!rechterMuurAanwezig) {
-        wallStaat = WallStaat::OPEN_RUIMTE;
-        float lin = muurVoorWaarsch ? WF_LIN_LANGZAAM : WF_LIN_NORMAAL;
-        printf("[WALL] OPEN_RUIMTE voor=%.0fmm rechts=%.0fmm\n", minVoor, muurRechts);
-        res.cmd    = DriveCommand(lin, 0.0f);
-        res.staat  = WallStaat::OPEN_RUIMTE;
-        res.fout_mm = 0.0f;
-        return res;
-    }
+    // GEVAL 3: Geen muur rechts, geen buitenhoek → open ruimte
+if (!rechterMuurAanwezig && wallStaat != WallStaat::BUITENHOEK) {
+    wallStaat = WallStaat::OPEN_RUIMTE;
+    float lin = muurVoorWaarsch ? WF_LIN_LANGZAAM : WF_LIN_NORMAAL;
+    printf("[WALL] OPEN_RUIMTE voor=%.0fmm rechts=%.0fmm\n", minVoor, muurRechts);
+    res.cmd    = DriveCommand(lin, 0.0f);
+    res.staat  = WallStaat::OPEN_RUIMTE;
+    res.fout_mm = 0.0f;
+    return res;
+}
 
     // ── GEVAL 4: Normale rechter muurvolging ─────────────────────
     wallStaat = WallStaat::RECHTS_VOLGEN;
