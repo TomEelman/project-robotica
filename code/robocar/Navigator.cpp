@@ -3,9 +3,8 @@
 #include <cstdio>
 
 // ─────────────────────────────────────────────────────────────────
-//  NormDeg
+//  NormDeg — normalize angle to (-180, 180]
 // ─────────────────────────────────────────────────────────────────
-
 float NormDeg(float deg) {
     while (deg >  180.0f) deg -= 360.0f;
     while (deg < -180.0f) deg += 360.0f;
@@ -14,19 +13,20 @@ float NormDeg(float deg) {
 
 
 // ─────────────────────────────────────────────────────────────────
-//  AnalyseerScan
+//  AnalyzeScan — sector analysis of a 360° scan (obstacle avoidance)
 // ─────────────────────────────────────────────────────────────────
+static float g_prevAvoid = 0.0f;
 
-static float g_vorigeUitwijk = 0.0f;
-
-ScanAnalyse AnalyseerScan(const float ranges[360]) {
-    static constexpr float KRITIEK_MM  = 350.0f;
-    static constexpr float REMMEN_MM   = 500.0f;
-    static constexpr float VEILIG_MM   = 700.0f;
+ScanAnalysis AnalyzeScan(const float ranges[360]) {
+    static constexpr float CRITICAL_MM = 350.0f;
+    static constexpr float BRAKE_MM    = 500.0f;
+    static constexpr float SAFE_MM     = 700.0f;
     static constexpr float CHASSIS_MM  = 280.0f;
     static constexpr float MAX_RANGE   = 8000.0f;
     static constexpr float HYSTERESIS  = 200.0f;
 
+    // Split the 360 readings into 36 sectors of 10° and keep the nearest
+    // reading per sector (= the closest obstacle in that direction).
     float sector[36];
     for (int s = 0; s < 36; ++s) sector[s] = MAX_RANGE;
     for (int a = 0; a < 360; ++a) {
@@ -36,113 +36,111 @@ ScanAnalyse AnalyseerScan(const float ranges[360]) {
         if (r < sector[s]) sector[s] = r;
     }
 
-    auto sectorMin = [&](int van, int tot) -> float {
+    auto sectorMin = [&](int from, int to) -> float {
         float m = MAX_RANGE;
-        for (int s = van % 36; s != (tot % 36); s = (s + 1) % 36)
+        for (int s = from % 36; s != (to % 36); s = (s + 1) % 36)
             if (sector[s] < m) m = sector[s];
         return m;
     };
 
-    float minVoorSmal = MAX_RANGE;
-    { float m1 = sectorMin(0,4), m2 = sectorMin(33,36); minVoorSmal = (m1<m2)?m1:m2; }
-    float minVoor = MAX_RANGE;
-    { float m1 = sectorMin(0,5), m2 = sectorMin(31,36); minVoor = (m1<m2)?m1:m2; }
+    float minFrontNarrow = MAX_RANGE;
+    { float m1 = sectorMin(0,4), m2 = sectorMin(33,36); minFrontNarrow = (m1<m2)?m1:m2; }
+    float minFront = MAX_RANGE;
+    { float m1 = sectorMin(0,5), m2 = sectorMin(31,36); minFront = (m1<m2)?m1:m2; }
 
-    float minRechtsZijde = sectorMin(5,  13);
-    float minLinksZijde  = sectorMin(23, 31);
-    float minRechts      = sectorMin(5,  18);
-    float minLinks       = sectorMin(19, 35);
-    float ruimteRechts   = sectorMin(1,  18);
-    float ruimteLinks    = sectorMin(19, 36);
-    float minAchter      = sectorMin(15, 21);
+    float minRightSide = sectorMin(5,  13);
+    float minLeftSide  = sectorMin(23, 31);
+    float minRight     = sectorMin(5,  18);
+    float minLeft      = sectorMin(19, 35);
+    float spaceRight   = sectorMin(1,  18);
+    float spaceLeft    = sectorMin(19, 36);
+    float minRear      = sectorMin(15, 21);
 
-    bool inGang = (minVoor >= REMMEN_MM) &&
-                  (minRechtsZijde < VEILIG_MM) && (minLinksZijde < VEILIG_MM);
+    bool inCorridor = (minFront >= BRAKE_MM) &&
+                      (minRightSide < SAFE_MM) && (minLeftSide < SAFE_MM);
 
-    ScanAnalyse res{};
-    res.ruimteLinks  = ruimteLinks;
-    res.ruimteRechts = ruimteRechts;
-    res.minVoor      = minVoor;
-    res.minLinks     = minLinks;
-    res.minRechts    = minRechts;
-    res.minAchter    = minAchter;
-    res.uitwijkHoek  = g_vorigeUitwijk;
+    ScanAnalysis res{};
+    res.spaceLeft  = spaceLeft;
+    res.spaceRight = spaceRight;
+    res.minFront   = minFront;
+    res.minLeft    = minLeft;
+    res.minRight   = minRight;
+    res.minRear    = minRear;
+    res.avoidDir   = g_prevAvoid;
 
-    if (minVoor >= VEILIG_MM) {
-        res.staat = 0;
-        g_vorigeUitwijk = 0.0f;
-        return res;
-    }
-    if (inGang) {
-        res.staat = 0;
-        g_vorigeUitwijk = 0.0f;
-        return res;
-    }
+    if (minFront >= SAFE_MM) { res.state = 0; g_prevAvoid = 0.0f; return res; }
+    if (inCorridor)          { res.state = 0; g_prevAvoid = 0.0f; return res; }
 
-    bool rechtsVeilig = (minRechtsZijde > CHASSIS_MM);
-    bool linksVeilig  = (minLinksZijde  > CHASSIS_MM);
-    float scoreRechts = rechtsVeilig ? ruimteRechts : 0.0f;
-    float scoreLinks  = linksVeilig  ? ruimteLinks  : 0.0f;
-    if (g_vorigeUitwijk > 0.0f) scoreRechts += HYSTERESIS;
-    if (g_vorigeUitwijk < 0.0f) scoreLinks  += HYSTERESIS;
+    // Choose avoidance direction: most free space wins, with hysteresis
+    // so it does not flip back and forth between left and right.
+    bool rightSafe = (minRightSide > CHASSIS_MM);
+    bool leftSafe  = (minLeftSide  > CHASSIS_MM);
+    float scoreRight = rightSafe ? spaceRight : 0.0f;
+    float scoreLeft  = leftSafe  ? spaceLeft  : 0.0f;
+    if (g_prevAvoid > 0.0f) scoreRight += HYSTERESIS;
+    if (g_prevAvoid < 0.0f) scoreLeft  += HYSTERESIS;
 
-    float nieuweUitwijk = (!rechtsVeilig && !linksVeilig)
-        ? ((ruimteRechts >= ruimteLinks) ? +1.0f : -1.0f)
-        : ((scoreRechts  >= scoreLinks)  ? +1.0f : -1.0f);
+    float newAvoid = (!rightSafe && !leftSafe)
+        ? ((spaceRight >= spaceLeft) ? +1.0f : -1.0f)
+        : ((scoreRight >= scoreLeft) ? +1.0f : -1.0f);
 
-    res.uitwijkHoek = nieuweUitwijk;
-    g_vorigeUitwijk = nieuweUitwijk;
+    res.avoidDir = newAvoid;
+    g_prevAvoid  = newAvoid;
 
-    if      (minVoorSmal < KRITIEK_MM) res.staat = 3;
-    else if (minVoor     < REMMEN_MM)  res.staat = 2;
-    else                                res.staat = 1;
+    if      (minFrontNarrow < CRITICAL_MM) res.state = 3;
+    else if (minFront       < BRAKE_MM)    res.state = 2;
+    else                                    res.state = 1;
     return res;
 }
 
 
 // ─────────────────────────────────────────────────────────────────
-//  Navigator — constructor
+//  Constructor
 // ─────────────────────────────────────────────────────────────────
-
 Navigator::Navigator()
     : path()
     , currentTarget(0.0f, 0.0f, 0.0f)
     , isUpdated(false)
     , hasPath(false)
-    , stabielLin(0.0f)
-    , stabielAng(0.0f)
-    , heeftStabielCmd(false)
+    , stableLin(0.0f)
+    , stableAng(0.0f)
+    , hasStableCmd(false)
     , cmdTicks(0)
-    , wallStaat(WallStaat::OPEN_RUIMTE)
-    , wfGefilterdFout(0.0f)
-    , buitenhoekTicks(0)
+    , blockCounter(0)
+    , recoveryTicks(0)
+    , blocked(false)
+    , wallState(WallState::OPEN_SPACE)
+    , wfFilteredError(0.0f)
+    , outerCornerTicks(0)
 {}
 
 
 // ─────────────────────────────────────────────────────────────────
-//  Waypoint-volger
+//  SetPath / Update — path management
 // ─────────────────────────────────────────────────────────────────
-
 void Navigator::SetPath(const Path& newPath) {
     path = newPath;
     path.Reset();
-    hasPath           = !path.IsEmpty();
-    heeftStabielCmd   = false;
-    cmdTicks          = 0;
-    if (hasPath)
-        currentTarget = path.GetCurrentWaypoint();
+    hasPath      = !path.IsEmpty();
+    hasStableCmd = false;
+    cmdTicks     = 0;
+    blockCounter = 0;
+    recoveryTicks = 0;
+    blocked      = false;
+    if (hasPath) currentTarget = path.GetCurrentWaypoint();
     isUpdated = true;
 }
 
 void Navigator::Update(Position current) {
     if (!hasPath || path.IsEmpty()) return;
+    // Skip reached waypoints; on each new waypoint we recompute the
+    // command immediately (reset the stable counter).
     while (ReachedPoint(current) && !path.IsEmpty()) {
         path.Advance();
         if (!path.IsEmpty()) {
-            currentTarget   = path.GetCurrentWaypoint();
-            // Nieuw waypoint → herbereken commando meteen
-            heeftStabielCmd = false;
-            cmdTicks        = 0;
+            currentTarget = path.GetCurrentWaypoint();
+            hasStableCmd  = false;
+            cmdTicks      = 0;
         } else {
             hasPath = false;
         }
@@ -150,71 +148,115 @@ void Navigator::Update(Position current) {
     isUpdated = true;
 }
 
-DriveCommand Navigator::GetNextCommand(Position current, float minVoor) {
+
+// ─────────────────────────────────────────────────────────────────
+//  GetNextCommand — core of the waypoint follower + recovery
+//
+//  Logic in order:
+//    1. Finish any running recovery action (reverse or turn).
+//    2. Obstacle in front → raise block counter; if too often → recover.
+//    3. Waypoint reached → stop, done.
+//    4. Repeat the stable command while still valid (no wobbling).
+//    5. Otherwise compute a new command from the heading error.
+// ─────────────────────────────────────────────────────────────────
+DriveCommand Navigator::GetNextCommand(Position current, float minFront, float minRear) {
     if (!hasPath || path.IsEmpty())
         return DriveCommand(0.0f, 0.0f);
 
-    // ── Obstakel interrupt ────────────────────────────────────────
-    // Gooit het stabiele commando weg zodat MainPi5 obstacle avoidance
-    // kan overnemen. Geeft 0,0 terug als signaal.
-    if (minVoor < OBSTAKEL_INTERRUPT_MM) {
-        heeftStabielCmd = false;
-        cmdTicks        = 0;
-        printf("[NAV] OBSTAKEL interrupt voor=%.0fmm\n", minVoor);
+    // ── 1. Running recovery action ───────────────────────────────
+    if (recoveryTicks > 0) {
+        --recoveryTicks;
+        return DriveCommand(stableLin, stableAng); // recovery cmd already set
+    }
+
+    // ── 2. Obstacle interrupt + block detection ──────────────────
+    if (minFront < OBSTACLE_INTERRUPT_MM) {
+        ++blockCounter;
+        hasStableCmd = false;
+        cmdTicks     = 0;
+
+        // Blocked too often → choose a recovery action
+        if (blockCounter >= RECOVERY_TRIGGER) {
+            if (minRear > REVERSE_SAFE_MM) {
+                // Rear is clear → reverse straight (the robot came from
+                // there, so going back is safe)
+                stableLin     = REVERSE_SPEED;
+                stableAng     = 0.0f;
+                recoveryTicks = RECOVERY_TICKS;
+                blocked       = true;   // signal MainPi5: replan
+                printf("[NAV] RECOVERY reverse (front=%.0f rear=%.0f)\n", minFront, minRear);
+            } else {
+                // Rear also blocked → turn in place to search for an exit.
+                // Direction follows the sign of the heading error.
+                float angleErr = CalculateAngleError(current, currentTarget);
+                stableLin     = 0.0f;
+                stableAng     = (angleErr > 0.0f) ? -MAX_ANGULAR_DEG_S : MAX_ANGULAR_DEG_S;
+                recoveryTicks = RECOVERY_TICKS;
+                blocked       = true;
+                printf("[NAV] RECOVERY turn (front=%.0f rear=%.0f)\n", minFront, minRear);
+            }
+            blockCounter = 0;
+            return DriveCommand(stableLin, stableAng);
+        }
+
+        // Not yet at recovery → just stop this tick
         return DriveCommand(0.0f, 0.0f);
     }
+
+    // No more obstacle → wind the block counter back down
+    if (blockCounter > 0) --blockCounter;
 
     float dist     = CalculateDistance(current, currentTarget);
     float angleErr = CalculateAngleError(current, currentTarget);
 
-    // ── Waypoint bereikt ──────────────────────────────────────────
+    // ── 3. Waypoint reached ──────────────────────────────────────
     if (dist < REACHED_THRESHOLD_MM) {
-        heeftStabielCmd = false;
-        cmdTicks        = 0;
+        hasStableCmd = false;
+        cmdTicks     = 0;
         return DriveCommand(0.0f, 0.0f);
     }
 
-    // ── Herhaal stabiel commando zolang het nog geldig is ─────────
-    if (heeftStabielCmd && cmdTicks < CMD_STABIEL_TICKS) {
+    // ── 4. Repeat the stable command ─────────────────────────────
+    if (hasStableCmd && cmdTicks < CMD_STABLE_TICKS) {
         ++cmdTicks;
-        return DriveCommand(stabielLin, stabielAng);
+        return DriveCommand(stableLin, stableAng);
     }
 
-    // ── Herbereken nieuw commando ─────────────────────────────────
+    // ── 5. Compute a new command ─────────────────────────────────
     float absErr = std::fabs(angleErr);
-
-    float nieuwLin, nieuwAng;
+    float newLin, newAng;
 
     if (absErr > SLOW_TURN_THRESHOLD) {
-        // Grote hoekfout → stilstaan en draaien
-        nieuwLin = 0.0f;
-        nieuwAng = MAX_ANGULAR_DEG_S;
-        if (angleErr > 0.0f) nieuwAng = -nieuwAng;
+        // Large heading error → drive slowly AND turn hard.
+        // (Do not stand still: keep moving to avoid spinning in place.)
+        newLin = LINEAR_SPEED_MM_S * SLOW_TURN_FACTOR;
+        newAng = MAX_ANGULAR_DEG_S;
+        if (angleErr > 0.0f) newAng = -newAng;
     } else if (absErr > ANGLE_DEADBAND_DEG) {
-        // Kleine hoekfout → langzaam rijden met bijsturing
-        nieuwLin = LINEAR_SPEED_MM_S * SLOW_TURN_FACTOR;
-        nieuwAng = ANGULAR_GAIN * absErr;
-        if (nieuwAng > MAX_ANGULAR_DEG_S) nieuwAng = MAX_ANGULAR_DEG_S;
-        if (angleErr > 0.0f) nieuwAng = -nieuwAng;
+        // Moderate heading error → drive with proportional correction
+        newLin = LINEAR_SPEED_MM_S * SLOW_TURN_FACTOR;
+        newAng = ANGULAR_GAIN * absErr;
+        if (newAng > MAX_ANGULAR_DEG_S) newAng = MAX_ANGULAR_DEG_S;
+        if (angleErr > 0.0f) newAng = -newAng;
     } else {
-        // Goed gericht → rechtdoor
-        nieuwLin = LINEAR_SPEED_MM_S;
-        nieuwAng = 0.0f;
+        // Well aligned → straight ahead (278, 0)
+        newLin = LINEAR_SPEED_MM_S;
+        newAng = 0.0f;
     }
 
-    stabielLin      = nieuwLin;
-    stabielAng      = nieuwAng;
-    heeftStabielCmd = true;
-    cmdTicks        = 0;
+    stableLin    = newLin;
+    stableAng    = newAng;
+    hasStableCmd = true;
+    cmdTicks     = 0;
 
-    printf("[NAV] Nieuw commando: lin=%.0f ang=%.1f (dist=%.0fmm err=%.1fdeg)\n",
-           nieuwLin, nieuwAng, dist, angleErr);
+    printf("[NAV] cmd lin=%.0f ang=%.1f (dist=%.0fmm err=%.1fdeg)\n",
+           newLin, newAng, dist, angleErr);
 
-    return DriveCommand(stabielLin, stabielAng);
+    return DriveCommand(stableLin, stableAng);
 }
 
-bool Navigator::IsFinished() const { return !hasPath || path.IsEmpty(); }
-bool Navigator::IsUpdated()  const { return isUpdated; }
+bool     Navigator::IsFinished() const { return !hasPath || path.IsEmpty(); }
+bool     Navigator::IsUpdated()  const { return isUpdated; }
 Position Navigator::GetCurrentTarget() const { return currentTarget; }
 Path     Navigator::GetPath()          const { return path; }
 
@@ -239,134 +281,108 @@ float Navigator::NormalizeDeg(float deg) const { return NormDeg(deg); }
 
 
 // ─────────────────────────────────────────────────────────────────
-//  Muurvolger — hulpfuncties
+//  Wall follower — sector helpers
 // ─────────────────────────────────────────────────────────────────
-
-float Navigator::WfSectorMin(const float ranges[360], int van, int tot) const {
+float Navigator::WfSectorMin(const float ranges[360], int from, int to) const {
     static constexpr float MAX_R = 8000.0f;
     float m = MAX_R;
-    for (int a = van; a < tot; ++a) {
-        int   idx = ((a % 360) + 360) % 360;
-        float r   = ranges[idx];
+    for (int a = from; a < to; ++a) {
+        int idx = ((a % 360) + 360) % 360;
+        float r = ranges[idx];
         if (r > 0.0f && r < m) m = r;
     }
     return m;
 }
 
-float Navigator::WfSectorGem(const float ranges[360], int van, int tot) const {
+float Navigator::WfSectorAvg(const float ranges[360], int from, int to) const {
     static constexpr float MAX_R = 8000.0f;
-    float sum = 0.0f;
-    int   cnt = 0;
-    for (int a = van; a < tot; ++a) {
-        int   idx = ((a % 360) + 360) % 360;
-        float r   = ranges[idx];
+    float sum = 0.0f; int cnt = 0;
+    for (int a = from; a < to; ++a) {
+        int idx = ((a % 360) + 360) % 360;
+        float r = ranges[idx];
         if (r > 0.0f && r < MAX_R) { sum += r; ++cnt; }
     }
     return cnt > 0 ? sum / static_cast<float>(cnt) : MAX_R;
 }
 
-void Navigator::ResetMuurvolger() {
-    wallStaat       = WallStaat::OPEN_RUIMTE;
-    wfGefilterdFout = 0.0f;
-    buitenhoekTicks = 0;
+void Navigator::ResetWallFollower() {
+    wallState        = WallState::OPEN_SPACE;
+    wfFilteredError  = 0.0f;
+    outerCornerTicks = 0;
 }
 
 
 // ─────────────────────────────────────────────────────────────────
-//  BerekenMuurCommando
+//  ComputeWallCommand — right-hand wall follower
 // ─────────────────────────────────────────────────────────────────
+WallResult Navigator::ComputeWallCommand(const float ranges[360]) {
+    float minFrontNarrow = std::min(WfSectorMin(ranges, 350, 360), WfSectorMin(ranges, 0, 10));
+    float minFront       = std::min(WfSectorMin(ranges, 330, 360), WfSectorMin(ranges, 0, 30));
+    float wallRight      = WfSectorAvg(ranges,  75, 105);
+    float frontRight     = WfSectorMin(ranges,  30,  75);
 
-WallResult Navigator::BerekenMuurCommando(const float ranges[360]) {
+    bool wallInFront     = (minFrontNarrow < WF_FRONT_CRITICAL_MM);
+    bool wallFrontLikely = (minFront       < WF_FRONT_BRAKE_MM);
+    bool rightWallPresent = (wallRight     < WF_WALL_PRESENT_MM);
+    bool frontRightClear = (frontRight     > WF_WALL_PRESENT_MM * 1.3f);
 
-    float minVoorSmal   = std::min(WfSectorMin(ranges, 350, 360),
-                                    WfSectorMin(ranges,   0,  10));
-    float minVoor       = std::min(WfSectorMin(ranges, 330, 360),
-                                    WfSectorMin(ranges,   0,  30));
-    float muurRechts    = WfSectorGem(ranges,  75, 105);
-    float muurRechtsMin = WfSectorMin(ranges,  75, 105);
-    float rechtsvoor    = WfSectorMin(ranges,  30,  75);
+    WallResult res{DriveCommand(0.0f, 0.0f), WallState::OPEN_SPACE, 0.0f};
 
-    (void)muurRechtsMin;
-
-    bool muurVoor            = (minVoorSmal < WF_VOOR_KRITIEK_MM);
-    bool muurVoorWaarsch     = (minVoor     < WF_VOOR_REMMEN_MM);
-    bool rechterMuurAanwezig = (muurRechts  < WF_MUUR_AANWEZIG_MM);
-    bool rechtsVoorVrij      = (rechtsvoor  > WF_MUUR_AANWEZIG_MM * 1.3f);
-
-    WallResult res{DriveCommand(0.0f, 0.0f), WallStaat::OPEN_RUIMTE, 0.0f};
-
-    // ── GEVAL 1: Muur voor → binnenhoek, draai links ──────────────
-    if (muurVoor) {
-        wallStaat       = WallStaat::BINNENHOEK;
-        wfGefilterdFout = 0.0f;
-        buitenhoekTicks = 0;
-
-        res.cmd     = DriveCommand(0.0f, -WF_BINNENHOEK_DRAAI);
-        res.staat   = WallStaat::BINNENHOEK;
-        res.fout_mm = 0.0f;
-
-        printf("[WALL] BINNENHOEK voor=%.0fmm → linksaf %.1f deg/s\n",
-               minVoorSmal, -WF_BINNENHOEK_DRAAI);
+    // CASE 1: wall straight ahead → inner corner, turn left
+    if (wallInFront) {
+        wallState = WallState::INNER_CORNER; wfFilteredError = 0.0f; outerCornerTicks = 0;
+        res.cmd = DriveCommand(0.0f, -WF_INNER_CORNER_TURN);
+        res.state = WallState::INNER_CORNER; res.errorMm = 0.0f;
+        printf("[WALL] INNER_CORNER front=%.0fmm -> turn left\n", minFrontNarrow);
         return res;
     }
 
-    // ── GEVAL 2: Buitenhoek — alleen vanuit RECHTS_VOLGEN ─────────
-    if (!rechterMuurAanwezig && rechtsVoorVrij &&
-        wallStaat == WallStaat::RECHTS_VOLGEN)
-    {
-        wallStaat       = WallStaat::BUITENHOEK;
-        buitenhoekTicks = 0;
-        wfGefilterdFout = 0.0f;
-        printf("[WALL] BUITENHOEK muurR=%.0fmm rechtsV=%.0fmm → rechtsaf\n",
-               muurRechts, rechtsvoor);
+    // CASE 2: right wall gone + front-right open → outer corner
+    // (only valid if we were actually following a wall)
+    if (!rightWallPresent && frontRightClear && wallState == WallState::FOLLOW_RIGHT) {
+        wallState = WallState::OUTER_CORNER; outerCornerTicks = 0; wfFilteredError = 0.0f;
+        printf("[WALL] OUTER_CORNER wallR=%.0fmm frontR=%.0fmm -> turn right\n", wallRight, frontRight);
     }
 
-    if (wallStaat == WallStaat::BUITENHOEK) {
-        if (rechterMuurAanwezig && muurRechts < WF_TARGET_DIST_MM * 1.5f) {
-            wallStaat       = WallStaat::RECHTS_VOLGEN;
-            buitenhoekTicks = 0;
-            printf("[WALL] Muur teruggevonden op %.0fmm → RECHTS_VOLGEN\n", muurRechts);
-        } else if (++buitenhoekTicks > WF_BUITENHOEK_MAX_TICKS) {
-            wallStaat       = WallStaat::OPEN_RUIMTE;
-            buitenhoekTicks = 0;
-            printf("[WALL] BUITENHOEK timeout → OPEN_RUIMTE\n");
+    if (wallState == WallState::OUTER_CORNER) {
+        if (rightWallPresent && wallRight < WF_TARGET_DIST_MM * 1.5f) {
+            wallState = WallState::FOLLOW_RIGHT; outerCornerTicks = 0;
+            printf("[WALL] wall regained at %.0fmm -> FOLLOW_RIGHT\n", wallRight);
+        } else if (++outerCornerTicks > WF_OUTER_CORNER_MAX_TICKS) {
+            wallState = WallState::OPEN_SPACE; outerCornerTicks = 0;
+            printf("[WALL] OUTER_CORNER timeout -> OPEN_SPACE\n");
         } else {
-            res.cmd     = DriveCommand(WF_LIN_LANGZAAM, WF_BUITENHOEK_DRAAI);
-            res.staat   = WallStaat::BUITENHOEK;
-            res.fout_mm = 0.0f;
+            res.cmd = DriveCommand(WF_LIN_SLOW, WF_OUTER_CORNER_TURN);
+            res.state = WallState::OUTER_CORNER; res.errorMm = 0.0f;
             return res;
         }
     }
 
-    // ── GEVAL 3: Geen muur rechts → open ruimte ───────────────────
-    if (!rechterMuurAanwezig) {
-        wallStaat = WallStaat::OPEN_RUIMTE;
-        float lin = muurVoorWaarsch ? WF_LIN_LANGZAAM : WF_LIN_NORMAAL;
-        printf("[WALL] OPEN_RUIMTE voor=%.0fmm rechts=%.0fmm\n", minVoor, muurRechts);
-        res.cmd     = DriveCommand(lin, 0.0f);
-        res.staat   = WallStaat::OPEN_RUIMTE;
-        res.fout_mm = 0.0f;
+    // CASE 3: no wall on the right → open space (MainPi5 switches to frontier)
+    if (!rightWallPresent) {
+        wallState = WallState::OPEN_SPACE;
+        float lin = wallFrontLikely ? WF_LIN_SLOW : WF_LIN_NORMAL;
+        printf("[WALL] OPEN_SPACE front=%.0fmm right=%.0fmm\n", minFront, wallRight);
+        res.cmd = DriveCommand(lin, 0.0f);
+        res.state = WallState::OPEN_SPACE; res.errorMm = 0.0f;
         return res;
     }
 
-    // ── GEVAL 4: Normale rechter muurvolging ─────────────────────
-    wallStaat = WallStaat::RECHTS_VOLGEN;
+    // CASE 4: normal right-wall following with a P controller on the distance error
+    wallState = WallState::FOLLOW_RIGHT;
+    float rawError = wallRight - WF_TARGET_DIST_MM;
+    wfFilteredError = WF_EMA * rawError + (1.0f - WF_EMA) * wfFilteredError;
 
-    float ruweFout = muurRechts - WF_TARGET_DIST_MM;
-    wfGefilterdFout = WF_EMA * ruweFout + (1.0f - WF_EMA) * wfGefilterdFout;
-
-    float corrDegS = WF_KP * wfGefilterdFout;
+    float corrDegS = WF_KP * wfFilteredError;
     if (corrDegS >  WF_MAX_CORR) corrDegS =  WF_MAX_CORR;
     if (corrDegS < -WF_MAX_CORR) corrDegS = -WF_MAX_CORR;
-    if (std::fabs(corrDegS) < WF_MIN_CORR) corrDegS = 0.0f;
+    if (std::fabs(corrDegS) < WF_MIN_CORR) corrDegS = 0.0f;  // dead zone against wobble
 
-    float lin = muurVoorWaarsch ? WF_LIN_LANGZAAM : WF_LIN_NORMAAL;
+    float lin = wallFrontLikely ? WF_LIN_SLOW : WF_LIN_NORMAL;
+    printf("[WALL] FOLLOW_RIGHT wallR=%.0fmm err=%.0fmm corr=%.1f lin=%.0f\n",
+           wallRight, wfFilteredError, corrDegS, lin);
 
-    printf("[WALL] RECHTS_VOLGEN muurR=%.0fmm fout=%.0fmm corr=%.1fdeg/s lin=%.0f\n",
-           muurRechts, wfGefilterdFout, corrDegS, lin);
-
-    res.cmd     = DriveCommand(lin, corrDegS);
-    res.staat   = WallStaat::RECHTS_VOLGEN;
-    res.fout_mm = wfGefilterdFout;
+    res.cmd = DriveCommand(lin, corrDegS);
+    res.state = WallState::FOLLOW_RIGHT; res.errorMm = wfFilteredError;
     return res;
 }

@@ -2,23 +2,22 @@
 #include <cstdio>
 #include <cmath>
 
-// PID gains — tuned empirically on this specific robot.
-// Left/right have slightly different gains to compensate for mechanical
-// asymmetry (different motor characteristics, wiring resistance, etc.).
+//links klein verschil mer rechts
+//Left PID
 static constexpr float PID_LEFT_KP  = 0.145f;
 static constexpr float PID_LEFT_KI  = 1.763f;
 static constexpr float PID_LEFT_KD  = 0.0074f;
 
+//Right PID
 static constexpr float PID_RIGHT_KP = 0.135f;
 static constexpr float PID_RIGHT_KI = 1.688f;
 static constexpr float PID_RIGHT_KD = 0.0074f;
 
-// Yaw PID: corrects heading drift during straight-line driving.
-// High P, moderate D — integral is small to avoid fighting intended turns.
+//yaw PID
 static constexpr float PID_YAW_KP   = 4.0f;
 static constexpr float PID_YAW_KI   = 0.1f;
 static constexpr float PID_YAW_KD   = 0.3f;
-
+//Helper
 static constexpr float PID_MAX_INTEGRAL = 150.0f;
 static constexpr float PID_MAX_OUTPUT   = 100.0f;
 
