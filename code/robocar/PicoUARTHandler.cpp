@@ -135,7 +135,7 @@ void PicoUARTHandler::HandleLine(const char* line)
             hasPendingCmd = true;
             lastCmdTimeMs = to_ms_since_boot(get_absolute_time());
             char ack[32];
-            snprintf(ack, sizeof(ack), "ACK:OK\n");  // kort ACK
+            snprintf(ack, sizeof(ack), "ACK:OK:lin=%.3f,ang=%.3f\n", lin, ang);
             Send(ack);
         } else {
             Send("ERR:BAD_CMD\n");
