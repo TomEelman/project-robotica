@@ -26,7 +26,7 @@ struct ScanAnalyse {
 ScanAnalyse AnalyseerScan(const float ranges[360]);
 float NormDeg(float deg);
 // In Navigator.h, voeg toe:
-int buitenhoekTicks = 0;
+int buitenhoekTicks3 = 0;
 static constexpr int WF_BUITENHOEK_MAX_TICKS = 20;  // ~2 seconden bij 10Hz
 
 // ─────────────────────────────────────────────────────────────────

@@ -280,12 +280,12 @@ WallResult Navigator::BerekenMuurCommando(const float ranges[360]) {
 if (wallStaat == WallStaat::BUITENHOEK) {
     if (rechterMuurAanwezig && muurRechts < WF_TARGET_DIST_MM * 1.5f) {
         wallStaat = WallStaat::RECHTS_VOLGEN;
-        buitenhoekTicks = 0;
+        buitenhoekTicks3 = 0;
         printf("[WALL] Muur teruggevonden op %.0fmm → RECHTS_VOLGEN\n", muurRechts);
-    } else if (++buitenhoekTicks > WF_BUITENHOEK_MAX_TICKS) {
+    } else if (++buitenhoekTicks3 > WF_BUITENHOEK_MAX_TICKS) {
         // Geen muur gevonden na timeout → geef op, open ruimte
         wallStaat = WallStaat::OPEN_RUIMTE;
-        buitenhoekTicks = 0;
+        buitenhoekTicks3 = 0;
         printf("[WALL] BUITENHOEK timeout → OPEN_RUIMTE\n");
     } else {
         res.cmd     = DriveCommand(WF_LIN_LANGZAAM, WF_BUITENHOEK_DRAAI);
