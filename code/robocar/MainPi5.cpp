@@ -203,7 +203,12 @@ static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position po
 
     if (heeftPad && !navigator.IsFinished()) {
         navigator.Update(pos);
-        DriveCommand cmd = navigator.GetNextCommand(pos, scan.minVoor);
+        // Wordt:
+float minVoorFrontier = std::min(
+    navigator.WfSectorMin(lastRanges, 330, 360),  // maar WfSectorMin is private...
+    navigator.WfSectorMin(lastRanges,   0,  30)
+);
+DriveCommand cmd = navigator.GetNextCommand(pos, minVoorFrontier);
         ka.SetCommand(cmd.GetLinVelocity(), cmd.GetAngVelocity());
     } else {
         if (heeftPad && navigator.IsFinished()) {
