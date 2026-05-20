@@ -169,9 +169,6 @@ static void HandleWallFollowing(Navigator& navigator, const float* lastRanges, b
             }
         }
     } else {
-        // Open ruimte: rijd eerst een minimum aantal scans rechtuit
-        // zodat de kaart gevuld is voordat we een frontier kiezen.
-        // Zo voorkom je dat hij direct een slecht pad plant en rondjes rijdt.
         if (wallScans < 5) {
             ka.SetCommand(150.0f, 0.0f);
             if (nieuweScan) ++wallScans;
@@ -183,19 +180,6 @@ static void HandleWallFollowing(Navigator& navigator, const float* lastRanges, b
             TickBlacklist(frontierBlacklist);
             Position doel = KiesFrontierDoel(mapper, pos, lastRanges, frontierBlacklist);
             if (doel.GetX() != pos.GetX() || doel.GetY() != pos.GetY()) {
-                // Controleer of het doel niet te veel draaien vereist.
-                // Als de frontier meer dan 30° van de huidige rijrichting afzit,
-                // sla hem over en rijd eerst verder rechtuit.
-                float dx = doel.GetX() - pos.GetX();
-                float dy = doel.GetY() - pos.GetY();
-                float hoekNaarDoel = NormDeg(std::atan2(dy, dx) * (180.0f / M_PI) - pos.GetTheta());
-                if (std::fabs(hoekNaarDoel) > 30.0f) {
-                    printf("[MAIN] Frontier (%.0f,%.0f) is %.0f° weg, eerst rechtuit\n",
-                           doel.GetX(), doel.GetY(), hoekNaarDoel);
-                    ka.SetCommand(150.0f, 0.0f);
-                    return;
-                }
-
                 Path pad = planner.PlanPath(pos, doel, mapper.GetMap());
                 if (!pad.IsEmpty()) {
                     navigator.SetPath(pad);

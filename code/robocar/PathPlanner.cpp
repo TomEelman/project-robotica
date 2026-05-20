@@ -227,21 +227,20 @@ Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
 
     std::vector<Position> waypoints;
     if (rawCells.size() <= 2) {
-        for (auto& [cx2, cy2] : rawCells)
-            waypoints.push_back(celNaarWaypoint(cx2, cy2));
+        // Alleen eindpunt als waypoint, niet de startcel
+        waypoints.push_back(celNaarWaypoint(rawCells.back().first, rawCells.back().second));
     } else {
+        // Begin bij index 1: startcel overslaan, robot staat er al
         size_t anker = 0;
-        waypoints.push_back(celNaarWaypoint(rawCells[0].first, rawCells[0].second));
 
         while (anker + 1 < rawCells.size()) {
-            // Zoek het verste punt waarnaar een vrije rechte lijn bestaat
             size_t verste = anker + 1;
             for (size_t j = anker + 2; j < rawCells.size(); ++j) {
                 if (lijVrij(rawCells[anker].first,  rawCells[anker].second,
                             rawCells[j].first,      rawCells[j].second))
                     verste = j;
                 else
-                    break; // pad geblokeerd, niet verder zoeken
+                    break;
             }
             waypoints.push_back(celNaarWaypoint(rawCells[verste].first,
                                                 rawCells[verste].second));
