@@ -242,7 +242,9 @@ static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position po
                 }
             }
         } else {
-            ka.SetCommand(150.0f, 0.0f);
+             // Geen nieuwe scan, geen nieuw commando — ka herhaalt het laatste vanzelf
+    (void)0;
+            //ka.SetCommand(150.0f, 0.0f);
         }
     }
 }
