@@ -13,6 +13,7 @@
 #include <limits>
 #include <string>
 #include <unistd.h>
+#include <termios.h>
 
 std::atomic<bool> running{true};
 static Pi5UARTHandler* g_uart = nullptr;
