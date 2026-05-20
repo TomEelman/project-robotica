@@ -327,20 +327,37 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
     int vrijrijTicks = 0, achteruitTicks = 0, vastzitTeller_loc = 0, achteruitEscalatie = 0;
     float ontsnapX = 1e9f, ontsnapY = 1e9f;
 
+    // ── FIX: ka.Start() bewust NIET hier — zie hieronder ─────────
     CommandKeepAlive ka(uart);
-    ka.Start();
 
     float lastRanges[360] = {};
     bool heeftRanges = false;
 
+    // Wacht tot Pico opgestart is en houd motoren actief stil.
     usleep(1200000);
+    for (int i = 0; i < 5; ++i) { uart.StuurStop(); usleep(20000); }
 
+    // Gooi alle UART-data weg die tijdens de sleep is opgebouwd,
+    // zodat de PID/EMA-filter straks met schone sensorwaarden start.
+    // tcflush werkt direct op de file descriptor van de seriële poort.
+    tcflush(uart.GetFd(), TCIFLUSH);
+
+    // Lees daarna nog een paar frames leeg zodat GetSensorData()
+    // geen stale pakketjes meer teruggeeft.
+    for (int i = 0; i < 15; ++i) { uart.LeesData(); usleep(10000); }
+
+    // Wacht op eerste geldige LIDAR-scan vóór we gaan rijden,
+    // zodat de obstakels-check meteen klopt bij de eerste loop-iteratie.
     while (!heeftRanges && running) {
         if (lidar.Update()) {
             for (int a = 0; a < 360; ++a) lastRanges[a] = lidar.GetDistance(a).distance;
             heeftRanges = true;
         } else usleep(100000);
     }
+
+    // ── FIX: PAS NU starten — UART-buffer leeg, LIDAR klaar,
+    //         PID/filter op de Pico beginnen met een schone lei. ──
+    ka.Start();
 
     while (running) {
         auto tStart = std::chrono::steady_clock::now();
