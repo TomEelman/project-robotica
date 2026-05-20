@@ -276,6 +276,25 @@ WallResult Navigator::BerekenMuurCommando(const float ranges[360]) {
                muurRechts, rechtsvoor);
     }
 
+    // In BerekenMuurCommando, vervang het BUITENHOEK blok:
+if (wallStaat == WallStaat::BUITENHOEK) {
+    if (rechterMuurAanwezig && muurRechts < WF_TARGET_DIST_MM * 1.5f) {
+        wallStaat = WallStaat::RECHTS_VOLGEN;
+        buitenhoekTicks = 0;
+        printf("[WALL] Muur teruggevonden op %.0fmm → RECHTS_VOLGEN\n", muurRechts);
+    } else if (++buitenhoekTicks > WF_BUITENHOEK_MAX_TICKS) {
+        // Geen muur gevonden na timeout → geef op, open ruimte
+        wallStaat = WallStaat::OPEN_RUIMTE;
+        buitenhoekTicks = 0;
+        printf("[WALL] BUITENHOEK timeout → OPEN_RUIMTE\n");
+    } else {
+        res.cmd     = DriveCommand(WF_LIN_LANGZAAM, WF_BUITENHOEK_DRAAI);
+        res.staat   = WallStaat::BUITENHOEK;
+        res.fout_mm = 0.0f;
+        return res;
+    }
+}
+/*
     if (wallStaat == WallStaat::BUITENHOEK) {
         if (rechterMuurAanwezig && muurRechts < WF_TARGET_DIST_MM * 1.5f) {
             wallStaat = WallStaat::RECHTS_VOLGEN;
@@ -287,7 +306,7 @@ WallResult Navigator::BerekenMuurCommando(const float ranges[360]) {
             return res;
         }
     }
-
+*/
     // ── GEVAL 3: Geen muur rechts, geen buitenhoek → open ruimte ──
     if (!rechterMuurAanwezig) {
         wallStaat = WallStaat::OPEN_RUIMTE;
