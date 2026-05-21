@@ -73,7 +73,7 @@ enum class OntwijkFase { NORMAAL, DRAAIEN, VRIJRIJDEN, ACHTERUIT };
 // ─────────────────────────────────────────────────────────────────
 // Helper declaraties
 // ─────────────────────────────────────────────────────────────────
-static bool HandleObstacleAvoidance(const ScanAnalyse& scan, Localisation& loc,
+static bool HandleObstacleAvoidance(const ScanAnalysis& scan, Localisation& loc,
     OntwijkFase& ontwijkFase, float& doelHoek, float& draaiRichting,
     int& vrijrijTicks, int& achteruitTicks, int& vastzitTeller, int& achteruitEscalatie,
     float& ontsnapX, float& ontsnapY, CommandKeepAlive& ka, float LIN_SPEED, int& scansSindsHerplan);
@@ -81,21 +81,21 @@ static bool HandleObstacleAvoidance(const ScanAnalyse& scan, Localisation& loc,
 static void HandleWallFollowing(Navigator& navigator, const float* lastRanges, bool nieuweScan,
     int& wallScans, HoofdModus& hoofdModus, PathPlanner& planner,
     std::vector<BlacklistItem>& frontierBlacklist, Position pos, CommandKeepAlive& ka,
-    int HERPLAN_SCANS, int MIN_OMLOOP_SCANS, int MIN_DEKKING_PCT, int FRONTIER_DREMPEL, Mapper& mapper);
+    int HERPLAN_SCANS, int MIN_OMLOOP_SCANS, int MIN_DEKKING_PCT, Mapper& mapper);
 
 static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position pos, bool nieuweScan,
     int& scansSindsHerplan, int& mislukteTeller, HoofdModus& hoofdModus, bool& heeftPad,
     float ontsnapX, float ontsnapY, CommandKeepAlive& ka, PathPlanner& planner,
     std::vector<BlacklistItem>& frontierBlacklist, int HERPLAN_SCANS, int MIN_DEKKING_PCT,
-    int FRONTIER_DREMPEL, int MISLUKT_DREMPEL, float ONTSNAP_RADIUS, const float* lastRanges);
+    int MISLUKT_DREMPEL, float ONTSNAP_RADIUS, const float* lastRanges);
 
 static void HandleReturnToHome(Navigator& navigator, Mapper& mapper, Position pos, Position beginPunt,
-    bool& heeftPad, CommandKeepAlive& ka, PathPlanner& planner, float HOME_DREMPEL_MM);
+    bool& heeftPad, CommandKeepAlive& ka, PathPlanner& planner, float HOME_DREMPEL_MM, HoofdModus& hoofdModus);
 
 // ─────────────────────────────────────────────────────────────────
 // Helper implementaties
 // ─────────────────────────────────────────────────────────────────
-static bool HandleObstacleAvoidance(const ScanAnalyse& scan, Localisation& loc,
+static bool HandleObstacleAvoidance(const ScanAnalysis& scan, Localisation& loc,
     OntwijkFase& ontwijkFase, float& doelHoek, float& draaiRichting,
     int& vrijrijTicks, int& achteruitTicks, int& vastzitTeller, int& achteruitEscalatie,
     float& ontsnapX, float& ontsnapY, CommandKeepAlive& ka, float LIN_SPEED, int& scansSindsHerplan) {
@@ -104,10 +104,10 @@ static bool HandleObstacleAvoidance(const ScanAnalyse& scan, Localisation& loc,
         float fout = NormDeg(doelHoek - loc.GetTheta());
         if (std::fabs(fout) < 8.0f) {
             ontwijkFase = OntwijkFase::VRIJRIJDEN;
-            vrijrijTicks = (scan.minVoor < 600.0f ? 10 : 25) + achteruitEscalatie * 8;
+            vrijrijTicks = (scan.minFront < 600.0f ? 10 : 25) + achteruitEscalatie * 8;
             scansSindsHerplan = 15;
             ka.SetCommand(LIN_SPEED, 0.0f);
-        } else if (scan.staat >= 3) {
+        } else if (scan.state >= 3) {
             draaiRichting = -draaiRichting;
             doelHoek = NormDeg(loc.GetTheta() - draaiRichting * 90.0f);
             ka.SetCommand(0.0f, draaiRichting * 40.0f);
@@ -115,7 +115,7 @@ static bool HandleObstacleAvoidance(const ScanAnalyse& scan, Localisation& loc,
             ka.SetCommand(0.0f, draaiRichting * 40.0f);
         }
     } else if (ontwijkFase == OntwijkFase::VRIJRIJDEN) {
-        if (scan.staat >= 3) {
+        if (scan.state >= 3) {
             if (++vastzitTeller >= 2) {
                 ++achteruitEscalatie;
                 achteruitTicks = 18 + std::min(achteruitEscalatie * 8, 40);
@@ -135,7 +135,7 @@ static bool HandleObstacleAvoidance(const ScanAnalyse& scan, Localisation& loc,
             ka.SetCommand(LIN_SPEED, 0.0f);
         }
     } else if (ontwijkFase == OntwijkFase::ACHTERUIT) {
-        if (scan.minAchter < 300.0f || --achteruitTicks <= 0) {
+        if (scan.minRear < 300.0f || --achteruitTicks <= 0) {
             float bh = 0.0f;
             doelHoek = NormDeg(loc.GetTheta() + bh);
             draaiRichting = (bh >= 0.0f ? 1.0f : -1.0f);
@@ -152,20 +152,22 @@ static bool HandleObstacleAvoidance(const ScanAnalyse& scan, Localisation& loc,
 static void HandleWallFollowing(Navigator& navigator, const float* lastRanges, bool nieuweScan,
     int& wallScans, HoofdModus& hoofdModus, PathPlanner& planner,
     std::vector<BlacklistItem>& frontierBlacklist, Position pos, CommandKeepAlive& ka,
-    int HERPLAN_SCANS, int MIN_OMLOOP_SCANS, int MIN_DEKKING_PCT, int FRONTIER_DREMPEL, Mapper& mapper) {
+    int HERPLAN_SCANS, int MIN_OMLOOP_SCANS, int MIN_DEKKING_PCT, Mapper& mapper) {
 
-    WallResult wf = navigator.BerekenMuurCommando(lastRanges);
-    if (wf.staat != WallStaat::OPEN_RUIMTE) {
+    WallResult wf = navigator.ComputeWallCommand(lastRanges);
+    if (wf.state != WallState::OPEN_SPACE) {
         ka.SetCommand(wf.cmd.GetLinVelocity(), wf.cmd.GetAngVelocity());
         if (nieuweScan) {
             ++wallScans;
-            if (wallScans >= MIN_OMLOOP_SCANS) {
-                int aantalFrontiers = TelFrontiers(mapper);
-                int dekking = mapper.GetCoverage();
-                if (dekking >= MIN_DEKKING_PCT && aantalFrontiers <= FRONTIER_DREMPEL * 2) {
-                    printf("[MAIN] Omloop klaar (%d scans, %d%%) → FRONTIER\n", wallScans, dekking);
-                    hoofdModus = HoofdModus::FRONTIER;
-                }
+            int dekking = mapper.GetCoverage();
+            if (wallScans % 10 == 0)
+                printf("[MAIN] MUUR_VOLGEN scan=%d dekking=%d%%\n", wallScans, dekking);
+            if (dekking >= MIN_DEKKING_PCT) {
+                printf("[MAIN] Dekking bereikt (%d%%) -> TERUG_HOME\n", dekking);
+                hoofdModus = HoofdModus::TERUG_HOME;
+            } else if (wallScans >= MIN_OMLOOP_SCANS) {
+                printf("[MAIN] Omloop klaar (%d scans, %d%%) -> FRONTIER\n", wallScans, dekking);
+                hoofdModus = HoofdModus::FRONTIER;
             }
         }
     } else {
@@ -189,23 +191,36 @@ static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position po
     int& scansSindsHerplan, int& mislukteTeller, HoofdModus& hoofdModus, bool& heeftPad,
     float ontsnapX, float ontsnapY, CommandKeepAlive& ka, PathPlanner& planner,
     std::vector<BlacklistItem>& frontierBlacklist, int HERPLAN_SCANS, int MIN_DEKKING_PCT,
-    int FRONTIER_DREMPEL, int MISLUKT_DREMPEL, float ONTSNAP_RADIUS, const float* lastRanges,
+    int MISLUKT_DREMPEL, float ONTSNAP_RADIUS, const float* lastRanges,
     float minVoor) {
 
-    WallResult wf = navigator.BerekenMuurCommando(lastRanges);
-    if (wf.staat != WallStaat::OPEN_RUIMTE) {
-        hoofdModus = HoofdModus::MUUR_VOLGEN;
-        heeftPad = false;
-        navigator.ResetMuurvolger();
-        printf("[MAIN] Muur teruggevonden → MUUR_VOLGEN\n");
-        ka.SetCommand(wf.cmd.GetLinVelocity(), wf.cmd.GetAngVelocity());
-        return;
+    bool skipMuurCheck = heeftPad && !navigator.IsFinished() &&
+                         (std::fabs(ka.GetAng()) > 30.0f || ka.GetLin() < 0.0f);
+    if (!skipMuurCheck) {
+        WallResult wf = navigator.ComputeWallCommand(lastRanges);
+        if (wf.state != WallState::OPEN_SPACE) {
+            hoofdModus = HoofdModus::MUUR_VOLGEN;
+            heeftPad = false;
+            navigator.ResetWallFollower();
+            printf("[MAIN] Muur teruggevonden -> MUUR_VOLGEN\n");
+            ka.SetCommand(wf.cmd.GetLinVelocity(), wf.cmd.GetAngVelocity());
+            return;
+        }
     }
 
     if (heeftPad && !navigator.IsFinished()) {
         navigator.Update(pos);
         DriveCommand cmd = navigator.GetNextCommand(pos, minVoor);
         ka.SetCommand(cmd.GetLinVelocity(), cmd.GetAngVelocity());
+        // Heel pad geskipt door lokalisatie-drift -> doel blacklisten
+        if (navigator.IsBlocked()) {
+            printf("[MAIN] pad geskipt, doel op blacklist\n");
+            Position bt = navigator.GetCurrentTarget();
+            VoegToeAanBlacklist(frontierBlacklist, bt.GetX(), bt.GetY());
+            navigator.ResetBlock();
+            heeftPad = false;
+            scansSindsHerplan = HERPLAN_SCANS;
+        }
     } else {
         if (heeftPad && navigator.IsFinished()) {
             heeftPad = false;
@@ -213,14 +228,14 @@ static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position po
         }
         if (nieuweScan) {
             scansSindsHerplan = 0;
-            int aantalFrontiers = TelFrontiers(mapper);
             int dekking = mapper.GetCoverage();
+            printf("[MAIN] FRONTIER dekking=%d%% mislukt=%d\n", dekking, mislukteTeller);
 
-            if (dekking >= MIN_DEKKING_PCT && (aantalFrontiers <= FRONTIER_DREMPEL || mislukteTeller >= MISLUKT_DREMPEL)) {
+            if (dekking >= MIN_DEKKING_PCT || mislukteTeller >= MISLUKT_DREMPEL) {
                 hoofdModus = HoofdModus::TERUG_HOME;
                 heeftPad = false;
                 mislukteTeller = 0;
-                printf("[MAIN] Klaar → TERUG_HOME\n");
+                printf("[MAIN] Klaar (%d%%) -> TERUG_HOME\n", dekking);
                 Path pad = planner.PlanPath(pos, Position(0.0f, 0.0f, 0.0f), mapper.GetMap());
                 if (!pad.IsEmpty()) { navigator.SetPath(pad); heeftPad = true; }
             } else {
@@ -248,7 +263,7 @@ static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position po
 }
 
 static void HandleReturnToHome(Navigator& navigator, Mapper& mapper, Position pos, Position beginPunt,
-    bool& heeftPad, CommandKeepAlive& ka, PathPlanner& planner, float HOME_DREMPEL_MM) {
+    bool& heeftPad, CommandKeepAlive& ka, PathPlanner& planner, float HOME_DREMPEL_MM, HoofdModus& hoofdModus) {
 
     float dx = pos.GetX() - beginPunt.GetX();
     float dy = pos.GetY() - beginPunt.GetY();
@@ -256,6 +271,9 @@ static void HandleReturnToHome(Navigator& navigator, Mapper& mapper, Position po
         ka.Stop();
         mapper.SaveDebugMap("kaart.pgm");
         printf("[MAIN] Thuis aangekomen!\n");
+        hoofdModus = HoofdModus::KLAAR;
+        running = false;
+        return;
     } else {
         if (!heeftPad || navigator.IsFinished()) {
             heeftPad = false;
@@ -264,7 +282,7 @@ static void HandleReturnToHome(Navigator& navigator, Mapper& mapper, Position po
                 navigator.SetPath(pad);
                 heeftPad = true;
             } else {
-                float hoek = std::atan2(-dy, -dx) * (180.0f / M_PI);
+                float hoek = static_cast<float>(std::atan2(-dy, -dx)) * (180.0f / M_PI);
                 ka.SetCommand(200.0f, NormDeg(hoek - pos.GetTheta()) * 0.5f);
             }
         }
@@ -281,14 +299,13 @@ static void HandleReturnToHome(Navigator& navigator, Mapper& mapper, Position po
 // ─────────────────────────────────────────────────────────────────
 static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
     Localisation loc(219.0f);
-    Mapper mapper(260, 160, 0.03f);
-
+    Mapper mapper(220, 240, 0.03f);
+    
     constexpr float DT = 0.1f;
     constexpr long LOOP_US = 100000;
     constexpr float LIN_SPEED = 278.0f;
     constexpr int HERPLAN_SCANS = 15;
-    constexpr int MIN_DEKKING_PCT  = 5;
-    constexpr int FRONTIER_DREMPEL = 10;
+    constexpr int MIN_DEKKING_PCT  = 40;
     constexpr int MISLUKT_DREMPEL = 5;
     constexpr float HOME_DREMPEL_MM = 300.0f;
     constexpr float ONTSNAP_RADIUS = 700.0f;
@@ -400,8 +417,8 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
             nieuweScan = true;
         }
 
-        ScanAnalyse scan{};
-        if (heeftRanges) scan = AnalyseerScan(lastRanges);
+        ScanAnalysis scan{};
+        if (heeftRanges) scan = AnalyzeScan(lastRanges);
 
         // Vastzit-detectie
         if (ontwijkFase != OntwijkFase::NORMAAL && hoofdModus != HoofdModus::TERUG_HOME) {
@@ -433,16 +450,16 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
                 case HoofdModus::MUUR_VOLGEN:
                     HandleWallFollowing(navigator, lastRanges, nieuweScan, wallScans, hoofdModus,
                         planner, frontierBlacklist, pos, ka, HERPLAN_SCANS, MIN_OMLOOP_SCANS,
-                        MIN_DEKKING_PCT, FRONTIER_DREMPEL, mapper);
+                        MIN_DEKKING_PCT, mapper);
                     break;
                 case HoofdModus::FRONTIER:
     HandleFrontierMode(navigator, mapper, pos, nieuweScan, scansSindsHerplan,
         mislukteTeller, hoofdModus, heeftPad, ontsnapX, ontsnapY, ka, planner,
-        frontierBlacklist, HERPLAN_SCANS, MIN_DEKKING_PCT, FRONTIER_DREMPEL,
-        MISLUKT_DREMPEL, ONTSNAP_RADIUS, lastRanges, scan.minVoor);
+        frontierBlacklist, HERPLAN_SCANS, MIN_DEKKING_PCT,
+        MISLUKT_DREMPEL, ONTSNAP_RADIUS, lastRanges, scan.minFront);
     break;
                 case HoofdModus::TERUG_HOME:
-                    HandleReturnToHome(navigator, mapper, pos, beginPunt, heeftPad, ka, planner, HOME_DREMPEL_MM);
+                    HandleReturnToHome(navigator, mapper, pos, beginPunt, heeftPad, ka, planner, HOME_DREMPEL_MM, hoofdModus);
                     break;
                 case HoofdModus::KLAAR:
                     running = false;

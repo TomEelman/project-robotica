@@ -77,7 +77,7 @@ public:
 
 private:
     // ── Waypoint follower constants ───────────────────────────────
-    static constexpr float REACHED_THRESHOLD_MM  = 150.0f;
+    static constexpr float REACHED_THRESHOLD_MM  = 200.0f;
     static constexpr float LINEAR_SPEED_MM_S     = 278.0f;
     static constexpr float ANGULAR_GAIN          = 2.5f;
     static constexpr float MAX_ANGULAR_DEG_S     = 45.0f;
@@ -86,7 +86,7 @@ private:
     static constexpr float SLOW_TURN_FACTOR      = 0.6f;
 
     // Stable command: only recompute after N ticks or on obstacle/event
-    static constexpr int   CMD_STABLE_TICKS      = 30;     // ~3 sec at 10Hz
+    static constexpr int   CMD_STABLE_TICKS      = 3;      // herteken snel zodat slip wordt gecorrigeerd
     static constexpr float OBSTACLE_INTERRUPT_MM = 400.0f; // front stop threshold
 
     // ── Recovery constants ────────────────────────────────────────

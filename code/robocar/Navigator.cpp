@@ -2,9 +2,7 @@
 #include <cmath>
 #include <cstdio>
 
-// ─────────────────────────────────────────────────────────────────
-//  NormDeg — normalize angle to (-180, 180]
-// ─────────────────────────────────────────────────────────────────
+// NormDeg — normalize angle to (-180, 180]
 float NormDeg(float deg) {
     while (deg >  180.0f) deg -= 360.0f;
     while (deg < -180.0f) deg += 360.0f;
@@ -12,9 +10,7 @@ float NormDeg(float deg) {
 }
 
 
-// ─────────────────────────────────────────────────────────────────
-//  AnalyzeScan — sector analysis of a 360° scan (obstacle avoidance)
-// ─────────────────────────────────────────────────────────────────
+// AnalyzeScan — sector analysis of a 360° scan (obstacle avoidance)
 static float g_prevAvoid = 0.0f;
 
 ScanAnalysis AnalyzeScan(const float ranges[360]) {
@@ -94,9 +90,7 @@ ScanAnalysis AnalyzeScan(const float ranges[360]) {
 }
 
 
-// ─────────────────────────────────────────────────────────────────
-//  Constructor
-// ─────────────────────────────────────────────────────────────────
+// Constructor
 Navigator::Navigator()
     : path()
     , currentTarget(0.0f, 0.0f, 0.0f)
@@ -115,9 +109,7 @@ Navigator::Navigator()
 {}
 
 
-// ─────────────────────────────────────────────────────────────────
-//  SetPath / Update — path management
-// ─────────────────────────────────────────────────────────────────
+// SetPath / Update — path management
 void Navigator::SetPath(const Path& newPath) {
     path = newPath;
     path.Reset();
@@ -149,36 +141,34 @@ void Navigator::Update(Position current) {
 }
 
 
-// ─────────────────────────────────────────────────────────────────
-//  GetNextCommand — core of the waypoint follower + recovery
+// GetNextCommand — core of the waypoint follower + recovery
 //
-//  Logic in order:
-//    1. Finish any running recovery action (reverse or turn).
-//    2. Obstacle in front → raise block counter; if too often → recover.
-//    3. Waypoint reached → stop, done.
-//    4. Repeat the stable command while still valid (no wobbling).
-//    5. Otherwise compute a new command from the heading error.
-// ─────────────────────────────────────────────────────────────────
+// Logic in order:
+//   1. Finish any running recovery action (reverse or turn).
+//   2. Obstacle in front -> raise block counter; if too often -> recover.
+//   3. Waypoint reached -> stop, done.
+//   4. Repeat the stable command while still valid (no wobbling).
+//   5. Otherwise compute a new command from the heading error.
 DriveCommand Navigator::GetNextCommand(Position current, float minFront, float minRear) {
     if (!hasPath || path.IsEmpty())
         return DriveCommand(0.0f, 0.0f);
 
-    // ── 1. Running recovery action ───────────────────────────────
+    // -- 1. Running recovery action ----------------------------
     if (recoveryTicks > 0) {
         --recoveryTicks;
         return DriveCommand(stableLin, stableAng); // recovery cmd already set
     }
 
-    // ── 2. Obstacle interrupt + block detection ──────────────────
+    // -- 2. Obstacle interrupt + block detection ----------------
     if (minFront < OBSTACLE_INTERRUPT_MM) {
         ++blockCounter;
         hasStableCmd = false;
         cmdTicks     = 0;
 
-        // Blocked too often → choose a recovery action
+        // Blocked too often -> choose a recovery action
         if (blockCounter >= RECOVERY_TRIGGER) {
             if (minRear > REVERSE_SAFE_MM) {
-                // Rear is clear → reverse straight (the robot came from
+                // Rear is clear -> reverse straight (the robot came from
                 // there, so going back is safe)
                 stableLin     = REVERSE_SPEED;
                 stableAng     = 0.0f;
@@ -186,7 +176,7 @@ DriveCommand Navigator::GetNextCommand(Position current, float minFront, float m
                 blocked       = true;   // signal MainPi5: replan
                 printf("[NAV] RECOVERY reverse (front=%.0f rear=%.0f)\n", minFront, minRear);
             } else {
-                // Rear also blocked → turn in place to search for an exit.
+                // Rear also blocked -> turn in place to search for an exit.
                 // Direction follows the sign of the heading error.
                 float angleErr = CalculateAngleError(current, currentTarget);
                 stableLin     = 0.0f;
@@ -199,47 +189,72 @@ DriveCommand Navigator::GetNextCommand(Position current, float minFront, float m
             return DriveCommand(stableLin, stableAng);
         }
 
-        // Not yet at recovery → just stop this tick
+        // Not yet at recovery -> just stop this tick
         return DriveCommand(0.0f, 0.0f);
     }
 
-    // No more obstacle → wind the block counter back down
+    // No more obstacle -> wind the block counter back down
     if (blockCounter > 0) --blockCounter;
 
     float dist     = CalculateDistance(current, currentTarget);
     float angleErr = CalculateAngleError(current, currentTarget);
 
-    // ── 3. Waypoint reached ──────────────────────────────────────
+    // -- 3. Waypoint reached of onbereikbaar -------------------------
     if (dist < REACHED_THRESHOLD_MM) {
         hasStableCmd = false;
         cmdTicks     = 0;
         return DriveCommand(0.0f, 0.0f);
     }
 
-    // ── 4. Repeat the stable command ─────────────────────────────
-    if (hasStableCmd && cmdTicks < CMD_STABLE_TICKS) {
+    // Waypoint bijna recht achter robot (hoekfout > 120 graden).
+    // Door lokalisatie-drift kan hij hier eindeloos voor draaien.
+    // Sla het over zodat het pad doorgaat.
+    if (std::fabs(angleErr) > 120.0f) {
+        printf("[NAV] skip waypoint achter robot (err=%.1fdeg dist=%.0fmm)\n",
+               angleErr, dist);
+        path.Advance();
+        if (!path.IsEmpty()) {
+            currentTarget = path.GetCurrentWaypoint();
+            hasStableCmd  = false;
+            cmdTicks      = 0;
+        } else {
+            // Heel pad geskipt door lokalisatie-drift.
+            // Markeer als blocked zodat MainPi5 het doel blacklist
+            // en een nieuw frontier kiest.
+            hasPath = false;
+            blocked = true;
+            printf("[NAV] heel pad geskipt, blocked=true\n");
+        }
+        return DriveCommand(0.0f, 0.0f);
+    }
+
+    // -- 4. Repeat the stable command --------------------------
+    // Bij grote hoekfout nooit een oud commando herhalen: door slip
+    // verandert de hoekfout snel en moet hij elke tick bijsturen.
+    bool grooteDraai = (std::fabs(angleErr) > SLOW_TURN_THRESHOLD);
+    if (hasStableCmd && cmdTicks < CMD_STABLE_TICKS && !grooteDraai) {
         ++cmdTicks;
         return DriveCommand(stableLin, stableAng);
     }
 
-    // ── 5. Compute a new command ─────────────────────────────────
+    // -- 5. Compute a new command ------------------------------
     float absErr = std::fabs(angleErr);
     float newLin, newAng;
 
     if (absErr > SLOW_TURN_THRESHOLD) {
-        // Large heading error → drive slowly AND turn hard.
-        // (Do not stand still: keep moving to avoid spinning in place.)
-        newLin = LINEAR_SPEED_MM_S * SLOW_TURN_FACTOR;
+        // Large heading error -> turn in place to avoid wheel slip.
+        // Driving with big angular error fights the motors against each other.
+        newLin = 0.0f;
         newAng = MAX_ANGULAR_DEG_S;
         if (angleErr > 0.0f) newAng = -newAng;
     } else if (absErr > ANGLE_DEADBAND_DEG) {
-        // Moderate heading error → drive with proportional correction
+        // Moderate heading error -> drive with proportional correction
         newLin = LINEAR_SPEED_MM_S * SLOW_TURN_FACTOR;
         newAng = ANGULAR_GAIN * absErr;
         if (newAng > MAX_ANGULAR_DEG_S) newAng = MAX_ANGULAR_DEG_S;
         if (angleErr > 0.0f) newAng = -newAng;
     } else {
-        // Well aligned → straight ahead (278, 0)
+        // Well aligned -> straight ahead (278, 0)
         newLin = LINEAR_SPEED_MM_S;
         newAng = 0.0f;
     }
@@ -280,9 +295,7 @@ float Navigator::CalculateAngleError(Position current, Position target) const {
 float Navigator::NormalizeDeg(float deg) const { return NormDeg(deg); }
 
 
-// ─────────────────────────────────────────────────────────────────
-//  Wall follower — sector helpers
-// ─────────────────────────────────────────────────────────────────
+// Wall follower — sector helpers
 float Navigator::WfSectorMin(const float ranges[360], int from, int to) const {
     static constexpr float MAX_R = 8000.0f;
     float m = MAX_R;
@@ -312,9 +325,7 @@ void Navigator::ResetWallFollower() {
 }
 
 
-// ─────────────────────────────────────────────────────────────────
-//  ComputeWallCommand — right-hand wall follower
-// ─────────────────────────────────────────────────────────────────
+// ComputeWallCommand — right-hand wall follower
 WallResult Navigator::ComputeWallCommand(const float ranges[360]) {
     float minFrontNarrow = std::min(WfSectorMin(ranges, 350, 360), WfSectorMin(ranges, 0, 10));
     float minFront       = std::min(WfSectorMin(ranges, 330, 360), WfSectorMin(ranges, 0, 30));
@@ -328,7 +339,7 @@ WallResult Navigator::ComputeWallCommand(const float ranges[360]) {
 
     WallResult res{DriveCommand(0.0f, 0.0f), WallState::OPEN_SPACE, 0.0f};
 
-    // CASE 1: wall straight ahead → inner corner, turn left
+    // CASE 1: wall straight ahead -> inner corner, turn left
     if (wallInFront) {
         wallState = WallState::INNER_CORNER; wfFilteredError = 0.0f; outerCornerTicks = 0;
         res.cmd = DriveCommand(0.0f, -WF_INNER_CORNER_TURN);
@@ -337,7 +348,7 @@ WallResult Navigator::ComputeWallCommand(const float ranges[360]) {
         return res;
     }
 
-    // CASE 2: right wall gone + front-right open → outer corner
+    // CASE 2: right wall gone + front-right open -> outer corner
     // (only valid if we were actually following a wall)
     if (!rightWallPresent && frontRightClear && wallState == WallState::FOLLOW_RIGHT) {
         wallState = WallState::OUTER_CORNER; outerCornerTicks = 0; wfFilteredError = 0.0f;
@@ -358,7 +369,7 @@ WallResult Navigator::ComputeWallCommand(const float ranges[360]) {
         }
     }
 
-    // CASE 3: no wall on the right → open space (MainPi5 switches to frontier)
+    // CASE 3: no wall on the right -> open space (MainPi5 switches to frontier)
     if (!rightWallPresent) {
         wallState = WallState::OPEN_SPACE;
         float lin = wallFrontLikely ? WF_LIN_SLOW : WF_LIN_NORMAL;

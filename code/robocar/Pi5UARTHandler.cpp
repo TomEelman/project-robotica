@@ -68,7 +68,7 @@ void Pi5UARTHandler::Close() {
 
 bool Pi5UARTHandler::IsOpen() const { return fd >= 0; }
 
-// ── LeesData ─────────────────────────────────────────────────────
+// â”€â”€ LeesData â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Non-blocking. Leest byte voor byte, bouwt regels op.
 // Herkent DATA: pakketten. Logt alles anders naar stderr.
 bool Pi5UARTHandler::LeesData() {
@@ -82,19 +82,24 @@ bool Pi5UARTHandler::LeesData() {
 
         if (c == '\n') {
             lineBuffer[linePos] = '\0';
-            if (linePos > 0) {
+            int regelLen = linePos;  // bewaar lengte vÃ³Ã³r reset
+            linePos = 0;
+            if (regelLen > 0) {
                 if (ParseDataRegel(lineBuffer)) {
                     hadData = true;
-                } else if (linePos > 2) {
-                    // Log naar stderr zodat je kunt zien wat de Pico stuurt
+                } else if (strncmp(lineBuffer, "ACK:", 4) == 0) {
+                    // ACK:OK:lin=...,ang=... en ACK:STOP komen elke 100ms
+                    // binnen â€” stilzwijgend negeren zodat stderr niet blokkeert
+                    // en de loop-timing niet verstoord wordt.
+                } else if (regelLen > 2) {
+                    // Onbekende regels loggen (ERR:, debug prints van Pico, etc.)
                     fprintf(stderr, "[Pico] %s\n", lineBuffer);
                 }
             }
-            linePos = 0;
         } else if (linePos < (int)sizeof(lineBuffer) - 1) {
             lineBuffer[linePos++] = c;
         } else {
-            // Buffer vol zonder newline — sync verloren, reset
+            // Buffer vol zonder newline â€” sync verloren, reset
             linePos = 0;
         }
     }
@@ -113,7 +118,7 @@ bool Pi5UARTHandler::ParseDataRegel(const char* regel) {
     float yaw   = strtof(p, &end); if (end == p || *end != ',') return false; p = end + 1;
     float omega = strtof(p, &end); if (end == p)                return false;
 
-    // Sanity check — gooi onmogelijke waarden weg
+    // Sanity check â€” gooi onmogelijke waarden weg
     if (encL < -5000.0f || encL > 5000.0f) return false;
     if (encR < -5000.0f || encR > 5000.0f) return false;
     if (yaw  <  -360.0f || yaw  >  360.0f) return false;
@@ -126,7 +131,7 @@ bool Pi5UARTHandler::ParseDataRegel(const char* regel) {
     return true;
 }
 
-// ── StuurCommand ─────────────────────────────────────────────────
+// â”€â”€ StuurCommand â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 void Pi5UARTHandler::StuurCommand(float lin, float ang) {
     if (!IsOpen()) return;
     char buf[48];
@@ -134,9 +139,9 @@ void Pi5UARTHandler::StuurCommand(float lin, float ang) {
     write(fd, buf, strlen(buf));
 }
 
-// ── StuurStop ────────────────────────────────────────────────────
+// â”€â”€ StuurStop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Stuurt zowel "STOP\n" als "CMD:0.0,0.0\n" voor maximale kans
-// dat de Pico stopt — zelfs als één pakket verloren gaat.
+// dat de Pico stopt â€” zelfs als Ã©Ã©n pakket verloren gaat.
 void Pi5UARTHandler::StuurStop() {
     if (!IsOpen()) return;
     const char* stop = "STOP\n";
