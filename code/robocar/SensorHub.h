@@ -26,7 +26,7 @@ public:
     void InitUart();
     void HandleUart();
 
-    bool  UpdateSensors();
+    bool UpdateSensors();
 
     float GetSpeedLeft()     const;
     float GetDistanceLeft()  const;
@@ -51,14 +51,14 @@ private:
     DateTime lastUpdate;
     bool sensorsUpdated;
 
-    static volatile char rx_buffer[UART_BUFFER_LEN];
-    static volatile int  rx_pos;
+    static volatile char rxBuffer[UART_BUFFER_LEN];
+    static volatile int  rxPos;
     static volatile bool messageReady;
     static SensorHub*    instance;
 
-    static void UartRxIrqHandler();
-    void        ProcessRequest(const char* request);
-    void        SendResponse(const char* response);
+    static void uartRxIrqHandler();
+    void        processRequest(const char* request);
+    void        sendResponse(const char* response);
 };
 
 #endif

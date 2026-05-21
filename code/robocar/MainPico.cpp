@@ -5,16 +5,16 @@
 #include <cstdio>
 
 // ════════════════════════════════════════════════════════════════
-//  MainPico  —  Pico hoofdloop
+// MainPico  —  Pico main loop
 //
-//  PicoUARTHandler.Tick() doet alles:
-//    - Ontvangt CMD van Pi5 en geeft die terug als DriveCommand
-//    - Pusht elke 50ms automatisch DATA naar Pi5
-//    - Watchdog: geen CMD binnen 500ms → stop
+// PicoUARTHandler.Tick() handles:
+//   - Receiving CMD messages from the Pi5
+//   - Automatically pushing DATA packets every 50 ms
+//   - Command timeout watchdog (500 ms → emergency stop)
 //
-//  MainPico hoeft alleen:
-//    1. Tick() aanroepen
-//    2. Commando uitvoeren als Tick() true geeft
+// MainPico only needs to:
+//   1. Call Tick()
+//   2. Execute commands when Tick() returns true
 // ════════════════════════════════════════════════════════════════
 
 int main()
@@ -27,21 +27,25 @@ int main()
 
     uart.Init();
 
-    printf("[Pico] Gestart — wacht op CMD van Pi5\n");
+    printf("[Pico] Started — waiting for CMD from Pi5\n");
 
     while (true) {
         absolute_time_t loopStart = get_absolute_time();
 
-        // Tick verwerkt UART, pusht DATA, checkt watchdog
-        DriveCommand cmd(0.0f, 0.0f);
-        if (uart.Tick(cmd))
-            robot.Execute(cmd);
 
-        // Loop op ~100 Hz houden (10 ms per cyclus)
-        int64_t elapsed = absolute_time_diff_us(loopStart, get_absolute_time());
-        int64_t rest    = 10000 - elapsed;
-        if (rest > 0)
-            sleep_us(static_cast<uint32_t>(rest));
+        DriveCommand cmd(0.0f, 0.0f);
+
+        if (uart.Tick(cmd)) { // logic for uart handling with watchdog checks when there is an new cmd execute it
+            robot.Execute(cmd); 
+        }
+
+        // Maintain loop frequency at approximately 100 Hz (10 ms cycle)
+        int64_t elapsedUs = absolute_time_diff_us(loopStart, get_absolute_time());
+        int64_t remainingUs = 10000 - elapsedUs;
+
+        if (remainingUs > 0) {
+            sleep_us(static_cast<uint32_t>(remainingUs));
+        }
     }
 
     return 0;

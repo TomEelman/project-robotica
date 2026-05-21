@@ -2,8 +2,8 @@
 #include <string.h>
 #include <cstdio>
 
-volatile char  SensorHub::rx_buffer[UART_BUFFER_LEN] = {0};
-volatile int   SensorHub::rx_pos      = 0;
+volatile char  SensorHub::rxBuffer[UART_BUFFER_LEN] = {0};
+volatile int   SensorHub::rxPos       = 0;
 volatile bool  SensorHub::messageReady = false;
 SensorHub*     SensorHub::instance    = nullptr;
 
@@ -28,12 +28,12 @@ void SensorHub::InitUart()
     uart_set_fifo_enabled(SENSOR_UART, false); // byte-by-byte IRQ, no buffering delay
 
     int irqNum = (SENSOR_UART == uart0) ? UART0_IRQ : UART1_IRQ;
-    irq_set_exclusive_handler(irqNum, UartRxIrqHandler);
+    irq_set_exclusive_handler(irqNum, uartRxIrqHandler);
     irq_set_enabled(irqNum, true);
     uart_set_irq_enables(SENSOR_UART, true, false);
 }
 
-void SensorHub::UartRxIrqHandler()
+void SensorHub::uartRxIrqHandler()
 {
     while (uart_is_readable(SENSOR_UART)) {
         char c = uart_getc(SENSOR_UART);
@@ -41,11 +41,11 @@ void SensorHub::UartRxIrqHandler()
         if (c == '\r') continue;
 
         if (c == '\n') {
-            rx_buffer[rx_pos] = '\0';
-            rx_pos = 0;
+            rxBuffer[rxPos] = '\0';
+            rxPos = 0;
             messageReady = true;
-        } else if (rx_pos < UART_BUFFER_LEN - 1) {
-            rx_buffer[rx_pos++] = c;
+        } else if (rxPos < UART_BUFFER_LEN - 1) {
+            rxBuffer[rxPos++] = c;
         }
     }
 }
@@ -55,13 +55,13 @@ void SensorHub::HandleUart()
     if (!messageReady) return;
 
     char request[UART_BUFFER_LEN];
-    strncpy(request, (const char*)rx_buffer, sizeof(request));
+    strncpy(request, (const char*)rxBuffer, sizeof(request));
     messageReady = false;
 
-    ProcessRequest(request);
+    processRequest(request);
 }
 
-void SensorHub::ProcessRequest(const char* request)
+void SensorHub::processRequest(const char* request)
 {
     UpdateSensors();
 
@@ -80,10 +80,10 @@ void SensorHub::ProcessRequest(const char* request)
         snprintf(response, sizeof(response), "ERROR:UNKNOWN\n");
     }
 
-    SendResponse(response);
+    sendResponse(response);
 }
 
-void SensorHub::SendResponse(const char* response)
+void SensorHub::sendResponse(const char* response)
 {
     uart_puts(SENSOR_UART, response);
 }

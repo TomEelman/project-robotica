@@ -27,7 +27,7 @@
 #define PICO_UART_RX_PIN 1
 
 // Hoe vaak sensor-data gepusht wordt (ms)
-static constexpr uint32_t PUSH_INTERVAL_MS   = 50;
+static constexpr uint32_t PUSH_INTERVAL_MS    = 50;
 
 // Watchdog: geen CMD binnen deze tijd → stop
 static constexpr uint32_t PICO_CMD_TIMEOUT_MS = 500;
@@ -56,13 +56,13 @@ private:
     uint32_t     lastCmdTimeMs;
     uint32_t     lastPushMs;
 
-    static volatile char rx_buffer[128];
-    static volatile int  rx_pos;
-    static volatile bool bericht_klaar;
+    static volatile char rxBuffer[128];
+    static volatile int  rxPos;
+    static volatile bool messageReady;
     static PicoUARTHandler* instance;
 
-    void HandleLine(const char* line);
-    void PushData();
-    bool ParseCmd(const char* line, float& lin, float& ang);
-    void Send(const char* msg);
+    void handleLine(const char* line);
+    void pushData();
+    bool parseCmd(const char* line, float& lin, float& ang);
+    void send(const char* msg);
 };

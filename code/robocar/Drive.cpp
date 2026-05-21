@@ -2,13 +2,13 @@
 #include <cstdio>
 #include <cmath>
 
-//links klein verschil mer rechts
-//Left PID
+// Left motor requires slightly different PID tuning than right motor
+// Left PID
 static constexpr float PID_LEFT_KP  = 0.145f;
 static constexpr float PID_LEFT_KI  = 1.763f;
 static constexpr float PID_LEFT_KD  = 0.0074f;
 
-//Right PID
+// Right PID
 static constexpr float PID_RIGHT_KP = 0.135f;
 static constexpr float PID_RIGHT_KI = 1.688f;
 static constexpr float PID_RIGHT_KD = 0.0074f;
@@ -29,9 +29,9 @@ static constexpr float CLAMP_MIN_PWM = 30.0f;
 // Lower → smoother but slower to react; higher → noisier but faster.
 static constexpr float EMA_ALPHA = 0.5f;
 
-// During pure-rotation the feedforward PWM is derived from the target angular
-// velocity using this linear approximation (experimentally determined):
-//   pwm = (angVel_deg_s + 52.2) / 1.34
+// During only rotation feedforward PWM is derived from the target angular
+// velocity using this linear approximation
+// pwm = (angVel_deg_s + 52.2) / 1.34
 static constexpr float FF_OFFSET = 52.2f;
 static constexpr float FF_SCALE  = 1.34f;
 
@@ -39,7 +39,7 @@ static constexpr float TURN_SPEED_GAIN          = 0.3f;
 static constexpr float TURN_COUPLED_MIN_FACTOR  = 0.5f;
 static constexpr float TURN_COUPLED_MAX_FACTOR  = 1.5f;
 
-static constexpr float DEFAULT_RAMP_STEP = 5.0f;
+static constexpr float DEFAULT_RAMP_STEP = 5.0f; // for ramped linear
 
 
 
@@ -79,7 +79,7 @@ Drive::Drive(Motor&     leftMotor,
 {
 }
 
-void Drive::ClampPwm(float& pwm, float minPwm)
+void Drive::clampPwm(float& pwm, float minPwm)
 {
     if (fabsf(pwm) < minPwm)
         pwm = 0.0f;
@@ -89,26 +89,32 @@ void Drive::ClampPwm(float& pwm, float minPwm)
         pwm = -255.0f;
 }
 
-float Drive::PercentToPwm(float percent)
+float Drive::percentToPwm(float percent)
 {
     if (percent < -100.0f) percent = -100.0f;
     if (percent >  100.0f) percent =  100.0f;
     return (percent / 100.0f) * 255.0f;
 }
 
-void Drive::UpdateDriveMode(float linear, float angular)
+void Drive::updateDriveMode(float linear, float angular)
 {
     const float LIN_DEAD = 0.001f;
     const float ANG_DEAD = 0.001f;
 
-    if      (fabsf(linear) < LIN_DEAD && angular >  ANG_DEAD) driveMode = DriveMode::TurnRight;
-    else if (fabsf(linear) < LIN_DEAD && angular < -ANG_DEAD) driveMode = DriveMode::TurnLeft;
-    else if (linear >  LIN_DEAD)                               driveMode = DriveMode::Forward;
-    else if (linear < -LIN_DEAD)                               driveMode = DriveMode::Backward;
-    else                                                        driveMode = DriveMode::Stopped;
+    if (fabsf(linear) < LIN_DEAD && angular >  ANG_DEAD) {
+        driveMode = DriveMode::TurnRight;
+    } else if (fabsf(linear) < LIN_DEAD && angular < -ANG_DEAD) {
+        driveMode = DriveMode::TurnLeft;
+    } else if (linear >  LIN_DEAD) {                              
+        driveMode = DriveMode::Forward;
+    } else if (linear < -LIN_DEAD) {                             
+        driveMode = DriveMode::Backward;
+    } else {
+        driveMode = DriveMode::Stopped;
+    }
 }
 
-void Drive::UpdateRamp(float linearTarget)
+void Drive::updateRamp(float linearTarget)
 {
     if (driveMode == DriveMode::TurnLeft  ||
         driveMode == DriveMode::TurnRight ||
@@ -120,24 +126,25 @@ void Drive::UpdateRamp(float linearTarget)
 
     float absTgt  = fabsf(linearTarget);
     float absRamp = fabsf(rampedLinear);
-    float sign    = (linearTarget >= 0.0f) ? 1.0f : -1.0f;
+    float sign    = (linearTarget >= 0.0f) ? 1.0f : -1.0f; // declares if target was forward or backward
 
-    // Jump to minPwmLeft on the very first tick so the motor overcomes
-    // static friction immediately rather than ramping through the dead zone.
-    if (absRamp < minPwmLeft)
+    // Jump over stall
+    if (absRamp < minPwmLeft) {
         absRamp = minPwmLeft;
+    }
 
     absRamp += rampStep;
-    if (absRamp > absTgt) absRamp = absTgt;
+
+    if (absRamp > absTgt) {
+        absRamp = absTgt;
+    }
 
     rampedLinear = sign * absRamp;
 }
 
-float Drive::ComputeYawCorrection()
+float Drive::computeYawCorrection()
 {
-    // targetYaw is latched in Execute() on the first tick of a new move,
-    // so yawInitialized is already true when we get here during normal driving.
-    // The guard below is a fallback for any edge case where that didn't happen.
+    // fallback normally alwast true (set in execute())
     if (!yawInitialized) {
         targetYaw      = sensorHub.GetCurrentYaw();
         yawInitialized = true;
@@ -147,28 +154,36 @@ float Drive::ComputeYawCorrection()
     float currentYaw = sensorHub.GetCurrentYaw();
     float yawError   = targetYaw - currentYaw;
 
-    // Wrap to [-180, 180] to handle the 0/360 boundary.
-    while (yawError >  180.0f) yawError -= 360.0f;
-    while (yawError < -180.0f) yawError += 360.0f;
-
-    // Negate: positive yawError (drifted left) → positive output → steer right.
+    // Wrap arround
+    while (yawError >  180.0f) {
+        yawError -= 360.0f;
+    }
+    while (yawError < -180.0f) {
+        yawError += 360.0f;
+    }
+    
     return pidYaw.Compute(0.0f, -yawError);
 }
 
-void Drive::ExecuteTurn(float angular)
+void Drive::executeTurn(float angular)
 {
     yawInitialized = false;
 
-    float wheelbaseMm = wheelbaseMeters * 1000.0f;
-    float angularRad     = fabsf(angular) * (static_cast<float>(M_PI) / 180.0f);
+    float wheelbaseMm    = wheelbaseMeters * 1000.0f; // M to mm = times 1000
+    float angularRad     = fabsf(angular) * (M_PI/ 180.0f);
     float targetWheelSpd = angularRad * wheelbaseMm * 0.5f;
 
     float feedforward = (fabsf(angular) + FF_OFFSET) / FF_SCALE;
-    if (feedforward < minPwmLeft) feedforward = minPwmLeft;
-    if (feedforward > 255.0f)     feedforward = 255.0f;
+    if (feedforward < minPwmLeft) {
+        feedforward = minPwmLeft;
+    }
 
-    float rawL  = sensorHub.GetSpeedLeft();
-    float rawR  = sensorHub.GetSpeedRight();
+    if (feedforward > 255.0f) {
+        feedforward = 255.0f;
+    }
+
+    float rawL   = sensorHub.GetSpeedLeft();
+    float rawR   = sensorHub.GetSpeedRight();
     bool  freshL = sensorHub.HasFreshLeft();
     bool  freshR = sensorHub.HasFreshRight();
     sensorHub.ConsumeFreshFlags();
@@ -187,10 +202,14 @@ void Drive::ExecuteTurn(float angular)
     float avgSpeed      = 0.5f * (speedLeftFiltered + speedRightFiltered);
     float avgError      = targetWheelSpd - avgSpeed;
     float coupledTarget = avgSpeed + TURN_SPEED_GAIN * avgError;
-    if (coupledTarget < TURN_COUPLED_MIN_FACTOR * targetWheelSpd)
+
+    if (coupledTarget < TURN_COUPLED_MIN_FACTOR * targetWheelSpd) {
         coupledTarget = TURN_COUPLED_MIN_FACTOR * targetWheelSpd;
-    if (coupledTarget > TURN_COUPLED_MAX_FACTOR * targetWheelSpd)
+    }
+
+    if (coupledTarget > TURN_COUPLED_MAX_FACTOR * targetWheelSpd) {
         coupledTarget = TURN_COUPLED_MAX_FACTOR * targetWheelSpd;
+    }
 
     float outLeft  = freshL ? pidLeft .Compute(speedLeftFiltered,  coupledTarget) : lastOutputLeft;
     float outRight = freshR ? pidRight.Compute(speedRightFiltered, coupledTarget) : lastOutputRight;
@@ -203,13 +222,27 @@ void Drive::ExecuteTurn(float angular)
     float magL = feedforward + trimL;
     float magR = feedforward + trimR;
 
-    if (magL < minPwmLeft)  magL = minPwmLeft;
-    if (magL > 255.0f)      magL = 255.0f;
-    if (magR < minPwmRight) magR = minPwmRight;
-    if (magR > 255.0f)      magR = 255.0f;
+    if (magL < minPwmLeft)  {
+        magL = minPwmLeft;
+    }
 
-    if (driveMode == DriveMode::TurnLeft)  { pwmLeft = -magL; pwmRight = +magR; }
-    else                                   { pwmLeft = +magL; pwmRight = -magR; }
+    if (magL > 255.0f) {
+        magL = 255.0f;
+    }
+
+    if (magR < minPwmRight) {
+        magR = minPwmRight;
+    }
+
+    if (magR > 255.0f) {     
+        magR = 255.0f;
+    }
+
+    if (driveMode == DriveMode::TurnLeft) { 
+        pwmLeft = -magL; pwmRight = +magR; 
+    } else { 
+        pwmLeft = +magL; pwmRight = -magR; 
+    }
 
     printf("[TURN] dir=%s tgt=%.1f coup=%.1f spdL=%.1f spdR=%.1f outL=%.0f outR=%.0f pwmL=%.0f pwmR=%.0f\n",
         driveMode == DriveMode::TurnLeft ? "LEFT" : "RIGHT",
@@ -218,7 +251,7 @@ void Drive::ExecuteTurn(float angular)
         outLeft, outRight, pwmLeft, pwmRight);
 }
 
-void Drive::ExecuteLinear(float linear, float angular)
+void Drive::executeLinear(float linear, float angular)
 {
     float wheelbaseMm = wheelbaseMeters * 1000.0f;
     float angularRad  = angular * (static_cast<float>(M_PI) / 180.0f);
@@ -228,7 +261,7 @@ void Drive::ExecuteLinear(float linear, float angular)
     float targetRight = rampedLinear - vDiff;
 
     if (fabsf(angular) < 0.001f) {
-        float steer  = ComputeYawCorrection();
+        float steer  = computeYawCorrection();
         targetLeft  -= steer;
         targetRight += steer;
     } else {
@@ -238,8 +271,8 @@ void Drive::ExecuteLinear(float linear, float angular)
     float absTargetL = fabsf(targetLeft);
     float absTargetR = fabsf(targetRight);
 
-    float rawL  = sensorHub.GetSpeedLeft();
-    float rawR  = sensorHub.GetSpeedRight();
+    float rawL   = sensorHub.GetSpeedLeft();
+    float rawR   = sensorHub.GetSpeedRight();
     bool  freshL = sensorHub.HasFreshLeft();
     bool  freshR = sensorHub.HasFreshRight();
     sensorHub.ConsumeFreshFlags();
@@ -260,8 +293,8 @@ void Drive::ExecuteLinear(float linear, float angular)
     lastOutputLeft  = outLeft;
     lastOutputRight = outRight;
 
-    float magL = PercentToPwm(outLeft);
-    float magR = PercentToPwm(outRight);
+    float magL = percentToPwm(outLeft);
+    float magR = percentToPwm(outRight);
 
     if (magL < 0.0f) magL = 0.0f;
     if (magR < 0.0f) magR = 0.0f;
@@ -273,8 +306,8 @@ void Drive::ExecuteLinear(float linear, float angular)
     pwmLeft  = driveSign * magL;
     pwmRight = driveSign * magR;
 
-    ClampPwm(pwmLeft,  CLAMP_MIN_PWM);
-    ClampPwm(pwmRight, CLAMP_MIN_PWM);
+    clampPwm(pwmLeft,  CLAMP_MIN_PWM);
+    clampPwm(pwmRight, CLAMP_MIN_PWM);
 
     const char* tag =
         (driveMode == DriveMode::Forward)  ? "FWD" :
@@ -297,31 +330,34 @@ void Drive::Execute(const DriveCommand& command)
         return;
     }
 
-    UpdateDriveMode(linear, angular);
-    UpdateRamp(linear);
+    updateDriveMode(linear, angular);
+    updateRamp(linear);
 
-    // Latch the target yaw as early as possible — on the very first tick of a
-    // new linear move, before ExecuteLinear runs. This way the yaw PID already
-    // has a reference heading during the ramp phase and can suppress the small
-    // left/right wobble that occurs while the encoders are still at low speed.
+    // Save the target yaw immediately when starting a new move
+    // This helps reduce wobble at low speed
     if (!yawInitialized &&
         driveMode != DriveMode::TurnLeft &&
         driveMode != DriveMode::TurnRight &&
         driveMode != DriveMode::Stopped &&
         fabsf(angular) < 0.001f)
     {
-        targetYaw        = sensorHub.GetCurrentYaw();
-        yawInitialized   = true;
+        targetYaw      = sensorHub.GetCurrentYaw();
+        yawInitialized = true;
         pidYaw.Reset();
     }
 
     if (driveMode == DriveMode::TurnLeft || driveMode == DriveMode::TurnRight)
-        ExecuteTurn(angular);
+        executeTurn(angular);
     else
-        ExecuteLinear(linear, angular);
+        executeLinear(linear, angular);
 
-    if (enableMotorLeft)  motorLeft .SetSpeed(pwmLeft);
-    if (enableMotorRight) motorRight.SetSpeed(pwmRight);
+    if (enableMotorLeft)  {
+        motorLeft .SetSpeed(pwmLeft);
+    }
+
+    if (enableMotorRight) {
+        motorRight.SetSpeed(pwmRight);
+    }
 }
 
 void Drive::Stop()
