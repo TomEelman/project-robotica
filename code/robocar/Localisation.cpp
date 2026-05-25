@@ -104,3 +104,25 @@ void Localisation::UpdateIMU(float imuYawDeg, float /*dt*/)
 float Localisation::GetX()     const { return x;     }   // mm
 float Localisation::GetY()     const { return y;     }   // mm
 float Localisation::GetTheta() const { return theta; }   // graden
+// ──────────────────────────────────────────────────────────────────
+//  ApplyIcpCorrection  —  pas ICP scan-matching correctie toe
+//
+//  De correctie wordt met een demping (ALPHA) gemengd zodat
+//  ruisige ICP-resultaten de EKF niet destabiliseren.
+// ──────────────────────────────────────────────────────────────────
+void Localisation::ApplyIcpCorrection(float dx, float dy, float dtheta)
+{
+    // Demping: neem slechts 40% van de ICP-correctie over.
+    // Dit voorkomt dat een slechte ICP-meting de positie te ver
+    // wegtrekt, terwijl goede metingen toch bijdragen.
+    constexpr float ALPHA = 0.4f;
+
+    x     += ALPHA * dx;
+    y     += ALPHA * dy;
+    theta  = NormalizeDeg(theta + ALPHA * dtheta);
+
+    // Verklein onzekerheid licht als ICP slaagt
+    P[0][0] *= 0.8f;
+    P[1][1] *= 0.8f;
+    P[2][2] *= 0.8f;
+}

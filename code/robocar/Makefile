@@ -18,7 +18,8 @@ SRCS = MainPi5.cpp \
        ExplorationPlanner.cpp \
        PathPlanner.cpp \
        Navigator.cpp \
-       DriveCommand.cpp
+       DriveCommand.cpp \
+       ScanMatcher.cpp
 
 OBJS = $(SRCS:.cpp=.o)
 

@@ -206,58 +206,39 @@ DriveCommand Navigator::GetNextCommand(Position current, float minFront, float m
         return DriveCommand(0.0f, 0.0f);
     }
 
-    // Waypoint bijna recht achter robot (hoekfout > 120 graden).
-    // Door lokalisatie-drift kan hij hier eindeloos voor draaien.
-    // Sla het over zodat het pad doorgaat.
-    if (std::fabs(angleErr) > 120.0f) {
-        printf("[NAV] skip waypoint achter robot (err=%.1fdeg dist=%.0fmm)\n",
-               angleErr, dist);
-        path.Advance();
-        if (!path.IsEmpty()) {
-            currentTarget = path.GetCurrentWaypoint();
-            hasStableCmd  = false;
-            cmdTicks      = 0;
-        } else {
-            // Heel pad geskipt door lokalisatie-drift.
-            // Markeer als blocked zodat MainPi5 het doel blacklist
-            // en een nieuw frontier kiest.
-            hasPath = false;
-            blocked = true;
-            printf("[NAV] heel pad geskipt, blocked=true\n");
-        }
-        return DriveCommand(0.0f, 0.0f);
-    }
+// -- 4. Repeat the stable command --------------------------
+bool grooteDraai = (std::fabs(angleErr) > SLOW_TURN_THRESHOLD);
+if (hasStableCmd && (cmdTicks < CMD_STABLE_TICKS || grooteDraai)) {
+    ++cmdTicks;
+    return DriveCommand(stableLin, stableAng);
+}
 
-    // -- 4. Repeat the stable command --------------------------
-    // Bij grote hoekfout nooit een oud commando herhalen: door slip
-    // verandert de hoekfout snel en moet hij elke tick bijsturen.
-    bool grooteDraai = (std::fabs(angleErr) > SLOW_TURN_THRESHOLD);
-    if (hasStableCmd && cmdTicks < CMD_STABLE_TICKS && !grooteDraai) {
-        ++cmdTicks;
-        return DriveCommand(stableLin, stableAng);
-    }
+// -- 5. Compute a new command ------------------------------
+float absErr = std::fabs(angleErr);
+float newLin, newAng;
 
-    // -- 5. Compute a new command ------------------------------
-    float absErr = std::fabs(angleErr);
-    float newLin, newAng;
-
-    if (absErr > SLOW_TURN_THRESHOLD) {
-        // Large heading error -> turn in place to avoid wheel slip.
-        // Driving with big angular error fights the motors against each other.
-        newLin = 0.0f;
-        newAng = MAX_ANGULAR_DEG_S;
-        if (angleErr > 0.0f) newAng = -newAng;
-    } else if (absErr > ANGLE_DEADBAND_DEG) {
-        // Moderate heading error -> drive with proportional correction
-        newLin = LINEAR_SPEED_MM_S * SLOW_TURN_FACTOR;
-        newAng = ANGULAR_GAIN * absErr;
-        if (newAng > MAX_ANGULAR_DEG_S) newAng = MAX_ANGULAR_DEG_S;
-        if (angleErr > 0.0f) newAng = -newAng;
+if (absErr > SLOW_TURN_THRESHOLD) {
+    // Grote hoekfout → draai op de plek.
+    // BELANGRIJK: kies de draairichting EEN KEER en houd die vast
+    // via stableAng, zodat hij niet heen-en-weer flipt rond 180°.
+    // Alleen een nieuwe richting kiezen als er nog geen stabiele draai loopt.
+    if (!hasStableCmd) {
+        // Kortste draai: negatieve angleErr = doel rechts van neus = draai rechts (+ang)
+        newAng = (angleErr < 0.0f) ? MAX_ANGULAR_DEG_S : -MAX_ANGULAR_DEG_S;
     } else {
-        // Well aligned -> straight ahead (278, 0)
-        newLin = LINEAR_SPEED_MM_S;
-        newAng = 0.0f;
+        // Houd de al gekozen richting aan totdat hoekfout klein genoeg is
+        newAng = stableAng;
     }
+    newLin = 0.0f;
+} else if (absErr > ANGLE_DEADBAND_DEG) {
+    newLin = LINEAR_SPEED_MM_S * SLOW_TURN_FACTOR;
+    newAng = ANGULAR_GAIN * absErr;
+    if (newAng > MAX_ANGULAR_DEG_S) newAng = MAX_ANGULAR_DEG_S;
+    if (angleErr > 0.0f) newAng = -newAng;
+} else {
+    newLin = LINEAR_SPEED_MM_S;
+    newAng = 0.0f;
+}
 
     stableLin    = newLin;
     stableAng    = newAng;
