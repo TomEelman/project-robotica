@@ -162,15 +162,33 @@ Position KiesFrontierDoel(const Mapper& mapper,
             float dist_m = std::sqrt(ddxF*ddxF + ddyF*ddyF);
             if (dist_m < 0.3f) continue;
 
-            // ── Score: bereikbaarheid 50%, LIDAR 30%, nabijheid 20% ──
-            // bfsAfstand: lager = beter → omdraaien
+            // ── Information gain: hoeveel onbekende cellen rondom frontier ──
+            // Radius 10 cellen (~30cm bij 3cm/cel). Een frontier aan de rand
+            // van een grote open ruimte scoort hier veel hoger dan een frontier
+            // in een smal al-gescande gang. Dit voorkomt dat de robot rondjes
+            // rijdt langs zijn eigen al-verkende rand.
+            constexpr int GAIN_R = 10;
+            int unknownCount = 0, totalCount = 0;
+            for (int gy = cy - GAIN_R; gy <= cy + GAIN_R; gy += 2)
+                for (int gx = cx - GAIN_R; gx <= cx + GAIN_R; gx += 2) {
+                    if (!map.InBounds(gx, gy)) continue;
+                    ++totalCount;
+                    if (map.IsUnknown(gx, gy)) ++unknownCount;
+                }
+            float scoreGain = totalCount > 0
+                            ? static_cast<float>(unknownCount) / static_cast<float>(totalCount)
+                            : 0.0f;
+
+            // ── Score: bereikbaarheid 40%, gain 30%, LIDAR 30% ──────
+            // Nabijheidsterm verwijderd: die domineerde te sterk en zorgde
+            // ervoor dat de robot altijd de dichtstbijzijnde frontier koos
+            // i.p.v. de meest veelbelovende open ruimte.
             float scoreReach = 1.0f - std::min((float)bfsAfstand, MAX_BFS) / MAX_BFS;
             float scoreLidar = std::min(vrijRuimte, 2000.0f) / 2000.0f;
-            float scoreDist  = 1.0f - std::min(dist_m, 8.0f) / 8.0f;
 
-            float score = 0.5f * scoreReach
-                        + 0.3f * scoreLidar
-                        + 0.2f * scoreDist;
+            float score = 0.4f * scoreReach
+                        + 0.3f * scoreGain
+                        + 0.3f * scoreLidar;
 
             if (score > bestScore) {
                 bestScore = score;
