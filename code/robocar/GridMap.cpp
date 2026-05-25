@@ -109,6 +109,7 @@ void GridMap::IntegrateScan(float robotX, float robotY, float robotTheta,
 
     int rx, ry;
     WorldToCell(robotX_m, robotY_m, rx, ry);
+    robotPath.emplace_back(robotX_m, robotY_m);
 
     for (int i = 0; i < count; ++i) {
         float dist_mm = ranges[i];
@@ -163,6 +164,7 @@ void GridMap::IntegrateScanMotionCorrected(
 
     int rx, ry;
     WorldToCell(robotX_m, robotY_m, rx, ry);
+    robotPath.emplace_back(robotX_m, robotY_m);
 
     float halfDuur = scanDuurSec * 0.5f;
 
@@ -250,6 +252,7 @@ const std::vector<std::vector<int>>& GridMap::GetGrid() const {
 void GridMap::Clear() {
     for (auto& row : logOdds)
         std::fill(row.begin(), row.end(), CELL_UNKNOWN);
+    robotPath.clear();
     binaryDirty = true;
 }
 
@@ -355,7 +358,24 @@ bool GridMap::SavePGMCropped(const std::string& filename, float margin_m) const 
         }
     }
 
-    // ── Stap 6: schaalbalken tekenen ─────────────────────────────
+    // ── Stap 6: robotpad in rood tekenen ─────────────────────────
+    for (auto& [wx, wy] : robotPath) {
+        int cx, cy;
+        WorldToCell(wx, wy, cx, cy);
+        if (cx < x0 || cx >= x1 || cy < y0 || cy >= y1) continue;
+        int col = (cx - x0) * SCALE;
+        int row = (y1 - 1 - cy) * SCALE;
+        for (int sy = 0; sy < SCALE; ++sy)
+            for (int sx = 0; sx < SCALE; ++sx) {
+                size_t idx = static_cast<size_t>((row + sy) * imgW + col + sx) * 3;
+                if (idx + 2 >= img.size()) continue;
+                img[idx]     = 220;
+                img[idx + 1] = 50;
+                img[idx + 2] = 50;
+            }
+    }
+
+    // ── Stap 7: schaalbalken tekenen ─────────────────────────────
     auto fill = [&](int rx, int ry, int rw, int rh,
                     uint8_t r, uint8_t g, uint8_t b) {
         for (int dy = 0; dy < rh; ++dy)
@@ -390,7 +410,7 @@ bool GridMap::SavePGMCropped(const std::string& filename, float margin_m) const 
     fill(barX1 + 8,  barY - 6, 30, 14, 200, 40, 40);   // rood kader
     fill(barX1 + 9,  barY - 5, 28, 12, 235, 235, 235); // wit binnenin
 
-    // ── Stap 7: schrijf PPM bestand ───────────────────────────────
+    // ── Stap 8: schrijf PPM bestand ───────────────────────────────
     std::ofstream f2(filename, std::ios::binary);
     if (!f2) return false;
 

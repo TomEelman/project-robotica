@@ -82,6 +82,8 @@ private:
     mutable std::vector<std::vector<int>> binaryGrid;
     mutable bool binaryDirty;
 
+    std::vector<std::pair<float,float>> robotPath;  // meters, bijgehouden per scan
+
     void RebuildBinaryGrid() const;
     void ClampLogOdds(int8_t& val) const;
     void BresenhamLine(int x0, int y0, int x1, int y1,
