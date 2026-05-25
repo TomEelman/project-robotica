@@ -203,7 +203,7 @@ static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position po
                 mislukteTeller = 0;
                 printf("[MAIN] Klaar (%d%%) -> TERUG_HOME\n", dekking);
                 Path pad = planner.PlanPath(pos, Position(0.0f, 0.0f, 0.0f), mapper.GetMap());
-                if (!pad.IsEmpty()) { navigator.SetPath(pad); heeftPad = true; }
+                if (!pad.IsEmpty()) { navigator.SetPath(pad); mapper.SetWaypoints(pad); heeftPad = true; }
             } else {
                 TickBlacklist(frontierBlacklist);
                 Position doel = KiesFrontierDoel(mapper, pos, lastRanges, frontierBlacklist);
@@ -214,6 +214,7 @@ static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position po
                     Path pad = planner.PlanPath(pos, doel, mapper.GetMap());
                     if (!pad.IsEmpty()) {
                         navigator.SetPath(pad);
+                        mapper.SetWaypoints(pad);
                         heeftPad = true;
                         mislukteTeller = 0;
                     } else {
@@ -246,6 +247,7 @@ static void HandleReturnToHome(Navigator& navigator, Mapper& mapper, Position po
             Path pad = planner.PlanPath(pos, beginPunt, mapper.GetMap());
             if (!pad.IsEmpty()) {
                 navigator.SetPath(pad);
+                mapper.SetWaypoints(pad);
                 heeftPad = true;
             } else {
                 float hoek = static_cast<float>(std::atan2(-dy, -dx)) * (180.0f / M_PI);
@@ -393,7 +395,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
                 heeftPad = false;
                 scansSindsHerplan = HERPLAN_SCANS;
                 Path pad = planner.PlanPath(pos, beginPunt, mapper.GetMap());
-                if (!pad.IsEmpty()) { navigator.SetPath(pad); heeftPad = true; }
+                if (!pad.IsEmpty()) { navigator.SetPath(pad); mapper.SetWaypoints(pad); heeftPad = true; }
             }
         } else {
             vastzitTicks = 0;
