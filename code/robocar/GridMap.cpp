@@ -249,10 +249,15 @@ const std::vector<std::vector<int>>& GridMap::GetGrid() const {
     return binaryGrid;
 }
 
+void GridMap::SetWaypoints(const std::vector<std::pair<float,float>>& wps_m) {
+    waypointList = wps_m;
+}
+
 void GridMap::Clear() {
     for (auto& row : logOdds)
         std::fill(row.begin(), row.end(), CELL_UNKNOWN);
     robotPath.clear();
+    waypointList.clear();
     binaryDirty = true;
 }
 
@@ -287,6 +292,38 @@ bool GridMap::SavePGM(const std::string& filename) const {
 //    4. Schaalbalken: horizontaal (breedte) + vertikaal (hoogte) in meter
 //       getekend als rode lijn met witte achtergrond onder de kaart
 // ═══════════════════════════════════════════════════════════════════
+
+// ── 3×5 pixel-font voor cijfers 0-9 (bit 2 = links) ──────────────
+static const uint8_t kDigitFont[10][5] = {
+    {0b111, 0b101, 0b101, 0b101, 0b111}, // 0
+    {0b010, 0b110, 0b010, 0b010, 0b111}, // 1
+    {0b111, 0b001, 0b111, 0b100, 0b111}, // 2
+    {0b111, 0b001, 0b111, 0b001, 0b111}, // 3
+    {0b101, 0b101, 0b111, 0b001, 0b001}, // 4
+    {0b111, 0b100, 0b111, 0b001, 0b111}, // 5
+    {0b111, 0b100, 0b111, 0b101, 0b111}, // 6
+    {0b111, 0b001, 0b001, 0b001, 0b001}, // 7
+    {0b111, 0b101, 0b111, 0b101, 0b111}, // 8
+    {0b111, 0b101, 0b111, 0b001, 0b111}, // 9
+};
+
+static void DrawDigit(std::vector<uint8_t>& img, int imgW, int imgH,
+                      int px, int py, int digit,
+                      uint8_t r, uint8_t g, uint8_t b)
+{
+    if (digit < 0 || digit > 9) return;
+    const uint8_t* rows = kDigitFont[digit];
+    for (int dy = 0; dy < 5; ++dy) {
+        uint8_t row = rows[dy];
+        for (int dx = 0; dx < 3; ++dx) {
+            if (!(row & (1 << (2 - dx)))) continue;
+            int x = px + dx, y = py + dy;
+            if (x < 0 || x >= imgW || y < 0 || y >= imgH) continue;
+            size_t idx = static_cast<size_t>(y * imgW + x) * 3;
+            img[idx] = r; img[idx+1] = g; img[idx+2] = b;
+        }
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════
 //  SavePGMCropped  –  bijgesneden kaart met schaalbalken
@@ -375,7 +412,41 @@ bool GridMap::SavePGMCropped(const std::string& filename, float margin_m) const 
             }
     }
 
-    // ── Stap 7: schaalbalken tekenen ─────────────────────────────
+    // ── Stap 7: waypoints genummerd in groen tekenen ─────────────
+    for (size_t i = 0; i < waypointList.size(); ++i) {
+        auto [wx, wy] = waypointList[i];
+        int cx, cy;
+        WorldToCell(wx, wy, cx, cy);
+        if (cx < x0 || cx >= x1 || cy < y0 || cy >= y1) continue;
+        int col = (cx - x0) * SCALE;
+        int row = (y1 - 1 - cy) * SCALE;
+
+        int num    = static_cast<int>(i) + 1;
+        bool twoD  = (num >= 10);
+        int boxW   = twoD ? 9 : 7;   // 9px voor twee cijfers, 7px voor één
+
+        int bx = col - boxW / 2;
+        int by = row - 3;
+
+        // Groene achtergrond
+        for (int dy = 0; dy < 7; ++dy)
+            for (int dx = 0; dx < boxW; ++dx) {
+                int px = bx + dx, py = by + dy;
+                if (px < 0 || px >= imgW || py < 0 || py >= imgH) continue;
+                size_t idx = static_cast<size_t>(py * imgW + px) * 3;
+                img[idx] = 30; img[idx+1] = 160; img[idx+2] = 30;
+            }
+
+        // Wit cijfer (of twee cijfers)
+        if (!twoD) {
+            DrawDigit(img, imgW, imgH, bx + 2, by + 1, num, 255, 255, 255);
+        } else {
+            DrawDigit(img, imgW, imgH, bx + 1, by + 1, num / 10, 255, 255, 255);
+            DrawDigit(img, imgW, imgH, bx + 5, by + 1, num % 10, 255, 255, 255);
+        }
+    }
+
+    // ── Stap 8: schaalbalken tekenen ─────────────────────────────
     auto fill = [&](int rx, int ry, int rw, int rh,
                     uint8_t r, uint8_t g, uint8_t b) {
         for (int dy = 0; dy < rh; ++dy)

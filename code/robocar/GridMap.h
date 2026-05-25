@@ -62,6 +62,10 @@ public:
 
     void Clear();
 
+    // ── Waypoint visualisatie ─────────────────────────────────
+    // Sla waypoints op (in meters) zodat SavePGMCropped ze nummert in groen.
+    void SetWaypoints(const std::vector<std::pair<float,float>>& wps_m);
+
     // ── PGM export ────────────────────────────────────────────
     // Standaard: volledige kaart opslaan
     bool SavePGM(const std::string& filename) const;
@@ -82,7 +86,8 @@ private:
     mutable std::vector<std::vector<int>> binaryGrid;
     mutable bool binaryDirty;
 
-    std::vector<std::pair<float,float>> robotPath;  // meters, bijgehouden per scan
+    std::vector<std::pair<float,float>> robotPath;     // meters, bijgehouden per scan
+    std::vector<std::pair<float,float>> waypointList;  // meters, gezet via SetWaypoints
 
     void RebuildBinaryGrid() const;
     void ClampLogOdds(int8_t& val) const;

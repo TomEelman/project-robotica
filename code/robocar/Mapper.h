@@ -3,6 +3,7 @@
 
 #include "Position.h"
 #include "GridMap.h"
+#include "Path.h"
 #include <string>
 
 class Mapper {
@@ -20,6 +21,10 @@ public:
     void UpdateMotionCorrected(const float ranges[], const float angles[],
                     int count, const Position& position,
                     float omegaDegS, float scanDuurSec);
+
+    // Sla de geplande waypoints op voor visualisatie in de PPM-export.
+    // Aanroepen elke keer dat een nieuw pad berekend wordt.
+    void SetWaypoints(const Path& path);
                     
     int            GetCoverage()  const;
     GridMap&       GetMap();

@@ -1,6 +1,7 @@
 #include "Mapper.h"
 #include <iostream>
 #include <cstdio>
+#include <vector>
 
 Mapper::Mapper(int width, int height, float resolution)
     : map(width, height, resolution)
@@ -75,6 +76,21 @@ void Mapper::PrintMap(float robotX, float robotY,
     printf("╚══ R=robot  #=muur  .=vrij  spatie=onbekend");
     for (int i = 0; i < WIN_W - 38; i++) std::cout << ' ';
     std::cout << "══╝\n";
+}
+
+// ── Waypoints ─────────────────────────────────────────────────────
+
+void Mapper::SetWaypoints(const Path& path) {
+    constexpr float MM2M = 0.001f;
+    std::vector<std::pair<float,float>> wps;
+    Path tmp = path;
+    tmp.Reset();
+    while (!tmp.IsEmpty()) {
+        Position p = tmp.GetCurrentWaypoint();
+        wps.emplace_back(p.GetX() * MM2M, p.GetY() * MM2M);
+        tmp.Advance();
+    }
+    map.SetWaypoints(wps);
 }
 
 // ── Queries ───────────────────────────────────────────────────────
