@@ -117,7 +117,9 @@ void Navigator::SetPath(const Path& newPath) {
     hasStableCmd = false;
     cmdTicks     = 0;
     blockCounter = 0;
-    recoveryTicks = 0;
+    // recoveryTicks wordt NIET gereset: als er een actieve recovery (bijv. achteruit)
+    // loopt op het moment van herplannen, laat die dan uitlopen zodat de robot
+    // fysiek weg is van het obstakel vóórdat hij het nieuwe pad gaat volgen.
     blocked      = false;
     if (hasPath) currentTarget = path.GetCurrentWaypoint();
     isUpdated = true;
