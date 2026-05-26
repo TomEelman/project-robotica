@@ -41,6 +41,11 @@ static constexpr float TURN_COUPLED_MAX_FACTOR  = 1.5f;
 
 static constexpr float DEFAULT_RAMP_STEP = 5.0f;
 
+// OutputLimiter: maximum PWM change per Execute() tick.
+// At 100 ms loop time, PWM_MAX_STEP_UP = 12 means ~120 PWM/s acceleration.
+// Deceleration is allowed to be faster (asymmetric) to stop quickly when needed.
+static constexpr float PWM_MAX_STEP_UP   = 12.0f;
+static constexpr float PWM_MAX_STEP_DOWN = 25.0f;
 
 
 Drive::Drive(Motor&     leftMotor,
@@ -68,6 +73,8 @@ Drive::Drive(Motor&     leftMotor,
       filterInitialized(false),
       pwmLeft(0.0f),
       pwmRight(0.0f),
+      lastLimitedPwmLeft(0.0f),
+      lastLimitedPwmRight(0.0f),
       targetYaw(0.0f),
       yawInitialized(false),
       rampedLinear(0.0f),
@@ -94,6 +101,17 @@ float Drive::PercentToPwm(float percent)
     if (percent < -100.0f) percent = -100.0f;
     if (percent >  100.0f) percent =  100.0f;
     return (percent / 100.0f) * 255.0f;
+}
+
+// ApplyOutputLimiter — limits the PWM delta per tick for one channel.
+// Acceleration is limited to PWM_MAX_STEP_UP, deceleration to PWM_MAX_STEP_DOWN.
+// lastLimitedPwm* is member state so the limit is continuous across ticks.
+float Drive::ApplyOutputLimiter(float target, float previous)
+{
+    float delta = target - previous;
+    if (delta >  PWM_MAX_STEP_UP)   delta =  PWM_MAX_STEP_UP;
+    if (delta < -PWM_MAX_STEP_DOWN) delta = -PWM_MAX_STEP_DOWN;
+    return previous + delta;
 }
 
 void Drive::UpdateDriveMode(float linear, float angular)
@@ -320,6 +338,13 @@ void Drive::Execute(const DriveCommand& command)
     else
         ExecuteLinear(linear, angular);
 
+    // OutputLimiter: begrenst PWM-stap per tick ongeacht de bron van het commando.
+    // Werkt na alle PID/ramp/yaw berekeningen zodat elke sprong afgevangen wordt.
+    pwmLeft  = ApplyOutputLimiter(pwmLeft,  lastLimitedPwmLeft);
+    pwmRight = ApplyOutputLimiter(pwmRight, lastLimitedPwmRight);
+    lastLimitedPwmLeft  = pwmLeft;
+    lastLimitedPwmRight = pwmRight;
+
     if (enableMotorLeft)  motorLeft .SetSpeed(pwmLeft);
     if (enableMotorRight) motorRight.SetSpeed(pwmRight);
 }
@@ -334,6 +359,11 @@ void Drive::Stop()
     pwmRight          = 0.0f;
     lastOutputLeft    = 0.0f;
     lastOutputRight   = 0.0f;
+
+    // Reset limiter history zodat de robot na een volledige stop weer
+    // normaal kan versnellen zonder tegen de vorige PWM-waarde in te werken.
+    lastLimitedPwmLeft  = 0.0f;
+    lastLimitedPwmRight = 0.0f;
 
     pidLeft.Reset();
     pidRight.Reset();

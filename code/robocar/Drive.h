@@ -52,7 +52,8 @@ private:
 
     float pwmLeft;
     float pwmRight;
-
+    float lastLimitedPwmRight;
+    float lastLimitedPwmLeft;
     float targetYaw;
     bool  yawInitialized;
 
@@ -85,6 +86,7 @@ private:
 
     void ExecuteTurn(float angular);
     void ExecuteLinear(float linear, float angular);
+    float ApplyOutputLimiter(float target, float previous);
 };
 
 #endif
