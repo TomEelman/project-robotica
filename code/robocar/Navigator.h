@@ -139,4 +139,5 @@ private:
     float NormalizeDeg(float deg) const;
     float WfSectorMin(const float ranges[360], int from, int to) const;
     float WfSectorAvg(const float ranges[360], int from, int to) const;
+    float computeLinearSpeed(float absErr) const;    
 };

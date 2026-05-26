@@ -10,7 +10,10 @@ float NormDeg(float deg) {
 }
 
 
+// ─────────────────────────────────────────────────────────────────
 // AnalyzeScan — sector analysis of a 360° scan (obstacle avoidance)
+// ─────────────────────────────────────────────────────────────────
+
 static float g_prevAvoid = 0.0f;
 
 ScanAnalysis AnalyzeScan(const float ranges[360]) {
@@ -90,7 +93,10 @@ ScanAnalysis AnalyzeScan(const float ranges[360]) {
 }
 
 
+// ─────────────────────────────────────────────────────────────────
 // Constructor
+// ─────────────────────────────────────────────────────────────────
+
 Navigator::Navigator()
     : path()
     , currentTarget(0.0f, 0.0f, 0.0f)
@@ -109,7 +115,10 @@ Navigator::Navigator()
 {}
 
 
+// ─────────────────────────────────────────────────────────────────
 // SetPath / Update — path management
+// ─────────────────────────────────────────────────────────────────
+
 void Navigator::SetPath(const Path& newPath) {
     path = newPath;
     path.Reset();
@@ -117,9 +126,9 @@ void Navigator::SetPath(const Path& newPath) {
     hasStableCmd = false;
     cmdTicks     = 0;
     blockCounter = 0;
-    // recoveryTicks wordt NIET gereset: als er een actieve recovery (bijv. achteruit)
-    // loopt op het moment van herplannen, laat die dan uitlopen zodat de robot
-    // fysiek weg is van het obstakel vóórdat hij het nieuwe pad gaat volgen.
+    // recoveryTicks is NOT reset: if a recovery action (e.g. reversing) is
+    // still running when replanning happens, let it finish so the robot is
+    // physically clear of the obstacle before following the new path.
     blocked      = false;
     if (hasPath) currentTarget = path.GetCurrentWaypoint();
     isUpdated = true;
@@ -143,43 +152,77 @@ void Navigator::Update(Position current) {
 }
 
 
+// ─────────────────────────────────────────────────────────────────
+// computeLinearSpeed — scale linear speed based on heading error
+//
+// The robot drives at full LINEAR_SPEED_MM_S only when it is already
+// pointed at the target (small angle error). As the error grows the
+// speed is reduced so the robot slows into turns instead of sliding
+// through them.
+//
+// Mapping:
+//   |err| ≤ ANGLE_DEADBAND_DEG          → full speed (factor = 1.0)
+//   |err| = SLOW_TURN_THRESHOLD         → SLOW_TURN_FACTOR × full speed
+//   |err| ≥ SLOW_TURN_THRESHOLD         → speed handled by the turn branch,
+//                                          this function is not called
+// ─────────────────────────────────────────────────────────────────
+
+float Navigator::computeLinearSpeed(float absErr) const
+{
+    // The usable range is [ANGLE_DEADBAND_DEG, SLOW_TURN_THRESHOLD].
+    // Outside that range the caller already selects a different motion mode.
+    float range = SLOW_TURN_THRESHOLD - ANGLE_DEADBAND_DEG;
+    if (range < 1.0f) range = 1.0f; // guard against degenerate config
+
+    // Linear interpolation: 1.0 at ANGLE_DEADBAND, SLOW_TURN_FACTOR at SLOW_TURN_THRESHOLD.
+    float t = (absErr - ANGLE_DEADBAND_DEG) / range;
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+
+    float factor = 1.0f - t * (1.0f - SLOW_TURN_FACTOR);
+
+    // Hard floor: never go below SLOW_TURN_FACTOR so the robot keeps moving.
+    if (factor < SLOW_TURN_FACTOR) factor = SLOW_TURN_FACTOR;
+
+    return LINEAR_SPEED_MM_S * factor;
+}
+
+
+// ─────────────────────────────────────────────────────────────────
 // GetNextCommand — core of the waypoint follower + recovery
 //
 // Logic in order:
 //   1. Finish any running recovery action (reverse or turn).
-//   2. Obstacle in front -> raise block counter; if too often -> recover.
-//   3. Waypoint reached -> stop, done.
-//   4. Repeat the stable command while still valid (no wobbling).
+//   2. Obstacle in front → raise block counter; if too often → recover.
+//   3. Waypoint reached → stop.
+//   4. Repeat the stable command while still valid (avoids wobbling).
 //   5. Otherwise compute a new command from the heading error.
+// ─────────────────────────────────────────────────────────────────
+
 DriveCommand Navigator::GetNextCommand(Position current, float minFront, float minRear) {
     if (!hasPath || path.IsEmpty())
         return DriveCommand(0.0f, 0.0f);
 
-    // -- 1. Running recovery action ----------------------------
+    // -- 1. Running recovery action -------------------------------------------
     if (recoveryTicks > 0) {
         --recoveryTicks;
-        return DriveCommand(stableLin, stableAng); // recovery cmd already set
+        return DriveCommand(stableLin, stableAng);
     }
 
-    // -- 2. Obstacle interrupt + block detection ----------------
+    // -- 2. Obstacle interrupt + block detection -------------------------------
     if (minFront < OBSTACLE_INTERRUPT_MM) {
         ++blockCounter;
         hasStableCmd = false;
         cmdTicks     = 0;
 
-        // Blocked too often -> choose a recovery action
         if (blockCounter >= RECOVERY_TRIGGER) {
             if (minRear > REVERSE_SAFE_MM) {
-                // Rear is clear -> reverse straight (the robot came from
-                // there, so going back is safe)
                 stableLin     = REVERSE_SPEED;
                 stableAng     = 0.0f;
                 recoveryTicks = RECOVERY_TICKS;
-                blocked       = true;   // signal MainPi5: replan
+                blocked       = true;
                 printf("[NAV] RECOVERY reverse (front=%.0f rear=%.0f)\n", minFront, minRear);
             } else {
-                // Rear also blocked -> turn in place to search for an exit.
-                // Direction follows the sign of the heading error.
                 float angleErr = CalculateAngleError(current, currentTarget);
                 stableLin     = 0.0f;
                 stableAng     = (angleErr > 0.0f) ? -MAX_ANGULAR_DEG_S : MAX_ANGULAR_DEG_S;
@@ -191,56 +234,59 @@ DriveCommand Navigator::GetNextCommand(Position current, float minFront, float m
             return DriveCommand(stableLin, stableAng);
         }
 
-        // Not yet at recovery -> just stop this tick
         return DriveCommand(0.0f, 0.0f);
     }
 
-    // No more obstacle -> wind the block counter back down
+    // No obstacle → wind the block counter back down
     if (blockCounter > 0) --blockCounter;
 
     float dist     = CalculateDistance(current, currentTarget);
     float angleErr = CalculateAngleError(current, currentTarget);
 
-    // -- 3. Waypoint reached of onbereikbaar -------------------------
+    // -- 3. Waypoint reached --------------------------------------------------
     if (dist < REACHED_THRESHOLD_MM) {
         hasStableCmd = false;
         cmdTicks     = 0;
         return DriveCommand(0.0f, 0.0f);
     }
 
-// -- 4. Repeat the stable command --------------------------
-bool grooteDraai = (std::fabs(angleErr) > SLOW_TURN_THRESHOLD);
-if (hasStableCmd && (cmdTicks < CMD_STABLE_TICKS || grooteDraai)) {
-    ++cmdTicks;
-    return DriveCommand(stableLin, stableAng);
-}
-
-// -- 5. Compute a new command ------------------------------
-float absErr = std::fabs(angleErr);
-float newLin, newAng;
-
-if (absErr > SLOW_TURN_THRESHOLD) {
-    // Grote hoekfout → draai op de plek.
-    // BELANGRIJK: kies de draairichting EEN KEER en houd die vast
-    // via stableAng, zodat hij niet heen-en-weer flipt rond 180°.
-    // Alleen een nieuwe richting kiezen als er nog geen stabiele draai loopt.
-    if (!hasStableCmd) {
-        // Kortste draai: negatieve angleErr = doel rechts van neus = draai rechts (+ang)
-        newAng = (angleErr < 0.0f) ? MAX_ANGULAR_DEG_S : -MAX_ANGULAR_DEG_S;
-    } else {
-        // Houd de al gekozen richting aan totdat hoekfout klein genoeg is
-        newAng = stableAng;
+    // -- 4. Repeat the stable command -----------------------------------------
+    bool grooteDraai = (std::fabs(angleErr) > SLOW_TURN_THRESHOLD);
+    if (hasStableCmd && (cmdTicks < CMD_STABLE_TICKS || grooteDraai)) {
+        ++cmdTicks;
+        return DriveCommand(stableLin, stableAng);
     }
-    newLin = 0.0f;
-} else if (absErr > ANGLE_DEADBAND_DEG) {
-    newLin = LINEAR_SPEED_MM_S * SLOW_TURN_FACTOR;
-    newAng = ANGULAR_GAIN * absErr;
-    if (newAng > MAX_ANGULAR_DEG_S) newAng = MAX_ANGULAR_DEG_S;
-    if (angleErr > 0.0f) newAng = -newAng;
-} else {
-    newLin = LINEAR_SPEED_MM_S;
-    newAng = 0.0f;
-}
+
+    // -- 5. Compute a new command ---------------------------------------------
+    float absErr = std::fabs(angleErr);
+    float newLin, newAng;
+
+    if (absErr > SLOW_TURN_THRESHOLD) {
+        // Large heading error → turn in place.
+        // Lock the direction once to prevent flipping around ±180°.
+        if (!hasStableCmd) {
+            // Negative angleErr means target is to the right → turn right (+ang).
+            newAng = (angleErr < 0.0f) ? MAX_ANGULAR_DEG_S : -MAX_ANGULAR_DEG_S;
+        } else {
+            newAng = stableAng; // keep already-chosen direction
+        }
+        newLin = 0.0f;
+
+    } else if (absErr > ANGLE_DEADBAND_DEG) {
+        // Medium heading error → move while gently steering.
+        // Speed is scaled down so the robot slows before tight turns.
+        newLin = computeLinearSpeed(absErr);
+        newAng = ANGULAR_GAIN * absErr;
+        if (newAng > MAX_ANGULAR_DEG_S) newAng = MAX_ANGULAR_DEG_S;
+        if (angleErr > 0.0f) newAng = -newAng;
+
+    } else {
+        // Small heading error → drive straight at speed scaled to remaining error.
+        // This avoids an abrupt jump from slow-steer speed to full speed the
+        // moment the error drops below ANGLE_DEADBAND_DEG.
+        newLin = computeLinearSpeed(absErr);
+        newAng = 0.0f;
+    }
 
     stableLin    = newLin;
     stableAng    = newAng;
@@ -253,8 +299,13 @@ if (absErr > SLOW_TURN_THRESHOLD) {
     return DriveCommand(stableLin, stableAng);
 }
 
-bool     Navigator::IsFinished() const { return !hasPath || path.IsEmpty(); }
-bool     Navigator::IsUpdated()  const { return isUpdated; }
+
+// ─────────────────────────────────────────────────────────────────
+// Simple accessors
+// ─────────────────────────────────────────────────────────────────
+
+bool     Navigator::IsFinished()       const { return !hasPath || path.IsEmpty(); }
+bool     Navigator::IsUpdated()        const { return isUpdated; }
 Position Navigator::GetCurrentTarget() const { return currentTarget; }
 Path     Navigator::GetPath()          const { return path; }
 
@@ -278,7 +329,10 @@ float Navigator::CalculateAngleError(Position current, Position target) const {
 float Navigator::NormalizeDeg(float deg) const { return NormDeg(deg); }
 
 
+// ─────────────────────────────────────────────────────────────────
 // Wall follower — sector helpers
+// ─────────────────────────────────────────────────────────────────
+
 float Navigator::WfSectorMin(const float ranges[360], int from, int to) const {
     static constexpr float MAX_R = 8000.0f;
     float m = MAX_R;
@@ -308,30 +362,33 @@ void Navigator::ResetWallFollower() {
 }
 
 
+// ─────────────────────────────────────────────────────────────────
 // ComputeWallCommand — right-hand wall follower
+// ─────────────────────────────────────────────────────────────────
+
 WallResult Navigator::ComputeWallCommand(const float ranges[360]) {
     float minFrontNarrow = std::min(WfSectorMin(ranges, 350, 360), WfSectorMin(ranges, 0, 10));
     float minFront       = std::min(WfSectorMin(ranges, 330, 360), WfSectorMin(ranges, 0, 30));
     float wallRight      = WfSectorAvg(ranges,  75, 105);
     float frontRight     = WfSectorMin(ranges,  30,  75);
 
-    bool wallInFront     = (minFrontNarrow < WF_FRONT_CRITICAL_MM);
-    bool wallFrontLikely = (minFront       < WF_FRONT_BRAKE_MM);
-    bool rightWallPresent = (wallRight     < WF_WALL_PRESENT_MM);
-    bool frontRightClear = (frontRight     > WF_WALL_PRESENT_MM * 1.3f);
+    bool wallInFront      = (minFrontNarrow < WF_FRONT_CRITICAL_MM);
+    bool wallFrontLikely  = (minFront       < WF_FRONT_BRAKE_MM);
+    bool rightWallPresent = (wallRight      < WF_WALL_PRESENT_MM);
+    bool frontRightClear  = (frontRight     > WF_WALL_PRESENT_MM * 1.3f);
 
     WallResult res{DriveCommand(0.0f, 0.0f), WallState::OPEN_SPACE, 0.0f};
 
-    // CASE 1: wall straight ahead -> inner corner, turn left
+    // CASE 1: wall straight ahead → inner corner, turn left
     if (wallInFront) {
         wallState = WallState::INNER_CORNER; wfFilteredError = 0.0f; outerCornerTicks = 0;
-        res.cmd = DriveCommand(0.0f, -WF_INNER_CORNER_TURN);
+        res.cmd   = DriveCommand(0.0f, -WF_INNER_CORNER_TURN);
         res.state = WallState::INNER_CORNER; res.errorMm = 0.0f;
         printf("[WALL] INNER_CORNER front=%.0fmm -> turn left\n", minFrontNarrow);
         return res;
     }
 
-    // CASE 2: right wall gone + front-right open -> outer corner
+    // CASE 2: right wall gone + front-right open → outer corner
     // (only valid if we were actually following a wall)
     if (!rightWallPresent && frontRightClear && wallState == WallState::FOLLOW_RIGHT) {
         wallState = WallState::OUTER_CORNER; outerCornerTicks = 0; wfFilteredError = 0.0f;
@@ -346,37 +403,37 @@ WallResult Navigator::ComputeWallCommand(const float ranges[360]) {
             wallState = WallState::OPEN_SPACE; outerCornerTicks = 0;
             printf("[WALL] OUTER_CORNER timeout -> OPEN_SPACE\n");
         } else {
-            res.cmd = DriveCommand(WF_LIN_SLOW, WF_OUTER_CORNER_TURN);
+            res.cmd   = DriveCommand(WF_LIN_SLOW, WF_OUTER_CORNER_TURN);
             res.state = WallState::OUTER_CORNER; res.errorMm = 0.0f;
             return res;
         }
     }
 
-    // CASE 3: no wall on the right -> open space (MainPi5 switches to frontier)
+    // CASE 3: no wall on the right → open space (MainPi5 switches to frontier)
     if (!rightWallPresent) {
-        wallState = WallState::OPEN_SPACE;
-        float lin = wallFrontLikely ? WF_LIN_SLOW : WF_LIN_NORMAL;
+        wallState   = WallState::OPEN_SPACE;
+        float lin   = wallFrontLikely ? WF_LIN_SLOW : WF_LIN_NORMAL;
         printf("[WALL] OPEN_SPACE front=%.0fmm right=%.0fmm\n", minFront, wallRight);
-        res.cmd = DriveCommand(lin, 0.0f);
+        res.cmd   = DriveCommand(lin, 0.0f);
         res.state = WallState::OPEN_SPACE; res.errorMm = 0.0f;
         return res;
     }
 
     // CASE 4: normal right-wall following with a P controller on the distance error
     wallState = WallState::FOLLOW_RIGHT;
-    float rawError = wallRight - WF_TARGET_DIST_MM;
+    float rawError  = wallRight - WF_TARGET_DIST_MM;
     wfFilteredError = WF_EMA * rawError + (1.0f - WF_EMA) * wfFilteredError;
 
     float corrDegS = WF_KP * wfFilteredError;
     if (corrDegS >  WF_MAX_CORR) corrDegS =  WF_MAX_CORR;
     if (corrDegS < -WF_MAX_CORR) corrDegS = -WF_MAX_CORR;
-    if (std::fabs(corrDegS) < WF_MIN_CORR) corrDegS = 0.0f;  // dead zone against wobble
+    if (std::fabs(corrDegS) < WF_MIN_CORR) corrDegS = 0.0f; // dead zone against wobble
 
     float lin = wallFrontLikely ? WF_LIN_SLOW : WF_LIN_NORMAL;
     printf("[WALL] FOLLOW_RIGHT wallR=%.0fmm err=%.0fmm corr=%.1f lin=%.0f\n",
            wallRight, wfFilteredError, corrDegS, lin);
 
-    res.cmd = DriveCommand(lin, corrDegS);
+    res.cmd   = DriveCommand(lin, corrDegS);
     res.state = WallState::FOLLOW_RIGHT; res.errorMm = wfFilteredError;
     return res;
 }

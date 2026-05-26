@@ -52,6 +52,8 @@ private:
 
     float pwmLeft;
     float pwmRight;
+    float lastLimitedPwmLeft;
+    float lastLimitedPwmRight;
 
     float targetYaw;
     bool  yawInitialized;
@@ -74,7 +76,7 @@ private:
 
 
     void updateRamp(float linearTarget);
-
+    float applyOutputLimiter(float target, float previous);
     void updateDriveMode(float linear, float angular);
 
     // Computes a yaw-correction delta for straight-line driving.
