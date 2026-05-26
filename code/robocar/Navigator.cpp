@@ -272,13 +272,12 @@ DriveCommand Navigator::GetNextCommand(Position current, float minFront, float m
         }
         newLin = 0.0f;
 
-    } else if (absErr > ANGLE_DEADBAND_DEG) {
-        // Medium heading error → move while gently steering.
-        // Speed is scaled down so the robot slows before tight turns.
-        newLin = computeLinearSpeed(absErr);
-        newAng = ANGULAR_GAIN * absErr;
-        if (newAng > MAX_ANGULAR_DEG_S) newAng = MAX_ANGULAR_DEG_S;
-        if (angleErr > 0.0f) newAng = -newAng;
+    }  else if (absErr > ANGLE_DEADBAND_DEG) {
+    newLin = computeLinearSpeed(absErr);
+    // Stuur angular = 0 en laat Drive::computeYawCorrection de kleine
+    // hoekfout absorberen via de yaw-PID. Alleen bij grote fouten
+    // (boven SLOW_TURN_THRESHOLD) neemt Navigator zelf de sturing over.
+    newAng = 0.0f;
 
     } else {
         // Small heading error → drive straight at speed scaled to remaining error.
