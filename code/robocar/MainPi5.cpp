@@ -538,6 +538,7 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
     nieuweTermios.c_cc[VMIN]  = 0;             // niet-blokkerende read
     nieuweTermios.c_cc[VTIME] = 0;
     tcsetattr(STDIN_FILENO, TCSANOW, &nieuweTermios);
+    tcflush(STDIN_FILENO, TCIFLUSH); // leeg stdin: verwijder de \n van het menu
 
     usleep(1200000);
     for (int i = 0; i < 5; ++i) { uart.StuurStop(); usleep(20000); }
