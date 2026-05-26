@@ -196,8 +196,12 @@ float Drive::computeYawCorrection()
     float yawError   = targetYaw - currentYaw;
 
     // Wrap to (-180, 180]
-    while (yawError >  180.0f) yawError -= 360.0f;
-    while (yawError < -180.0f) yawError += 360.0f;
+    while (yawError >  180.0f) {
+        yawError -= 360.0f;
+    }
+    while (yawError < -180.0f) {
+        yawError += 360.0f;
+    }
 
     return pidYaw.Compute(0.0f, -yawError);
 }
@@ -216,8 +220,13 @@ void Drive::executeTurn(float angular)
     float targetWheelSpd = angularRad * wheelbaseMm * 0.5f;
 
     float feedforward = (fabsf(angular) + FF_OFFSET) / FF_SCALE;
-    if (feedforward < minPwmLeft) feedforward = minPwmLeft;
-    if (feedforward > 255.0f)     feedforward = 255.0f;
+    if (feedforward < minPwmLeft) {
+        feedforward = minPwmLeft;
+    }
+
+    if (feedforward > 255.0f) {
+        feedforward = 255.0f;
+    }
 
     float rawL   = sensorHub.GetSpeedLeft();
     float rawR   = sensorHub.GetSpeedRight();
@@ -230,8 +239,14 @@ void Drive::executeTurn(float angular)
         speedRightFiltered = rawR;
         filterInitialized  = true;
     }
-    if (freshL) speedLeftFiltered  = EMA_ALPHA * rawL + (1.0f - EMA_ALPHA) * speedLeftFiltered;
-    if (freshR) speedRightFiltered = EMA_ALPHA * rawR + (1.0f - EMA_ALPHA) * speedRightFiltered;
+
+    if (freshL) {
+        speedLeftFiltered  = EMA_ALPHA * rawL + (1.0f - EMA_ALPHA) * speedLeftFiltered;
+    }
+
+    if (freshR) {
+        speedRightFiltered = EMA_ALPHA * rawR + (1.0f - EMA_ALPHA) * speedRightFiltered;
+    }
 
     // Coupled target: drive both wheels toward their current average and only
     // gently pull that average toward the true setpoint. This synchronises
@@ -240,10 +255,13 @@ void Drive::executeTurn(float angular)
     float avgError      = targetWheelSpd - avgSpeed;
     float coupledTarget = avgSpeed + TURN_SPEED_GAIN * avgError;
 
-    if (coupledTarget < TURN_COUPLED_MIN_FACTOR * targetWheelSpd)
+    if (coupledTarget < TURN_COUPLED_MIN_FACTOR * targetWheelSpd) {
         coupledTarget = TURN_COUPLED_MIN_FACTOR * targetWheelSpd;
-    if (coupledTarget > TURN_COUPLED_MAX_FACTOR * targetWheelSpd)
+    }
+    
+    if (coupledTarget > TURN_COUPLED_MAX_FACTOR * targetWheelSpd) {
         coupledTarget = TURN_COUPLED_MAX_FACTOR * targetWheelSpd;
+    }
 
     float outLeft  = freshL ? pidLeft .Compute(speedLeftFiltered,  coupledTarget) : lastOutputLeft;
     float outRight = freshR ? pidRight.Compute(speedRightFiltered, coupledTarget) : lastOutputRight;
@@ -256,10 +274,21 @@ void Drive::executeTurn(float angular)
     float magL = feedforward + trimL;
     float magR = feedforward + trimR;
 
-    if (magL < minPwmLeft)  magL = minPwmLeft;
-    if (magL > 255.0f)      magL = 255.0f;
-    if (magR < minPwmRight) magR = minPwmRight;
-    if (magR > 255.0f)      magR = 255.0f;
+    if (magL < minPwmLeft) {
+        magL = minPwmLeft;
+    }
+
+    if (magL > 255.0f) {
+        magL = 255.0f;
+    } 
+
+    if (magR < minPwmRight) {
+        magR = minPwmRight;
+    }
+
+    if (magR > 255.0f) {
+        magR = 255.0f;
+    }
 
     if (driveMode == DriveMode::TurnLeft) {
         pwmLeft = -magL; pwmRight = +magR;
@@ -312,8 +341,14 @@ void Drive::executeLinear(float linear, float angular)
         speedRightFiltered = rawR;
         filterInitialized  = true;
     }
-    if (freshL) speedLeftFiltered  = EMA_ALPHA * rawL + (1.0f - EMA_ALPHA) * speedLeftFiltered;
-    if (freshR) speedRightFiltered = EMA_ALPHA * rawR + (1.0f - EMA_ALPHA) * speedRightFiltered;
+
+    if (freshL) {
+        speedLeftFiltered  = EMA_ALPHA * rawL + (1.0f - EMA_ALPHA) * speedLeftFiltered;
+    }
+
+    if (freshR) {
+        speedRightFiltered = EMA_ALPHA * rawR + (1.0f - EMA_ALPHA) * speedRightFiltered;
+    }
 
     // Only recompute PID when the encoder produced a new sample.
     // Holding the previous output between samples avoids the 0/spike/0 pattern
@@ -326,11 +361,21 @@ void Drive::executeLinear(float linear, float angular)
     float magL = percentToPwm(outLeft);
     float magR = percentToPwm(outRight);
 
-    if (magL < 0.0f) magL = 0.0f;
-    if (magR < 0.0f) magR = 0.0f;
+    if (magL < 0.0f) {
+        magL = 0.0f;
+    }
 
-    if (absTargetL < 1.0f) { magL = 0.0f; pidLeft.Reset();  lastOutputLeft  = 0.0f; }
-    if (absTargetR < 1.0f) { magR = 0.0f; pidRight.Reset(); lastOutputRight = 0.0f; }
+    if (magR < 0.0f) {
+        magR = 0.0f;
+    }
+
+    if (absTargetL < 1.0f) { 
+        magL = 0.0f; pidLeft.Reset();  lastOutputLeft  = 0.0f; 
+    }
+
+    if (absTargetR < 1.0f) { 
+        magR = 0.0f; pidRight.Reset(); lastOutputRight = 0.0f; 
+    }
 
     float driveSign = (linear >= 0.0f) ? 1.0f : -1.0f;
     pwmLeft  = driveSign * magL;
@@ -374,17 +419,19 @@ void Drive::Execute(const DriveCommand& command)
         driveMode != DriveMode::TurnLeft  &&
         driveMode != DriveMode::TurnRight &&
         driveMode != DriveMode::Stopped   &&
-        fabsf(angular) < 0.001f)
+        fabsf(angular) < 0.001f) 
     {
         targetYaw      = sensorHub.GetCurrentYaw();
         yawInitialized = true;
         pidYaw.Reset();
     }
 
-    if (driveMode == DriveMode::TurnLeft || driveMode == DriveMode::TurnRight)
+    if (driveMode == DriveMode::TurnLeft || driveMode == DriveMode::TurnRight) {
         executeTurn(angular);
-    else
+    }
+    else {
         executeLinear(linear, angular);
+    }
 
     // OutputLimiter: applied after all inner calculations so it catches jumps
     // from any source (ramp, PID, yaw correction, feedforward).
@@ -395,8 +442,13 @@ void Drive::Execute(const DriveCommand& command)
     lastLimitedPwmLeft  = pwmLeft;
     lastLimitedPwmRight = pwmRight;
 
-    if (enableMotorLeft)  motorLeft .SetSpeed(pwmLeft);
-    if (enableMotorRight) motorRight.SetSpeed(pwmRight);
+    if (enableMotorLeft) {
+        motorLeft .SetSpeed(pwmLeft);
+    }
+
+    if (enableMotorRight) {
+        motorRight.SetSpeed(pwmRight);
+    }
 }
 
 

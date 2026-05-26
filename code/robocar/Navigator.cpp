@@ -326,7 +326,9 @@ float Navigator::CalculateAngleError(Position current, Position target) const {
     return NormalizeDeg(desired - current.GetTheta());
 }
 
-float Navigator::NormalizeDeg(float deg) const { return NormDeg(deg); }
+float Navigator::NormalizeDeg(float deg) const {
+    return NormDeg(deg); 
+}
 
 
 // ─────────────────────────────────────────────────────────────────

@@ -490,9 +490,147 @@ static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
     return 0;
 }
 
-static void RunStuurCommand(CommandKeepAlive& ka) { (void)ka; }
-static void RunLeesLive(Pi5UARTHandler& uart)     { (void)uart; }
-static int  RunPicoCommunicatie(Pi5UARTHandler& uart) { (void)uart; return 0; }
+// ─────────────────────────────────────────────────────────────────
+// RunPicoCommunicatie — handmatig besturen + live mappen
+//
+// Gebruik:
+//   w / s        vooruit / achteruit  (+/- LIN_SPEED mm/s)
+//   a / d        links / rechts draaien (+/- ANG_SPEED deg/s)
+//   spatie        stop
+//   q             afsluiten en kaart opslaan
+//
+// De LIDAR + lokalisatie lopen in dezelfde lus als RunMappen zodat de
+// kaart live wordt opgebouwd terwijl je handmatig rijdt. Zo kun je
+// stap voor stap uitsluiten of slechte kaartdelen door rijgedrag of
+// door de mapping/lokalisatie worden veroorzaakt.
+// ─────────────────────────────────────────────────────────────────
+static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
+    constexpr float DT       = 0.1f;
+    constexpr long  LOOP_US  = 100000;
+    constexpr float LIN_SPEED = 200.0f;   // mm/s — bewust lager dan autonoom voor controle
+    constexpr float ANG_SPEED =  45.0f;   // deg/s
+
+    Localisation loc(219.0f);
+    Mapper       mapper(260, 160, 0.03f);
+    ScanMatcher  scanMatcher;
+
+    float imuOffset     = 0.0f;
+    bool  imuGenulld    = false;
+    float huidigeImuYaw = 0.0f;
+    float omegaDegS     = 0.0f;
+    int   scanCount     = 0;
+
+    float lastRanges[360] = {};
+    bool  heeftRanges     = false;
+
+    // Huidig handmatig commando
+    float handLin = 0.0f;
+    float handAng = 0.0f;
+
+    CommandKeepAlive ka(uart);
+
+    // Zet terminal in raw mode zodat toetsen direct beschikbaar zijn
+    // zonder Enter te hoeven drukken.
+    struct termios oudeTermios, nieuweTermios;
+    tcgetattr(STDIN_FILENO, &oudeTermios);
+    nieuweTermios = oudeTermios;
+    nieuweTermios.c_lflag &= ~(ICANON | ECHO); // geen line-buffering, geen echo
+    nieuweTermios.c_cc[VMIN]  = 0;             // niet-blokkerende read
+    nieuweTermios.c_cc[VTIME] = 0;
+    tcsetattr(STDIN_FILENO, TCSANOW, &nieuweTermios);
+
+    usleep(1200000);
+    for (int i = 0; i < 5; ++i) { uart.StuurStop(); usleep(20000); }
+    tcflush(uart.GetFd(), TCIFLUSH);
+    for (int i = 0; i < 15; ++i) { uart.LeesData(); usleep(10000); }
+
+    // Wacht op eerste LIDAR-scan
+    while (!heeftRanges && running) {
+        if (lidar.Update()) {
+            for (int a = 0; a < 360; ++a) lastRanges[a] = lidar.GetDistance(a).distance;
+            heeftRanges = true;
+        } else usleep(100000);
+    }
+
+    ka.Start();
+
+    printf("\n[PICO] Handmatige besturing actief\n");
+    printf("  w/s = voor/achteruit  a/d = links/rechts  spatie = stop  q = afsluiten\n\n");
+
+    while (running) {
+        auto tStart = std::chrono::steady_clock::now();
+
+        // ── Lees toetsenbord (niet-blokkerend) ──────────────────────
+        char toets = 0;
+        if (read(STDIN_FILENO, &toets, 1) == 1) {
+            switch (toets) {
+                case 'w': handLin =  LIN_SPEED; handAng =  0.0f;      break;
+                case 's': handLin = -LIN_SPEED; handAng =  0.0f;      break;
+                case 'a': handLin =  0.0f;      handAng = -ANG_SPEED; break;
+                case 'd': handLin =  0.0f;      handAng =  ANG_SPEED; break;
+                case ' ': handLin =  0.0f;      handAng =  0.0f;      break;
+                case 'q': running = false;                             break;
+                default:  break;
+            }
+            if (toets != 'q') {
+                ka.SetCommand(handLin, handAng);
+                printf("[PICO] cmd lin=%.0f ang=%.0f\n", handLin, handAng);
+            }
+        }
+
+        // ── Sensordata + lokalisatie ─────────────────────────────────
+        uart.LeesData();
+        SensorData sens = uart.GetSensorData();
+        if (sens.geldig) {
+            if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
+            omegaDegS = (sens.speedRechts - sens.speedLinks) / 219.0f * (180.0f / M_PI);
+            loc.Predict(sens.speedLinks, sens.speedRechts, DT);
+            loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
+            huidigeImuYaw = sens.yawGraden - imuOffset;
+        }
+
+        Position pos(loc.GetX(), loc.GetY(), huidigeImuYaw);
+
+        // ── LIDAR + mapping ──────────────────────────────────────────
+        if (lidar.Update()) {
+            float angles[360];
+            for (int a = 0; a < 360; ++a) {
+                lastRanges[a] = lidar.GetDistance(a).distance;
+                angles[a]     = static_cast<float>(a);
+            }
+
+            IcpResult icp = scanMatcher.Match(lastRanges, huidigeImuYaw);
+            if (icp.valid) {
+                loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
+                huidigeImuYaw = NormDeg(huidigeImuYaw + icp.dtheta);
+                pos = Position(loc.GetX(), loc.GetY(), huidigeImuYaw);
+            }
+
+            constexpr float scanDuurSec = 0.1f;
+            mapper.UpdateMotionCorrected(lastRanges, angles, 360, pos, omegaDegS, scanDuurSec);
+            ++scanCount;
+
+            mapper.PrintMap(loc.GetX(), loc.GetY(), scanCount, mapper.GetCoverage());
+        }
+
+        // ── Loop timing ──────────────────────────────────────────────
+        auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - tStart).count();
+        long rest = LOOP_US - static_cast<long>(elapsed);
+        if (rest > 0) usleep(static_cast<useconds_t>(rest));
+    }
+
+    // Herstel terminal
+    tcsetattr(STDIN_FILENO, TCSANOW, &oudeTermios);
+
+    ka.Stop();
+    ka.Shutdown();
+    for (int i = 0; i < 10; ++i) { uart.StuurStop(); usleep(50000); }
+    lidar.Disconnect();
+    mapper.SaveDebugMap("kaart.pgm");
+    printf("[PICO] Kaart opgeslagen als kaart.pgm\n");
+    return 0;
+}
 
 // ─────────────────────────────────────────────────────────────────
 // Menu + main
@@ -537,7 +675,8 @@ int main() {
             if (!lidar.Connect()) { std::cerr << "LIDAR niet beschikbaar.\n"; return 1; }
             return RunMappen(uart, lidar);
         case MenuKeuze::PICO_COMMUNICATIE:
-            return RunPicoCommunicatie(uart);
+            if (!lidar.Connect()) { std::cerr << "LIDAR niet beschikbaar.\n"; return 1; }
+            return RunPicoCommunicatie(uart, lidar);
         case MenuKeuze::RIJDEN_EN_MAPPEN:
             if (!lidar.Connect()) { std::cerr << "LIDAR niet beschikbaar.\n"; return 1; }
             return RunRijdenEnMappen(uart, lidar);
