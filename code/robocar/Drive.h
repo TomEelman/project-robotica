@@ -52,8 +52,6 @@ private:
 
     float pwmLeft;
     float pwmRight;
-    float lastLimitedPwmLeft;
-    float lastLimitedPwmRight;
 
     float targetYaw;
     bool  yawInitialized;
@@ -65,28 +63,28 @@ private:
     float maxAngVel;
     float minPwmLeft;
     float minPwmRight;
-    int   rampTick = 0;
-
-    // Clamps pwm, values below minPwm are set to zero to avoid stalling (no motor movement)
+    int rampTick = 0;
     
-    void clampPwm(float& pwm, float minPwm);
+    // Clamps |pwm| to [minPwm, 255]. Values below minPwm are zeroed to avoid
+    // stalling the motor driver in a region where no movement occurs.
+    void  ClampPwm(float& pwm, float minPwm);
 
-    // Maps a percentage +-100 to +-255
-    float percentToPwm(float percent);
+    // Maps a percentage [-100, 100] to a PWM value [-255, 255].
+    float PercentToPwm(float percent);
 
+    // Smoothly accelerates rampedLinear toward the requested linear setpoint.
+    // Prevents large inrush currents and wheel slip on hard starts.
+    void UpdateRamp(float linearTarget);
 
-    void updateRamp(float linearTarget);
-    float applyOutputLimiter(float target, float previous);
-    void updateDriveMode(float linear, float angular);
+    void UpdateDriveMode(float linear, float angular);
 
     // Computes a yaw-correction delta for straight-line driving.
-    // saves the target yaw on first call after a direction change and
-    // uses the yaw PID to keep straight
-    float computeYawCorrection();
+    // Latches the target yaw on first call after a direction change and
+    // uses the yaw PID to null out drift.
+    float ComputeYawCorrection();
 
-    void executeTurn(float angular);
-    void executeLinear(float linear, float angular);
-
+    void ExecuteTurn(float angular);
+    void ExecuteLinear(float linear, float angular);
 };
 
 #endif
