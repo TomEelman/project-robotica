@@ -1,592 +1,440 @@
-#include "MainPi5.h"
-#include "LIDAR.h"
-#include "Mapper.h"
-#include "Localisation.h"
-#include "PathPlanner.h"
 #include "Navigator.h"
-#include "ExplorationPlanner.h"
-#include "ScanMatcher.h"
-#include <csignal>
-#include <chrono>
 #include <cmath>
-#include <cstring>
-#include <iostream>
-#include <limits>
-#include <string>
-#include <unistd.h>
-#include <termios.h>
+#include <cstdio>
 
-std::atomic<bool> running{true};
-static Pi5UARTHandler* g_uart = nullptr;
+// NormDeg — normalize angle to (-180, 180]
+float NormDeg(float deg) {
+    while (deg >  180.0f) deg -= 360.0f;
+    while (deg < -180.0f) deg += 360.0f;
+    return deg;
+}
 
-static void onSignal(int) {
-    running = false;
-    if (g_uart && g_uart->IsOpen()) {
-        const char* stop = "STOP\nSTOP\nSTOP\n";
-        ::write(g_uart->GetFd(), stop, strlen(stop));
+
+// ─────────────────────────────────────────────────────────────────
+// AnalyzeScan — sector analysis of a 360° scan (obstacle avoidance)
+// ─────────────────────────────────────────────────────────────────
+
+static float g_prevAvoid = 0.0f;
+
+ScanAnalysis AnalyzeScan(const float ranges[360]) {
+    static constexpr float CRITICAL_MM = 350.0f;
+    static constexpr float BRAKE_MM    = 500.0f;
+    static constexpr float SAFE_MM     = 700.0f;
+    static constexpr float CHASSIS_MM  = 280.0f;
+    static constexpr float MAX_RANGE   = 8000.0f;
+    static constexpr float HYSTERESIS  = 200.0f;
+
+    // Split the 360 readings into 36 sectors of 10° and keep the nearest
+    // reading per sector (= the closest obstacle in that direction).
+    float sector[36];
+    for (int s = 0; s < 36; ++s) sector[s] = MAX_RANGE;
+    for (int a = 0; a < 360; ++a) {
+        float r = ranges[a];
+        if (r <= 0.0f || r > MAX_RANGE) continue;
+        int s = (a / 10) % 36;
+        if (r < sector[s]) sector[s] = r;
     }
+
+    auto sectorMin = [&](int from, int to) -> float {
+        float m = MAX_RANGE;
+        for (int s = from % 36; s != (to % 36); s = (s + 1) % 36)
+            if (sector[s] < m) m = sector[s];
+        return m;
+    };
+
+    float minFrontNarrow = MAX_RANGE;
+    { float m1 = sectorMin(0,4), m2 = sectorMin(33,36); minFrontNarrow = (m1<m2)?m1:m2; }
+    float minFront = MAX_RANGE;
+    { float m1 = sectorMin(0,5), m2 = sectorMin(31,36); minFront = (m1<m2)?m1:m2; }
+
+    float minRightSide = sectorMin(5,  13);
+    float minLeftSide  = sectorMin(23, 31);
+    float minRight     = sectorMin(5,  18);
+    float minLeft      = sectorMin(19, 35);
+    float spaceRight   = sectorMin(1,  18);
+    float spaceLeft    = sectorMin(19, 36);
+    float minRear      = sectorMin(15, 21);
+
+    bool inCorridor = (minFront >= BRAKE_MM) &&
+                      (minRightSide < SAFE_MM) && (minLeftSide < SAFE_MM);
+
+    ScanAnalysis res{};
+    res.spaceLeft  = spaceLeft;
+    res.spaceRight = spaceRight;
+    res.minFront   = minFront;
+    res.minLeft    = minLeft;
+    res.minRight   = minRight;
+    res.minRear    = minRear;
+    res.avoidDir   = g_prevAvoid;
+
+    if (minFront >= SAFE_MM) { res.state = 0; g_prevAvoid = 0.0f; return res; }
+    if (inCorridor)          { res.state = 0; g_prevAvoid = 0.0f; return res; }
+
+    // Choose avoidance direction: most free space wins, with hysteresis
+    // so it does not flip back and forth between left and right.
+    bool rightSafe = (minRightSide > CHASSIS_MM);
+    bool leftSafe  = (minLeftSide  > CHASSIS_MM);
+    float scoreRight = rightSafe ? spaceRight : 0.0f;
+    float scoreLeft  = leftSafe  ? spaceLeft  : 0.0f;
+    if (g_prevAvoid > 0.0f) scoreRight += HYSTERESIS;
+    if (g_prevAvoid < 0.0f) scoreLeft  += HYSTERESIS;
+
+    float newAvoid = (!rightSafe && !leftSafe)
+        ? ((spaceRight >= spaceLeft) ? +1.0f : -1.0f)
+        : ((scoreRight >= scoreLeft) ? +1.0f : -1.0f);
+
+    res.avoidDir = newAvoid;
+    g_prevAvoid  = newAvoid;
+
+    if      (minFrontNarrow < CRITICAL_MM) res.state = 3;
+    else if (minFront       < BRAKE_MM)    res.state = 2;
+    else                                    res.state = 1;
+    return res;
 }
 
-CommandKeepAlive::CommandKeepAlive(Pi5UARTHandler& uart)
-    : uart(uart), 
-    lin(0.0f), 
-    ang(0.0f), 
-    actief(false) {}
 
-void CommandKeepAlive::SetCommand(float linearMmS, float angularDegS) {
-    std::lock_guard<std::mutex> lk(mtx);
-    lin = linearMmS; ang = angularDegS; actief = true;
+// ─────────────────────────────────────────────────────────────────
+// Constructor
+// ─────────────────────────────────────────────────────────────────
+
+Navigator::Navigator()
+    : path()
+    , currentTarget(0.0f, 0.0f, 0.0f)
+    , isUpdated(false)
+    , hasPath(false)
+    , stableLin(0.0f)
+    , stableAng(0.0f)
+    , hasStableCmd(false)
+    , cmdTicks(0)
+    , blockCounter(0)
+    , recoveryTicks(0)
+    , blocked(false)
+    , wallState(WallState::OPEN_SPACE)
+    , wfFilteredError(0.0f)
+    , outerCornerTicks(0)
+{}
+
+
+// ─────────────────────────────────────────────────────────────────
+// SetPath / Update — path management
+// ─────────────────────────────────────────────────────────────────
+
+void Navigator::SetPath(const Path& newPath) {
+    path = newPath;
+    path.Reset();
+    hasPath      = !path.IsEmpty();
+    hasStableCmd = false;
+    cmdTicks     = 0;
+    blockCounter = 0;
+    // recoveryTicks is NOT reset: if a recovery action (e.g. reversing) is
+    // still running when replanning happens, let it finish so the robot is
+    // physically clear of the obstacle before following the new path.
+    blocked      = false;
+    if (hasPath) currentTarget = path.GetCurrentWaypoint();
+    isUpdated = true;
 }
 
-void CommandKeepAlive::Stop() {
-    { std::lock_guard<std::mutex> lk(mtx); lin = ang = 0.0f; actief = false; }
-    uart.StuurStop();
-}
-
-void CommandKeepAlive::Start() {
-    threadActief = true;
-    worker = std::thread([this]() {
-        while (threadActief) {
-            { std::lock_guard<std::mutex> lk(mtx);
-                if (actief && running) uart.StuurCommand(lin, ang);
-                else if (!running) { uart.StuurStop(); actief = false; }
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-    });
-}
-
-void CommandKeepAlive::Shutdown() {
-    threadActief = false;
-    if (worker.joinable()) worker.join();
-}
-
-bool CommandKeepAlive::IsActief() const { return actief.load(); }
-float CommandKeepAlive::GetLin() const { return lin; }
-float CommandKeepAlive::GetAng() const { return ang; }
-
-// ─────────────────────────────────────────────────────────────────
-// Enums
-// ─────────────────────────────────────────────────────────────────
-
-// HoofdModus: MUUR_VOLGEN verwijderd — robot start direct in FRONTIER.
-enum class HoofdModus { FRONTIER, TERUG_HOME, KLAAR };
-enum class OntwijkFase { NORMAAL, DRAAIEN, VRIJRIJDEN, ACHTERUIT };
-
-// ─────────────────────────────────────────────────────────────────
-// Helper declaraties
-// ─────────────────────────────────────────────────────────────────
-static bool HandleObstacleAvoidance(const ScanAnalysis& scan, Localisation& loc,
-    OntwijkFase& ontwijkFase, float& doelHoek, float& draaiRichting,
-    int& vrijrijTicks, int& achteruitTicks, int& vastzitTeller, int& achteruitEscalatie,
-    float& ontsnapX, float& ontsnapY, CommandKeepAlive& ka, float LIN_SPEED, int& scansSindsHerplan);
-
-static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position pos, bool nieuweScan,
-    int& scansSindsHerplan, int& mislukteTeller, HoofdModus& hoofdModus, bool& heeftPad,
-    float ontsnapX, float ontsnapY, CommandKeepAlive& ka, PathPlanner& planner,
-    std::vector<BlacklistItem>& frontierBlacklist, int HERPLAN_SCANS, int MIN_DEKKING_PCT,
-    int MISLUKT_DREMPEL, float ONTSNAP_RADIUS, const float* lastRanges,
-    float minFront);
-
-static void HandleReturnToHome(Navigator& navigator, Mapper& mapper, Position pos, Position beginPunt,
-    bool& heeftPad, CommandKeepAlive& ka, PathPlanner& planner, float HOME_DREMPEL_MM, HoofdModus& hoofdModus);
-
-// ─────────────────────────────────────────────────────────────────
-// Helper implementaties
-// ─────────────────────────────────────────────────────────────────
-static bool HandleObstacleAvoidance(const ScanAnalysis& scan, Localisation& loc,
-    OntwijkFase& ontwijkFase, float& doelHoek, float& draaiRichting,
-    int& vrijrijTicks, int& achteruitTicks, int& vastzitTeller, int& achteruitEscalatie,
-    float& ontsnapX, float& ontsnapY, CommandKeepAlive& ka, float LIN_SPEED, int& scansSindsHerplan) {
-
-    if (ontwijkFase == OntwijkFase::DRAAIEN) {
-        float fout = NormDeg(doelHoek - loc.GetTheta());
-        if (std::fabs(fout) < 8.0f) {
-            ontwijkFase = OntwijkFase::VRIJRIJDEN;
-            vrijrijTicks = (scan.minFront < 600.0f ? 10 : 25) + achteruitEscalatie * 8;
-            scansSindsHerplan = 15;
-            ka.SetCommand(LIN_SPEED, 0.0f);
-        } else if (scan.state >= 3) {
-            draaiRichting = -draaiRichting;
-            doelHoek = NormDeg(loc.GetTheta() - draaiRichting * 90.0f);
-            ka.SetCommand(0.0f, draaiRichting * 40.0f);
+void Navigator::Update(Position current) {
+    if (!hasPath || path.IsEmpty()) return;
+    // Skip reached waypoints; on each new waypoint we recompute the
+    // command immediately (reset the stable counter).
+    while (ReachedPoint(current) && !path.IsEmpty()) {
+        path.Advance();
+        if (!path.IsEmpty()) {
+            currentTarget = path.GetCurrentWaypoint();
+            hasStableCmd  = false;
+            cmdTicks      = 0;
         } else {
-            ka.SetCommand(0.0f, draaiRichting * 40.0f);
+            hasPath = false;
         }
-    } else if (ontwijkFase == OntwijkFase::VRIJRIJDEN) {
-        if (scan.state >= 3) {
-            if (++vastzitTeller >= 2) {
-                ++achteruitEscalatie;
-                achteruitTicks = 18 + std::min(achteruitEscalatie * 8, 40);
-                ontwijkFase = OntwijkFase::ACHTERUIT;
-                ka.SetCommand(-LIN_SPEED * 0.6f, 0.0f);
+    }
+    isUpdated = true;
+}
+
+
+// ─────────────────────────────────────────────────────────────────
+// computeLinearSpeed — scale linear speed based on heading error
+//
+// The robot drives at full LINEAR_SPEED_MM_S only when it is already
+// pointed at the target (small angle error). As the error grows the
+// speed is reduced so the robot slows into turns instead of sliding
+// through them.
+//
+// Mapping:
+//   |err| ≤ ANGLE_DEADBAND_DEG          → full speed (factor = 1.0)
+//   |err| = SLOW_TURN_THRESHOLD         → SLOW_TURN_FACTOR × full speed
+//   |err| ≥ SLOW_TURN_THRESHOLD         → speed handled by the turn branch,
+//                                          this function is not called
+// ─────────────────────────────────────────────────────────────────
+
+float Navigator::computeLinearSpeed(float absErr) const
+{
+    // The usable range is [ANGLE_DEADBAND_DEG, SLOW_TURN_THRESHOLD].
+    // Outside that range the caller already selects a different motion mode.
+    float range = SLOW_TURN_THRESHOLD - ANGLE_DEADBAND_DEG;
+    if (range < 1.0f) range = 1.0f; // guard against degenerate config
+
+    // Linear interpolation: 1.0 at ANGLE_DEADBAND, SLOW_TURN_FACTOR at SLOW_TURN_THRESHOLD.
+    float t = (absErr - ANGLE_DEADBAND_DEG) / range;
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+
+    float factor = 1.0f - t * (1.0f - SLOW_TURN_FACTOR);
+
+    // Hard floor: never go below SLOW_TURN_FACTOR so the robot keeps moving.
+    if (factor < SLOW_TURN_FACTOR) factor = SLOW_TURN_FACTOR;
+
+    return LINEAR_SPEED_MM_S * factor;
+}
+
+
+// ─────────────────────────────────────────────────────────────────
+// GetNextCommand — core of the waypoint follower + recovery
+//
+// Logic in order:
+//   1. Finish any running recovery action (reverse or turn).
+//   2. Obstacle in front → raise block counter; if too often → recover.
+//   3. Waypoint reached → stop.
+//   4. Repeat the stable command while still valid (avoids wobbling).
+//   5. Otherwise compute a new command from the heading error.
+// ─────────────────────────────────────────────────────────────────
+
+DriveCommand Navigator::GetNextCommand(Position current, float minFront, float minRear) {
+    if (!hasPath || path.IsEmpty())
+        return DriveCommand(0.0f, 0.0f);
+
+    // -- 1. Running recovery action -------------------------------------------
+    if (recoveryTicks > 0) {
+        --recoveryTicks;
+        return DriveCommand(stableLin, stableAng);
+    }
+
+    // -- 2. Obstacle interrupt + block detection -------------------------------
+    if (minFront < OBSTACLE_INTERRUPT_MM) {
+        ++blockCounter;
+        hasStableCmd = false;
+        cmdTicks     = 0;
+
+        if (blockCounter >= RECOVERY_TRIGGER) {
+            if (minRear > REVERSE_SAFE_MM) {
+                stableLin     = REVERSE_SPEED;
+                stableAng     = 0.0f;
+                recoveryTicks = RECOVERY_TICKS;
+                blocked       = true;
+                printf("[NAV] RECOVERY reverse (front=%.0f rear=%.0f)\n", minFront, minRear);
             } else {
-                draaiRichting = -draaiRichting;
-                doelHoek = NormDeg(loc.GetTheta() - draaiRichting * 90.0f);
-                ontwijkFase = OntwijkFase::DRAAIEN;
-                ka.SetCommand(0.0f, draaiRichting * 40.0f);
+                float angleErr = CalculateAngleError(current, currentTarget);
+                stableLin     = 0.0f;
+                stableAng     = (angleErr > 0.0f) ? -MAX_ANGULAR_DEG_S : MAX_ANGULAR_DEG_S;
+                recoveryTicks = RECOVERY_TICKS;
+                blocked       = true;
+                printf("[NAV] RECOVERY turn (front=%.0f rear=%.0f)\n", minFront, minRear);
             }
-        } else if (--vrijrijTicks <= 0) {
-            vastzitTeller = achteruitEscalatie = 0;
-            ontwijkFase = OntwijkFase::NORMAAL;
-            scansSindsHerplan = 15;
-        } else {
-            ka.SetCommand(LIN_SPEED, 0.0f);
+            blockCounter = 0;
+            return DriveCommand(stableLin, stableAng);
         }
-    } else if (ontwijkFase == OntwijkFase::ACHTERUIT) {
-        if (scan.minRear < 300.0f || --achteruitTicks <= 0) {
-            float bh = 0.0f;
-            doelHoek = NormDeg(loc.GetTheta() + bh);
-            draaiRichting = (bh >= 0.0f ? 1.0f : -1.0f);
-            ontwijkFase = OntwijkFase::DRAAIEN;
-            ka.SetCommand(0.0f, draaiRichting * 40.0f);
-            ontsnapX = loc.GetX(); ontsnapY = loc.GetY();
-        } else {
-            ka.SetCommand(-LIN_SPEED * 0.6f, 0.0f);
-        }
+
+        return DriveCommand(0.0f, 0.0f);
     }
-    return true;
-}
 
-// HandleWallFollowing is verwijderd — robot navigeert puur via frontier/Wavefront.
-// ComputeWallCommand in Navigator blijft beschikbaar voor eventueel later gebruik.
+    // No obstacle → wind the block counter back down
+    if (blockCounter > 0) --blockCounter;
 
-static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position pos, bool nieuweScan,
-    int& scansSindsHerplan, int& mislukteTeller, HoofdModus& hoofdModus, bool& heeftPad,
-    float ontsnapX, float ontsnapY, CommandKeepAlive& ka, PathPlanner& planner,
-    std::vector<BlacklistItem>& frontierBlacklist, int HERPLAN_SCANS, int MIN_DEKKING_PCT,
-    int MISLUKT_DREMPEL, float ONTSNAP_RADIUS, const float* lastRanges,
-    float minFront) {
+    float dist     = CalculateDistance(current, currentTarget);
+    float angleErr = CalculateAngleError(current, currentTarget);
 
-    // Muurvolger-check verwijderd: robot schakelt niet meer automatisch
-    // naar MUUR_VOLGEN zodra hij een muur naast zich detecteert.
-    // Obstakels worden afgehandeld door HandleObstacleAvoidance in de hoofdlus.
+    // -- 3. Waypoint reached --------------------------------------------------
+    if (dist < REACHED_THRESHOLD_MM) {
+        hasStableCmd = false;
+        cmdTicks     = 0;
+        return DriveCommand(0.0f, 0.0f);
+    }
 
-    if (heeftPad && !navigator.IsFinished()) {
-        navigator.Update(pos);
-        DriveCommand cmd = navigator.GetNextCommand(pos, minFront);
-        ka.SetCommand(cmd.GetLinVelocity(), cmd.GetAngVelocity());
+    // -- 4. Repeat the stable command -----------------------------------------
+    bool grooteDraai = (std::fabs(angleErr) > SLOW_TURN_THRESHOLD);
+    if (hasStableCmd && (cmdTicks < CMD_STABLE_TICKS || grooteDraai)) {
+        ++cmdTicks;
+        return DriveCommand(stableLin, stableAng);
+    }
 
-        // Replan als de Navigator klem zat en een herstelactie uitvoerde
-        if (navigator.IsBlocked()) {
-            printf("[MAIN] Navigator blocked -> replan\n");
-            Position bt = navigator.GetCurrentTarget();
-            VoegToeAanBlacklist(frontierBlacklist, bt.GetX(), bt.GetY());
-            navigator.ResetBlock();
-            heeftPad = false;
-            scansSindsHerplan = HERPLAN_SCANS;
+    // -- 5. Compute a new command ---------------------------------------------
+    float absErr = std::fabs(angleErr);
+    float newLin, newAng;
+
+    if (absErr > SLOW_TURN_THRESHOLD) {
+        // Large heading error → turn in place.
+        // Lock the direction once to prevent flipping around ±180°.
+        if (!hasStableCmd) {
+            // Negative angleErr means target is to the right → turn right (+ang).
+            newAng = (angleErr < 0.0f) ? MAX_ANGULAR_DEG_S : -MAX_ANGULAR_DEG_S;
+        } else {
+            newAng = stableAng; // keep already-chosen direction
         }
+        newLin = 0.0f;
 
-        if (navigator.IsBlocked()) {
-            printf("[MAIN] Navigator blocked -> wacht op stabiele lokalisatie\n");
-            Position bt = navigator.GetCurrentTarget();
-            VoegToeAanBlacklist(frontierBlacklist, bt.GetX(), bt.GetY());
-            navigator.ResetBlock();
-            heeftPad = false;
-            scansSindsHerplan = 0;  // forceer herplan pas bij volgende scan-cyclus
-            mislukteTeller = 0;     // reset zodat hij niet meteen naar TERUG_HOME gaat
-        }
+    } else if (absErr > ANGLE_DEADBAND_DEG) {
+        // Medium heading error → move while gently steering.
+        // Speed is scaled down so the robot slows before tight turns.
+        newLin = computeLinearSpeed(absErr);
+        newAng = ANGULAR_GAIN * absErr;
+        if (newAng > MAX_ANGULAR_DEG_S) newAng = MAX_ANGULAR_DEG_S;
+        if (angleErr > 0.0f) newAng = -newAng;
 
     } else {
-        if (heeftPad && navigator.IsFinished()) {
-            heeftPad = false;
-            scansSindsHerplan = HERPLAN_SCANS;
-        }
-        if (nieuweScan) {
-            scansSindsHerplan = 0;
-            int dekking = mapper.GetCoverage();
-            printf("[MAIN] FRONTIER dekking=%d%% mislukt=%d\n", dekking, mislukteTeller);
-
-            if (dekking >= MIN_DEKKING_PCT || mislukteTeller >= MISLUKT_DREMPEL) {
-                hoofdModus = HoofdModus::TERUG_HOME;
-                heeftPad = false;
-                mislukteTeller = 0;
-                printf("[MAIN] Klaar (%d%%) -> TERUG_HOME\n", dekking);
-                Path pad = planner.PlanPath(pos, Position(0.0f, 0.0f, 0.0f), mapper.GetMap());
-                if (!pad.IsEmpty()) { navigator.SetPath(pad); mapper.SetWaypoints(pad); heeftPad = true; }
-            } else {
-                TickBlacklist(frontierBlacklist);
-                Position doel = KiesFrontierDoel(mapper, pos, lastRanges, frontierBlacklist);
-                if (doel.GetX() == pos.GetX() && doel.GetY() == pos.GetY()) {
-                    ++mislukteTeller;
-                    ka.SetCommand(200.0f, 0.0f);
-                } else {
-                    Path pad = planner.PlanPath(pos, doel, mapper.GetMap());
-                    if (!pad.IsEmpty()) {
-                        navigator.SetPath(pad);
-                        mapper.SetWaypoints(pad);
-                        heeftPad = true;
-                        mislukteTeller = 0;
-                    } else {
-                        ++mislukteTeller;
-                        VoegToeAanBlacklist(frontierBlacklist, doel.GetX(), doel.GetY());
-                        ka.SetCommand(200.0f, 0.0f);
-                    }
-                }
-            }
-        }
-        // Geen nieuwe scan → ka herhaalt het laatste commando vanzelf
+        // Small heading error → drive straight at speed scaled to remaining error.
+        // This avoids an abrupt jump from slow-steer speed to full speed the
+        // moment the error drops below ANGLE_DEADBAND_DEG.
+        newLin = computeLinearSpeed(absErr);
+        newAng = 0.0f;
     }
+
+    stableLin    = newLin;
+    stableAng    = newAng;
+    hasStableCmd = true;
+    cmdTicks     = 0;
+
+    printf("[NAV] cmd lin=%.0f ang=%.1f (dist=%.0fmm err=%.1fdeg)\n",
+           newLin, newAng, dist, angleErr);
+
+    return DriveCommand(stableLin, stableAng);
 }
 
-static void HandleReturnToHome(Navigator& navigator, Mapper& mapper, Position pos, Position beginPunt,
-    bool& heeftPad, CommandKeepAlive& ka, PathPlanner& planner, float HOME_DREMPEL_MM, HoofdModus& hoofdModus) {
 
-    float dx = pos.GetX() - beginPunt.GetX();
-    float dy = pos.GetY() - beginPunt.GetY();
-    if (std::hypot(dx, dy) < HOME_DREMPEL_MM) {
-        ka.Stop();
-        mapper.SaveDebugMap("kaart.pgm");
-        printf("[MAIN] Thuis aangekomen!\n");
-        hoofdModus = HoofdModus::KLAAR;
-        running = false;
-        return;
-    } else {
-        if (!heeftPad || navigator.IsFinished()) {
-            heeftPad = false;
-            Path pad = planner.PlanPath(pos, beginPunt, mapper.GetMap());
-            if (!pad.IsEmpty()) {
-                navigator.SetPath(pad);
-                mapper.SetWaypoints(pad);
-                heeftPad = true;
-            } else {
-                float hoek = static_cast<float>(std::atan2(-dy, -dx)) * (180.0f / M_PI);
-                ka.SetCommand(200.0f, NormDeg(hoek - pos.GetTheta()) * 0.5f);
-            }
-        }
-        if (heeftPad && !navigator.IsFinished()) {
-            navigator.Update(pos);
-            DriveCommand cmd = navigator.GetNextCommand(pos);
-            ka.SetCommand(cmd.GetLinVelocity(), cmd.GetAngVelocity());
-        }
-    }
+// ─────────────────────────────────────────────────────────────────
+// Simple accessors
+// ─────────────────────────────────────────────────────────────────
+
+bool     Navigator::IsFinished()       const { return !hasPath || path.IsEmpty(); }
+bool     Navigator::IsUpdated()        const { return isUpdated; }
+Position Navigator::GetCurrentTarget() const { return currentTarget; }
+Path     Navigator::GetPath()          const { return path; }
+
+bool Navigator::ReachedPoint(Position current) const {
+    return !path.IsEmpty() &&
+           CalculateDistance(current, currentTarget) < REACHED_THRESHOLD_MM;
 }
 
+float Navigator::CalculateDistance(Position a, Position b) const {
+    float dx = b.GetX() - a.GetX(), dy = b.GetY() - a.GetY();
+    return std::sqrt(dx*dx + dy*dy);
+}
+
+float Navigator::CalculateAngleError(Position current, Position target) const {
+    float dx = target.GetX() - current.GetX();
+    float dy = target.GetY() - current.GetY();
+    float desired = std::atan2(dy, dx) * (180.0f / static_cast<float>(M_PI));
+    return NormalizeDeg(desired - current.GetTheta());
+}
+
+float Navigator::NormalizeDeg(float deg) const {
+    return NormDeg(deg); }
+
+
 // ─────────────────────────────────────────────────────────────────
-// RunRijdenEnMappen
+// Wall follower — sector helpers
 // ─────────────────────────────────────────────────────────────────
-static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
-    Localisation loc(219.0f);
-    Mapper mapper(260, 160, 0.03f);
 
-    constexpr float DT          = 0.1f;
-    constexpr long  LOOP_US     = 100000;
-    constexpr float LIN_SPEED   = 278.0f;
-    constexpr int   HERPLAN_SCANS   = 15;
-    constexpr int   MIN_DEKKING_PCT = 30;
-    constexpr int   MISLUKT_DREMPEL = 5;
-    constexpr float HOME_DREMPEL_MM = 300.0f;
-    constexpr float ONTSNAP_RADIUS  = 700.0f;
-    constexpr float scanDuurSec     = 0.1f;
+float Navigator::WfSectorMin(const float ranges[360], int from, int to) const {
+    static constexpr float MAX_R = 8000.0f;
+    float m = MAX_R;
+    for (int a = from; a < to; ++a) {
+        int idx = ((a % 360) + 360) % 360;
+        float r = ranges[idx];
+        if (r > 0.0f && r < m) m = r;
+    }
+    return m;
+}
 
-    // Robot start direct in FRONTIER — geen muuromloop meer
-    HoofdModus hoofdModus = HoofdModus::FRONTIER;
+float Navigator::WfSectorAvg(const float ranges[360], int from, int to) const {
+    static constexpr float MAX_R = 8000.0f;
+    float sum = 0.0f; int cnt = 0;
+    for (int a = from; a < to; ++a) {
+        int idx = ((a % 360) + 360) % 360;
+        float r = ranges[idx];
+        if (r > 0.0f && r < MAX_R) { sum += r; ++cnt; }
+    }
+    return cnt > 0 ? sum / static_cast<float>(cnt) : MAX_R;
+}
 
-    int scanCount         = 0;
-    int scansSindsHerplan = HERPLAN_SCANS;
-    int mislukteTeller    = 0;
+void Navigator::ResetWallFollower() {
+    wallState        = WallState::OPEN_SPACE;
+    wfFilteredError  = 0.0f;
+    outerCornerTicks = 0;
+}
 
-    constexpr int   VASTZIT_TIMEOUT  = 400;
-    constexpr float VASTZIT_BEWEG_MM = 150.0f;
 
-    int   vastzitTicks = 0;
-    float vastzitRefX  = 0.0f, vastzitRefY = 0.0f;
+// ─────────────────────────────────────────────────────────────────
+// ComputeWallCommand — right-hand wall follower
+// ─────────────────────────────────────────────────────────────────
 
-    float imuOffset  = 0.0f;
-    bool  imuGenulld = false;
+WallResult Navigator::ComputeWallCommand(const float ranges[360]) {
+    float minFrontNarrow = std::min(WfSectorMin(ranges, 350, 360), WfSectorMin(ranges, 0, 10));
+    float minFront       = std::min(WfSectorMin(ranges, 330, 360), WfSectorMin(ranges, 0, 30));
+    float wallRight      = WfSectorAvg(ranges,  75, 105);
+    float frontRight     = WfSectorMin(ranges,  30,  75);
 
-    float huidigeImuYaw = 0.0f;
-    float omegaDegS     = 0.0f;
+    bool wallInFront      = (minFrontNarrow < WF_FRONT_CRITICAL_MM);
+    bool wallFrontLikely  = (minFront       < WF_FRONT_BRAKE_MM);
+    bool rightWallPresent = (wallRight      < WF_WALL_PRESENT_MM);
+    bool frontRightClear  = (frontRight     > WF_WALL_PRESENT_MM * 1.3f);
 
-    std::vector<BlacklistItem> frontierBlacklist;
-    PathPlanner planner(mapper.GetMap(), true);
-    Navigator   navigator;
-    bool        heeftPad = false;
+    WallResult res{DriveCommand(0.0f, 0.0f), WallState::OPEN_SPACE, 0.0f};
 
-    Position beginPunt(0.0f, 0.0f, 0.0f);
-    bool     beginPuntVergrendeld = false;
-
-    OntwijkFase ontwijkFase      = OntwijkFase::NORMAAL;
-    float       doelHoek         = 0.0f;
-    float       draaiRichting    = 0.0f;
-    int         vrijrijTicks     = 0, achteruitTicks = 0,
-                vastzitTeller_loc = 0, achteruitEscalatie = 0;
-    float       ontsnapX = 1e9f, ontsnapY = 1e9f;
-
-    CommandKeepAlive ka(uart);
-    ScanMatcher      scanMatcher;  // ICP scan-to-scan matching
-
-    float lastRanges[360] = {};
-    bool  heeftRanges     = false;
-
-    // Wacht tot Pico opgestart is
-    usleep(1200000);
-    for (int i = 0; i < 5; ++i) { uart.StuurStop(); usleep(20000); }
-    tcflush(uart.GetFd(), TCIFLUSH);
-    for (int i = 0; i < 15; ++i) { uart.LeesData(); usleep(10000); }
-
-    // Wacht op eerste geldige LIDAR-scan
-    while (!heeftRanges && running) {
-        if (lidar.Update()) {
-            for (int a = 0; a < 360; ++a) lastRanges[a] = lidar.GetDistance(a).distance;
-            heeftRanges = true;
-        } else usleep(100000);
+    // CASE 1: wall straight ahead → inner corner, turn left
+    if (wallInFront) {
+        wallState = WallState::INNER_CORNER; wfFilteredError = 0.0f; outerCornerTicks = 0;
+        res.cmd   = DriveCommand(0.0f, -WF_INNER_CORNER_TURN);
+        res.state = WallState::INNER_CORNER; res.errorMm = 0.0f;
+        printf("[WALL] INNER_CORNER front=%.0fmm -> turn left\n", minFrontNarrow);
+        return res;
     }
 
-    ka.Start();
+    // CASE 2: right wall gone + front-right open → outer corner
+    // (only valid if we were actually following a wall)
+    if (!rightWallPresent && frontRightClear && wallState == WallState::FOLLOW_RIGHT) {
+        wallState = WallState::OUTER_CORNER; outerCornerTicks = 0; wfFilteredError = 0.0f;
+        printf("[WALL] OUTER_CORNER wallR=%.0fmm frontR=%.0fmm -> turn right\n", wallRight, frontRight);
+    }
 
-    while (running) {
-        auto tStart = std::chrono::steady_clock::now();
-
-        uart.LeesData();
-        SensorData sens = uart.GetSensorData();
-        if (sens.geldig) {
-            if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
-            omegaDegS = (sens.speedRechts - sens.speedLinks) / 235.0f * (180.0f / M_PI);
-            loc.Predict(sens.speedLinks, sens.speedRechts, DT);
-            loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
-            huidigeImuYaw = sens.yawGraden - imuOffset;
-
-            if (!beginPuntVergrendeld) {
-                beginPunt = Position(loc.GetX(), loc.GetY(), loc.GetTheta());
-                beginPuntVergrendeld = true;
-            }
-        }
-
-        Position pos(loc.GetX(), loc.GetY(), huidigeImuYaw);
-
-        bool nieuweScan = false;
-        if (lidar.Update()) {
-            float angles[360];
-            for (int a = 0; a < 360; ++a) {
-                lastRanges[a] = lidar.GetDistance(a).distance;
-                angles[a]     = static_cast<float>(a);
-            }
-
-            // ICP scan matching: corrigeer positie voor we in kaart schrijven
-            IcpResult icp = scanMatcher.Match(lastRanges, huidigeImuYaw);
-            if (icp.valid) {
-                loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
-                huidigeImuYaw = NormDeg(huidigeImuYaw + icp.dtheta);
-                pos = Position(loc.GetX(), loc.GetY(), huidigeImuYaw);
-            }
-
-            mapper.UpdateMotionCorrected(lastRanges, angles, 360, pos, omegaDegS, scanDuurSec);
-            heeftRanges = true;
-            ++scanCount;
-            ++scansSindsHerplan;
-            nieuweScan = true;
-        }
-
-        ScanAnalysis scan{};
-        if (heeftRanges) scan = AnalyzeScan(lastRanges);
-
-        // Vastzit-detectie: als de robot in ontwijkmodus zit maar niet beweegt
-        if (ontwijkFase != OntwijkFase::NORMAAL && hoofdModus != HoofdModus::TERUG_HOME) {
-            if (vastzitTicks == 0) { vastzitRefX = pos.GetX(); vastzitRefY = pos.GetY(); }
-            ++vastzitTicks;
-            float beweging = std::hypot(pos.GetX() - vastzitRefX, pos.GetY() - vastzitRefY);
-            if (beweging > VASTZIT_BEWEG_MM) {
-                vastzitRefX = pos.GetX(); vastzitRefY = pos.GetY(); vastzitTicks = 0;
-            }
-            if (vastzitTicks >= VASTZIT_TIMEOUT) {
-                hoofdModus = HoofdModus::TERUG_HOME;
-                ontwijkFase = OntwijkFase::NORMAAL;
-                heeftPad = false;
-                scansSindsHerplan = HERPLAN_SCANS;
-                Path pad = planner.PlanPath(pos, beginPunt, mapper.GetMap());
-                if (!pad.IsEmpty()) { navigator.SetPath(pad); mapper.SetWaypoints(pad); heeftPad = true; }
-            }
+    if (wallState == WallState::OUTER_CORNER) {
+        if (rightWallPresent && wallRight < WF_TARGET_DIST_MM * 1.5f) {
+            wallState = WallState::FOLLOW_RIGHT; outerCornerTicks = 0;
+            printf("[WALL] wall regained at %.0fmm -> FOLLOW_RIGHT\n", wallRight);
+        } else if (++outerCornerTicks > WF_OUTER_CORNER_MAX_TICKS) {
+            wallState = WallState::OPEN_SPACE; outerCornerTicks = 0;
+            printf("[WALL] OUTER_CORNER timeout -> OPEN_SPACE\n");
         } else {
-            vastzitTicks = 0;
+            res.cmd   = DriveCommand(WF_LIN_SLOW, WF_OUTER_CORNER_TURN);
+            res.state = WallState::OUTER_CORNER; res.errorMm = 0.0f;
+            return res;
         }
-
-        // Rijlogica
-        if (ontwijkFase != OntwijkFase::NORMAAL) {
-            HandleObstacleAvoidance(scan, loc, ontwijkFase, doelHoek, draaiRichting,
-                vrijrijTicks, achteruitTicks, vastzitTeller_loc, achteruitEscalatie,
-                ontsnapX, ontsnapY, ka, LIN_SPEED, scansSindsHerplan);
-        } else {
-            switch (hoofdModus) {
-                case HoofdModus::FRONTIER:
-                    HandleFrontierMode(navigator, mapper, pos, nieuweScan, scansSindsHerplan,
-                        mislukteTeller, hoofdModus, heeftPad, ontsnapX, ontsnapY, ka, planner,
-                        frontierBlacklist, HERPLAN_SCANS, MIN_DEKKING_PCT,
-                        MISLUKT_DREMPEL, ONTSNAP_RADIUS, lastRanges, scan.minFront);
-                    break;
-                case HoofdModus::TERUG_HOME:
-                    HandleReturnToHome(navigator, mapper, pos, beginPunt, heeftPad, ka, planner,
-                        HOME_DREMPEL_MM, hoofdModus);
-                    break;
-                case HoofdModus::KLAAR:
-                    running = false;
-                    break;
-            }
-        }
-
-        auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::steady_clock::now() - tStart).count();
-        long rest = LOOP_US - elapsed;
-        if (rest > 0) usleep(static_cast<useconds_t>(rest));
     }
 
-    mapper.SaveDebugMap("kaart.pgm");
-    ka.Stop();
-    ka.Shutdown();
-    for (int i = 0; i < 10; ++i) { uart.StuurStop(); usleep(50000); }
-    lidar.Disconnect();
-    return 0;
-}
-
-// ─────────────────────────────────────────────────────────────────
-// RunMappen
-// ─────────────────────────────────────────────────────────────────
-static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
-    Localisation loc(235.0f);
-    Mapper mapper(260, 160, 0.03f);
-    constexpr float DT = 0.1f, LOOP_US = 100000;
-    int scanCount = 0;
-
-    float imuOffset  = 0.0f;
-    bool  imuGenulld = false;
-    float huidigeImuYaw = 0.0f;
-
-    usleep(1200000);
-
-    while (running) {
-        auto tStart = std::chrono::steady_clock::now();
-
-        uart.LeesData();
-        SensorData sens = uart.GetSensorData();
-        if (sens.geldig) {
-            if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
-            loc.Predict(sens.speedLinks, sens.speedRechts, DT);
-            loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
-            huidigeImuYaw = sens.yawGraden - imuOffset;
-        }
-
-        if (!lidar.Update()) { usleep(200000); continue; }
-
-        float ranges[360], angles[360];
-        for (int a = 0; a < 360; ++a) {
-            ranges[a] = lidar.GetDistance(a).distance;
-            angles[a] = static_cast<float>(a);
-        }
-
-        Position pos(loc.GetX(), loc.GetY(), huidigeImuYaw);
-        mapper.Update(ranges, angles, 360, pos);
-        ++scanCount;
-
-        mapper.PrintMap(loc.GetX(), loc.GetY(), scanCount, mapper.GetCoverage());
-
-        auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::steady_clock::now() - tStart).count();
-        long rest = (long)LOOP_US - elapsed;
-        if (rest > 0) usleep((useconds_t)rest);
+    // CASE 3: no wall on the right → open space (MainPi5 switches to frontier)
+    if (!rightWallPresent) {
+        wallState   = WallState::OPEN_SPACE;
+        float lin   = wallFrontLikely ? WF_LIN_SLOW : WF_LIN_NORMAL;
+        printf("[WALL] OPEN_SPACE front=%.0fmm right=%.0fmm\n", minFront, wallRight);
+        res.cmd   = DriveCommand(lin, 0.0f);
+        res.state = WallState::OPEN_SPACE; res.errorMm = 0.0f;
+        return res;
     }
 
-    lidar.Disconnect();
-    mapper.SaveDebugMap("kaart.pgm");
-    return 0;
-}
+    // CASE 4: normal right-wall following with a P controller on the distance error
+    wallState = WallState::FOLLOW_RIGHT;
+    float rawError  = wallRight - WF_TARGET_DIST_MM;
+    wfFilteredError = WF_EMA * rawError + (1.0f - WF_EMA) * wfFilteredError;
 
-// ─────────────────────────────────────────────────────────────────
-// RunPicoCommunicatie — TIJDELIJKE RECHTUIT-TEST
-//
-// Stuurt elke tick hardcoded (278 mm/s, 0 deg/s) naar de Pico.
-// Geen Navigator, geen toetsenbord, geen mapping — alleen de
-// Drive-PID op de Pico. Ctrl+C stopt.
-//
-// Doel: uitsluiten of het zigzag uit Drive komt of uit Navigator.
-// ─────────────────────────────────────────────────────────────────
-static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
-    (void)lidar; // mapping tijdelijk niet nodig voor deze test
+    float corrDegS = WF_KP * wfFilteredError;
+    if (corrDegS >  WF_MAX_CORR) corrDegS =  WF_MAX_CORR;
+    if (corrDegS < -WF_MAX_CORR) corrDegS = -WF_MAX_CORR;
+    if (std::fabs(corrDegS) < WF_MIN_CORR) corrDegS = 0.0f; // dead zone against wobble
 
-    constexpr long  LOOP_US  = 100000; // 100 ms
-    constexpr float TEST_LIN = 278.0f;
-    constexpr float TEST_ANG = 0.0f;
+    float lin = wallFrontLikely ? WF_LIN_SLOW : WF_LIN_NORMAL;
+    printf("[WALL] FOLLOW_RIGHT wallR=%.0fmm err=%.0fmm corr=%.1f lin=%.0f\n",
+           wallRight, wfFilteredError, corrDegS, lin);
 
-    usleep(1200000);
-    for (int i = 0; i < 5; ++i) { uart.StuurStop(); usleep(20000); }
-    tcflush(uart.GetFd(), TCIFLUSH);
-    for (int i = 0; i < 15; ++i) { uart.LeesData(); usleep(10000); }
-
-    printf("\n[TEST] Rechtuit rijden: lin=%.0f ang=%.0f — Ctrl+C om te stoppen\n\n",
-           TEST_LIN, TEST_ANG);
-
-    while (running) {
-        auto tStart = std::chrono::steady_clock::now();
-
-        uart.StuurCommand(TEST_LIN, TEST_ANG);
-
-        uart.LeesData();
-        SensorData sens = uart.GetSensorData();
-        if (sens.geldig) {
-            printf("[TEST] speedL=%.1f speedR=%.1f yaw=%.2f\n",
-                   sens.speedLinks, sens.speedRechts, sens.yawGraden);
-        }
-
-        auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::steady_clock::now() - tStart).count();
-        long rest = LOOP_US - static_cast<long>(elapsed);
-        if (rest > 0) usleep(static_cast<useconds_t>(rest));
-    }
-
-    for (int i = 0; i < 10; ++i) { uart.StuurStop(); usleep(50000); }
-    printf("[TEST] Gestopt.\n");
-    return 0;
-}
-
-// ─────────────────────────────────────────────────────────────────
-// Menu + main
-// ─────────────────────────────────────────────────────────────────
-enum class MenuKeuze { MAPPEN, PICO_COMMUNICATIE, RIJDEN_EN_MAPPEN, STOPPEN };
-
-static MenuKeuze VraagMenuKeuze() {
-    while (true) {
-        std::cout << "\n"
-                  << "╔══════════════════════════════════════╗\n"
-                  << "║ ROBOT CONTROLLER Pi5                 ║\n"
-                  << "╠══════════════════════════════════════╣\n"
-                  << "║ 1. Mappen                            ║\n"
-                  << "║ 2. Pico communiceren                 ║\n"
-                  << "║ 3. Autonoom rijden + mappen          ║\n"
-                  << "║ 4. Stoppen                           ║\n"
-                  << "╚══════════════════════════════════════╝\n"
-                  << "Keuze: ";
-        std::string invoer; std::getline(std::cin, invoer);
-        if (invoer == "1") return MenuKeuze::MAPPEN;
-        if (invoer == "2") return MenuKeuze::PICO_COMMUNICATIE;
-        if (invoer == "3") return MenuKeuze::RIJDEN_EN_MAPPEN;
-        if (invoer == "4") return MenuKeuze::STOPPEN;
-        std::cout << "Ongeldige keuze.\n";
-    }
-}
-
-int main() {
-    signal(SIGINT, onSignal);
-
-    Pi5UARTHandler uart("/dev/ttyAMA10");
-    LIDAR lidar("/dev/ttyUSB0", 460800);
-
-    g_uart = &uart;
-    if (!uart.Open()) { std::cerr << "UART niet beschikbaar.\n"; return 1; }
-
-    if (!uart.RebootPico()) std::cout << "Pico reboot overgeslagen (al actief).\n";
-    else usleep(1500000);
-
-    switch (VraagMenuKeuze()) {
-        case MenuKeuze::MAPPEN:
-            if (!lidar.Connect()) { std::cerr << "LIDAR niet beschikbaar.\n"; return 1; }
-            return RunMappen(uart, lidar);
-        case MenuKeuze::PICO_COMMUNICATIE:
-            if (!lidar.Connect()) { std::cerr << "LIDAR niet beschikbaar.\n"; return 1; }
-            return RunPicoCommunicatie(uart, lidar);
-        case MenuKeuze::RIJDEN_EN_MAPPEN:
-            if (!lidar.Connect()) { std::cerr << "LIDAR niet beschikbaar.\n"; return 1; }
-            return RunRijdenEnMappen(uart, lidar);
-        case MenuKeuze::STOPPEN:
-            return 0;
-    }
-    return 0;
+    res.cmd   = DriveCommand(lin, corrDegS);
+    res.state = WallState::FOLLOW_RIGHT; res.errorMm = wfFilteredError;
+    return res;
 }
