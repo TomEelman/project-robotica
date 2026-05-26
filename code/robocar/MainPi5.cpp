@@ -267,7 +267,7 @@ static void HandleReturnToHome(Navigator& navigator, Mapper& mapper, Position po
 // ─────────────────────────────────────────────────────────────────
 static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
     Localisation loc(219.0f);
-    Mapper mapper(260, 160, 0.03f);
+    Mapper mapper(500, 500, 0.03f);
 
     constexpr float DT          = 0.1f;
     constexpr long  LOOP_US     = 100000;
@@ -443,7 +443,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
 // ─────────────────────────────────────────────────────────────────
 static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
     Localisation loc(235.0f);
-    Mapper mapper(260, 160, 0.03f);
+    Mapper mapper(5000, 500, 0.03f);
     constexpr float DT = 0.1f, LOOP_US = 100000;
     int scanCount = 0;
 
@@ -491,49 +491,144 @@ static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// RunPicoCommunicatie — TIJDELIJKE RECHTUIT-TEST
+// RunPicoCommunicatie — handmatig besturen + live mappen
 //
-// Stuurt elke tick hardcoded (278 mm/s, 0 deg/s) naar de Pico.
-// Geen Navigator, geen toetsenbord, geen mapping — alleen de
-// Drive-PID op de Pico. Ctrl+C stopt.
+// Gebruik:
+//   w / s        vooruit / achteruit  (+/- LIN_SPEED mm/s)
+//   a / d        links / rechts draaien (+/- ANG_SPEED deg/s)
+//   spatie        stop
+//   q             afsluiten en kaart opslaan
 //
-// Doel: uitsluiten of het zigzag uit Drive komt of uit Navigator.
+// De LIDAR + lokalisatie lopen in dezelfde lus als RunMappen zodat de
+// kaart live wordt opgebouwd terwijl je handmatig rijdt. Zo kun je
+// stap voor stap uitsluiten of slechte kaartdelen door rijgedrag of
+// door de mapping/lokalisatie worden veroorzaakt.
 // ─────────────────────────────────────────────────────────────────
 static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
-    (void)lidar; // mapping tijdelijk niet nodig voor deze test
+    constexpr float DT       = 0.1f;
+    constexpr long  LOOP_US  = 100000;
+    constexpr float LIN_SPEED = 200.0f;   // mm/s — bewust lager dan autonoom voor controle
+    constexpr float ANG_SPEED =  45.0f;   // deg/s
 
-    constexpr long  LOOP_US  = 100000; // 100 ms
-    constexpr float TEST_LIN = 278.0f;
-    constexpr float TEST_ANG = 0.0f;
+    Localisation loc(219.0f);
+    Mapper       mapper(260, 160, 0.03f);
+    ScanMatcher  scanMatcher;
+
+    float imuOffset     = 0.0f;
+    bool  imuGenulld    = false;
+    float huidigeImuYaw = 0.0f;
+    float omegaDegS     = 0.0f;
+    int   scanCount     = 0;
+
+    float lastRanges[360] = {};
+    bool  heeftRanges     = false;
+
+    // Huidig handmatig commando
+    float handLin = 0.0f;
+    float handAng = 0.0f;
+
+    CommandKeepAlive ka(uart);
+
+    // Zet terminal in raw mode zodat toetsen direct beschikbaar zijn
+    // zonder Enter te hoeven drukken.
+    struct termios oudeTermios, nieuweTermios;
+    tcgetattr(STDIN_FILENO, &oudeTermios);
+    nieuweTermios = oudeTermios;
+    nieuweTermios.c_lflag &= ~(ICANON | ECHO); // geen line-buffering, geen echo
+    nieuweTermios.c_cc[VMIN]  = 0;             // niet-blokkerende read
+    nieuweTermios.c_cc[VTIME] = 0;
+    tcsetattr(STDIN_FILENO, TCSANOW, &nieuweTermios);
 
     usleep(1200000);
     for (int i = 0; i < 5; ++i) { uart.StuurStop(); usleep(20000); }
     tcflush(uart.GetFd(), TCIFLUSH);
     for (int i = 0; i < 15; ++i) { uart.LeesData(); usleep(10000); }
 
-    printf("\n[TEST] Rechtuit rijden: lin=%.0f ang=%.0f — Ctrl+C om te stoppen\n\n",
-           TEST_LIN, TEST_ANG);
+    // Wacht op eerste LIDAR-scan
+    while (!heeftRanges && running) {
+        if (lidar.Update()) {
+            for (int a = 0; a < 360; ++a) lastRanges[a] = lidar.GetDistance(a).distance;
+            heeftRanges = true;
+        } else usleep(100000);
+    }
+
+    ka.Start();
+
+    printf("\n[PICO] Handmatige besturing actief\n");
+    printf("  w/s = voor/achteruit  a/d = links/rechts  spatie = stop  q = afsluiten\n\n");
 
     while (running) {
         auto tStart = std::chrono::steady_clock::now();
 
-        uart.StuurCommand(TEST_LIN, TEST_ANG);
+        // ── Lees toetsenbord (niet-blokkerend) ──────────────────────
+        char toets = 0;
+        if (read(STDIN_FILENO, &toets, 1) == 1) {
+            switch (toets) {
+                case 'w': handLin =  LIN_SPEED; handAng =  0.0f;      break;
+                case 's': handLin = -LIN_SPEED; handAng =  0.0f;      break;
+                case 'a': handLin =  0.0f;      handAng = -ANG_SPEED; break;
+                case 'd': handLin =  0.0f;      handAng =  ANG_SPEED; break;
+                case ' ': handLin =  0.0f;      handAng =  0.0f;      break;
+                case 'q': running = false;                             break;
+                default:  break;
+            }
+            if (toets != 'q') {
+                ka.SetCommand(handLin, handAng);
+                printf("[PICO] cmd lin=%.0f ang=%.0f\n", handLin, handAng);
+            }
+        }
 
+        // ── Sensordata + lokalisatie ─────────────────────────────────
         uart.LeesData();
         SensorData sens = uart.GetSensorData();
         if (sens.geldig) {
-            printf("[TEST] speedL=%.1f speedR=%.1f yaw=%.2f\n",
-                   sens.speedLinks, sens.speedRechts, sens.yawGraden);
+            if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
+            omegaDegS = (sens.speedRechts - sens.speedLinks) / 219.0f * (180.0f / M_PI);
+            loc.Predict(sens.speedLinks, sens.speedRechts, DT);
+            loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
+            huidigeImuYaw = sens.yawGraden - imuOffset;
         }
 
+        Position pos(loc.GetX(), loc.GetY(), huidigeImuYaw);
+
+        // ── LIDAR + mapping ──────────────────────────────────────────
+        if (lidar.Update()) {
+            float angles[360];
+            for (int a = 0; a < 360; ++a) {
+                lastRanges[a] = lidar.GetDistance(a).distance;
+                angles[a]     = static_cast<float>(a);
+            }
+
+            IcpResult icp = scanMatcher.Match(lastRanges, huidigeImuYaw);
+            if (icp.valid) {
+                loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
+                huidigeImuYaw = NormDeg(huidigeImuYaw + icp.dtheta);
+                pos = Position(loc.GetX(), loc.GetY(), huidigeImuYaw);
+            }
+
+            constexpr float scanDuurSec = 0.1f;
+            mapper.UpdateMotionCorrected(lastRanges, angles, 360, pos, omegaDegS, scanDuurSec);
+            ++scanCount;
+
+            mapper.PrintMap(loc.GetX(), loc.GetY(), scanCount, mapper.GetCoverage());
+        }
+
+        // ── Loop timing ──────────────────────────────────────────────
         auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - tStart).count();
         long rest = LOOP_US - static_cast<long>(elapsed);
         if (rest > 0) usleep(static_cast<useconds_t>(rest));
     }
 
+    // Herstel terminal
+    tcsetattr(STDIN_FILENO, TCSANOW, &oudeTermios);
+
+    ka.Stop();
+    ka.Shutdown();
     for (int i = 0; i < 10; ++i) { uart.StuurStop(); usleep(50000); }
-    printf("[TEST] Gestopt.\n");
+    lidar.Disconnect();
+    mapper.SaveDebugMap("kaart.pgm");
+    printf("[PICO] Kaart opgeslagen als kaart.pgm\n");
     return 0;
 }
 
