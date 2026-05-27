@@ -35,8 +35,12 @@ public:
     // Voer ICP uit tussen de opgeslagen vorige scan en de nieuwe scan.
     // ranges[360]: afstanden in mm (0 = ongeldig)
     // robotTheta:  huidige robothoek in graden (voor frame-transformatie)
+    // initDx/initDy: encoder-gebaseerde initiële verplaatsing (mm, wereldframe).
+    //   De huidige scan wordt hier EERST mee verschoven zodat ICP al dicht bij
+    //   de oplossing begint en minder kans heeft op een verkeerd lokaal minimum.
     // Geeft de correctie terug die op de positie opgeteld moet worden.
-    IcpResult Match(const float ranges[360], float robotTheta);
+    IcpResult Match(const float ranges[360], float robotTheta,
+                    float initDx = 0.0f, float initDy = 0.0f);
 
     // Reset: gooi de vorige scan weg (bijv. na grote sprong of reset)
     void Reset();
@@ -46,7 +50,12 @@ public:
 private:
     static constexpr int    MAX_ITER      = 20;
     static constexpr float  CONV_THRESH   = 0.5f;   // mm — convergentie
-    static constexpr float  MAX_DIST_MM   = 200.0f; // max point-pair afstand
+    // MAX_DIST_MM: maximale afstand voor een punt-paar in FindCorrespondences.
+    // Bij 278mm/s en 100ms scan-interval beweegt de robot ~28mm per scan.
+    // 200mm was te groot → veel valse koppelingen → ICP convergeerde naar
+    // verkeerd lokaal minimum → grote fictieve trans/rot → afgewezen → drift.
+    // 80mm = 3× verwachte beweging: voldoende marge, elimineert verre foute paren.
+    static constexpr float  MAX_DIST_MM   = 80.0f;
     static constexpr int    MIN_POINTS    = 30;      // min bruikbare punten
 
     float maxTransMm;

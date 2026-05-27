@@ -319,6 +319,11 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
     CommandKeepAlive ka(uart);
     ScanMatcher      scanMatcher;  // ICP scan-to-scan matching
 
+    // Encoder-seeding voor ICP: onthoud EKF-positie bij de vorige scan zodat
+    // we de geschatte verplaatsing als initiële gok aan Match() kunnen meegeven.
+    float lastScanX      = 0.0f, lastScanY = 0.0f;
+    bool  hasLastScanPos = false;
+
     float lastRanges[360] = {};
     bool  heeftRanges     = false;
 
@@ -366,8 +371,16 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
                 angles[a]     = static_cast<float>(a);
             }
 
-            // ICP scan matching: corrigeer positie voor we in kaart schrijven
-            IcpResult icp = scanMatcher.Match(lastRanges, huidigeImuYaw);
+            // ICP scan matching: corrigeer positie voor we in kaart schrijven.
+            // Geef de encoder-verplaatsing mee als initiële gok zodat ICP
+            // al dicht bij het goede lokale minimum begint.
+            float encDx = 0.0f, encDy = 0.0f;
+            if (hasLastScanPos) {
+                encDx = loc.GetX() - lastScanX;
+                encDy = loc.GetY() - lastScanY;
+            }
+            IcpResult icp = scanMatcher.Match(lastRanges, huidigeImuYaw,
+                                              encDx, encDy);
             if (icp.valid) {
                 loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
                 huidigeImuYaw = NormDeg(huidigeImuYaw + icp.dtheta);
@@ -378,6 +391,11 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
                 // weet waar de robot nu staat.
                 loc.SetIcpAnchor();
             }
+
+            // Bewaar huidige EKF-positie voor encoder-seeding van de volgende ICP-ronde.
+            lastScanX      = loc.GetX();
+            lastScanY      = loc.GetY();
+            hasLastScanPos = true;
 
             mapper.UpdateMotionCorrected(lastRanges, angles, 360, pos, omegaDegS, scanDuurSec);
             heeftRanges = true;

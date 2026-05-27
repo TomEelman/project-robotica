@@ -142,7 +142,8 @@ void ScanMatcher::TransformPoints(std::vector<ScanPoint>& pts,
     }
 }
 
-IcpResult ScanMatcher::Match(const float ranges[360], float robotTheta)
+IcpResult ScanMatcher::Match(const float ranges[360], float robotTheta,
+                              float initDx, float initDy)
 {
     IcpResult result{0.0f, 0.0f, 0.0f, 9999.0f, false};
 
@@ -163,7 +164,16 @@ IcpResult ScanMatcher::Match(const float ranges[360], float robotTheta)
 
     // ICP iteraties
     std::vector<ScanPoint> moving = curPoints;
-    float totalDx = 0, totalDy = 0, totalDtheta = 0;
+
+    // Pas encoder-schatting toe als initiële verplaatsing: verschuif de huidige
+    // scan al naar de verwachte positie zodat ICP dichtbij de oplossing begint
+    // en minder snel op een verkeerd lokaal minimum convergeert.
+    // curPoints[i] = prevPoints[i] - (encDx, encDy)  →  optellen compenseert de beweging.
+    if (initDx != 0.0f || initDy != 0.0f) {
+        for (auto& p : moving) { p.x += initDx; p.y += initDy; }
+    }
+
+    float totalDx = initDx, totalDy = initDy, totalDtheta = 0;
 
     for (int iter = 0; iter < MAX_ITER; ++iter) {
         std::vector<int>   idx;
