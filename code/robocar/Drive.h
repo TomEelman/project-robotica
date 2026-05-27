@@ -57,13 +57,12 @@ private:
     bool  yawInitialized;
 
     float rampedLinear;
-    float rampStep;
+    float rampedTurnSpeed;  // wheel speed setpoint for in-place turns (mm/s)
 
     float minAngVel;
     float maxAngVel;
     float minPwmLeft;
     float minPwmRight;
-    int rampTick = 0;
     
     // Clamps |pwm| to [minPwm, 255]. Values below minPwm are zeroed to avoid
     // stalling the motor driver in a region where no movement occurs.

@@ -39,7 +39,12 @@ static constexpr float TURN_SPEED_GAIN          = 0.3f;
 static constexpr float TURN_COUPLED_MIN_FACTOR  = 0.5f;
 static constexpr float TURN_COUPLED_MAX_FACTOR  = 1.5f;
 
-static constexpr float DEFAULT_RAMP_STEP = 5.0f;
+// Ramping rates in mm/s per Execute() tick.
+// ACCEL and DECEL are kept equal so the robot brakes just as gradually as
+// it accelerates — symmetric ramps prevent wheel slip in both directions.
+// Tune these if you want sharper braking: raise DECEL toward ~10–15.
+static constexpr float RAMP_ACCEL_STEP = 5.0f;
+static constexpr float RAMP_DECEL_STEP = 5.0f;
 
 
 
@@ -71,7 +76,7 @@ Drive::Drive(Motor&     leftMotor,
       targetYaw(0.0f),
       yawInitialized(false),
       rampedLinear(0.0f),
-      rampStep(DEFAULT_RAMP_STEP),
+      rampedTurnSpeed(0.0f),
       minAngVel(minAngVel),
       maxAngVel(maxAngVel),
       minPwmLeft(minPwmLeft),
@@ -114,21 +119,42 @@ void Drive::UpdateRamp(float linearTarget)
         driveMode == DriveMode::TurnRight ||
         driveMode == DriveMode::Stopped)
     {
-        rampedLinear = 0.0f;
+        // Ramp linear speed down to zero instead of snapping instantly.
+        // This prevents the sudden motor reversal jerk that causes slip at
+        // the entry of a turn or stop.
+        // rampedTurnSpeed is managed by ExecuteTurn; reset it here so that
+        // the next turn always starts its ramp from zero (clean entry).
+        float absRamp = fabsf(rampedLinear);
+        if (absRamp > 0.0f) {
+            absRamp -= RAMP_DECEL_STEP;
+            if (absRamp < 0.0f) absRamp = 0.0f;
+        }
+        float sign   = (rampedLinear >= 0.0f) ? 1.0f : -1.0f;
+        rampedLinear = sign * absRamp;
+
+        rampedTurnSpeed = 0.0f;   // turns always start fresh after a linear phase
         return;
     }
 
+    // Linear (forward / backward) mode ─────────────────────────────────────
     float absTgt  = fabsf(linearTarget);
     float absRamp = fabsf(rampedLinear);
     float sign    = (linearTarget >= 0.0f) ? 1.0f : -1.0f;
 
     // Jump to minPwmLeft on the very first tick so the motor overcomes
     // static friction immediately rather than ramping through the dead zone.
-    if (absRamp < minPwmLeft)
-        absRamp = minPwmLeft;
+    if (absRamp < minPwmLeft) absRamp = minPwmLeft;
 
-    absRamp += rampStep;
-    if (absRamp > absTgt) absRamp = absTgt;
+    if (absRamp < absTgt) {
+        // Accelerating — approach target at ACCEL rate.
+        absRamp += RAMP_ACCEL_STEP;
+        if (absRamp > absTgt) absRamp = absTgt;
+    } else if (absRamp > absTgt) {
+        // Decelerating — reduce at DECEL rate instead of snapping.
+        // Equal rate to acceleration keeps braking as gentle as starting.
+        absRamp -= RAMP_DECEL_STEP;
+        if (absRamp < absTgt) absRamp = absTgt;
+    }
 
     rampedLinear = sign * absRamp;
 }
@@ -159,16 +185,37 @@ void Drive::ExecuteTurn(float angular)
 {
     yawInitialized = false;
 
-    float wheelbaseMm = wheelbaseMeters * 1000.0f;
+    float wheelbaseMm    = wheelbaseMeters * 1000.0f;
     float angularRad     = fabsf(angular) * (static_cast<float>(M_PI) / 180.0f);
-    float targetWheelSpd = angularRad * wheelbaseMm * 0.5f;
+    float targetWheelSpd = angularRad * wheelbaseMm * 0.5f;   // final (full-speed) setpoint
 
-    float feedforward = (fabsf(angular) + FF_OFFSET) / FF_SCALE;
+    // ── Ramp the effective turn speed ────────────────────────────────────────
+    // Instead of jumping straight to targetWheelSpd we nudge rampedTurnSpeed
+    // toward it each tick.  This avoids the sudden torque spike (and resulting
+    // tyre slip / encoder noise) that occurs when a pure rotation starts or
+    // stops abruptly.
+    if (rampedTurnSpeed < targetWheelSpd) {
+        rampedTurnSpeed += RAMP_ACCEL_STEP;
+        if (rampedTurnSpeed > targetWheelSpd) rampedTurnSpeed = targetWheelSpd;
+    } else if (rampedTurnSpeed > targetWheelSpd) {
+        rampedTurnSpeed -= RAMP_DECEL_STEP;
+        if (rampedTurnSpeed < targetWheelSpd) rampedTurnSpeed = targetWheelSpd;
+    }
+
+    // Feed-forward derived from rampedTurnSpeed so the PID starts near the
+    // right operating point even while still accelerating/decelerating.
+    // Convert rampedTurnSpeed (mm/s wheel) back to an equivalent angular
+    // velocity (deg/s) and apply the same empirical linear mapping.
+    float rampedAngDeg = (wheelbaseMm > 0.0f)
+                       ? (rampedTurnSpeed * 2.0f / wheelbaseMm)
+                         * (180.0f / static_cast<float>(M_PI))
+                       : 0.0f;
+    float feedforward = (rampedAngDeg + FF_OFFSET) / FF_SCALE;
     if (feedforward < minPwmLeft) feedforward = minPwmLeft;
     if (feedforward > 255.0f)     feedforward = 255.0f;
 
-    float rawL  = sensorHub.GetSpeedLeft();
-    float rawR  = sensorHub.GetSpeedRight();
+    float rawL   = sensorHub.GetSpeedLeft();
+    float rawR   = sensorHub.GetSpeedRight();
     bool  freshL = sensorHub.HasFreshLeft();
     bool  freshR = sensorHub.HasFreshRight();
     sensorHub.ConsumeFreshFlags();
@@ -182,15 +229,14 @@ void Drive::ExecuteTurn(float angular)
     if (freshR) speedRightFiltered = EMA_ALPHA * rawR + (1.0f - EMA_ALPHA) * speedRightFiltered;
 
     // Coupled target: drive both wheels toward their current average and only
-    // gently pull that average toward the true setpoint. This synchronises
-    // the wheels without a separate balance controller.
+    // gently pull that average toward the ramped setpoint.
     float avgSpeed      = 0.5f * (speedLeftFiltered + speedRightFiltered);
-    float avgError      = targetWheelSpd - avgSpeed;
+    float avgError      = rampedTurnSpeed - avgSpeed;
     float coupledTarget = avgSpeed + TURN_SPEED_GAIN * avgError;
-    if (coupledTarget < TURN_COUPLED_MIN_FACTOR * targetWheelSpd)
-        coupledTarget = TURN_COUPLED_MIN_FACTOR * targetWheelSpd;
-    if (coupledTarget > TURN_COUPLED_MAX_FACTOR * targetWheelSpd)
-        coupledTarget = TURN_COUPLED_MAX_FACTOR * targetWheelSpd;
+    if (coupledTarget < TURN_COUPLED_MIN_FACTOR * rampedTurnSpeed)
+        coupledTarget = TURN_COUPLED_MIN_FACTOR * rampedTurnSpeed;
+    if (coupledTarget > TURN_COUPLED_MAX_FACTOR * rampedTurnSpeed)
+        coupledTarget = TURN_COUPLED_MAX_FACTOR * rampedTurnSpeed;
 
     float outLeft  = freshL ? pidLeft .Compute(speedLeftFiltered,  coupledTarget) : lastOutputLeft;
     float outRight = freshR ? pidRight.Compute(speedRightFiltered, coupledTarget) : lastOutputRight;
@@ -211,11 +257,10 @@ void Drive::ExecuteTurn(float angular)
     if (driveMode == DriveMode::TurnLeft)  { pwmLeft = -magL; pwmRight = +magR; }
     else                                   { pwmLeft = +magL; pwmRight = -magR; }
 
-    printf("[TURN] dir=%s tgt=%.1f coup=%.1f spdL=%.1f spdR=%.1f outL=%.0f outR=%.0f pwmL=%.0f pwmR=%.0f\n",
+    printf("[TURN] dir=%s tgt=%.1f ramp=%.1f coup=%.1f spdL=%.1f spdR=%.1f pwmL=%.0f pwmR=%.0f\n",
         driveMode == DriveMode::TurnLeft ? "LEFT" : "RIGHT",
-        targetWheelSpd, coupledTarget,
-        speedLeftFiltered, speedRightFiltered,
-        outLeft, outRight, pwmLeft, pwmRight);
+        targetWheelSpd, rampedTurnSpeed, coupledTarget,
+        speedLeftFiltered, speedRightFiltered, pwmLeft, pwmRight);
 }
 
 void Drive::ExecuteLinear(float linear, float angular)
@@ -328,6 +373,7 @@ void Drive::Stop()
 {
     driveMode         = DriveMode::Stopped;
     rampedLinear      = 0.0f;
+    rampedTurnSpeed   = 0.0f;
     yawInitialized    = false;
     filterInitialized = false;
     pwmLeft           = 0.0f;

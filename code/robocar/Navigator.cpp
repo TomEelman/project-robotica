@@ -322,8 +322,15 @@ float Navigator::CalculateDistance(Position a, Position b) const {
 float Navigator::CalculateAngleError(Position current, Position target) const {
     float dx = target.GetX() - current.GetX();
     float dy = target.GetY() - current.GetY();
+    // atan2 returns a CCW angle, but theta comes from the IMU which is
+    // CW-positive (compass convention).  The LIDAR CW-angle convention also
+    // causes the Y-axis in the map to be mirrored relative to standard math.
+    // Both effects flip the sign of the angular error, so we negate the
+    // result here.  The rest of GetNextCommand is written with the
+    // convention "negative error = target is to the right = turn right",
+    // which remains correct after this negation.
     float desired = std::atan2(dy, dx) * (180.0f / static_cast<float>(M_PI));
-    return NormalizeDeg(desired - current.GetTheta());
+    return NormalizeDeg(-(desired - current.GetTheta()));
 }
 
 float Navigator::NormalizeDeg(float deg) const {
