@@ -115,15 +115,13 @@ void Drive::UpdateDriveMode(float linear, float angular)
 
 void Drive::UpdateRamp(float linearTarget)
 {
-    if (driveMode == DriveMode::TurnLeft  ||
-        driveMode == DriveMode::TurnRight ||
-        driveMode == DriveMode::Stopped)
-    {
+    if (driveMode == DriveMode::TurnLeft || driveMode == DriveMode::TurnRight) {
         // Ramp linear speed down to zero instead of snapping instantly.
         // This prevents the sudden motor reversal jerk that causes slip at
-        // the entry of a turn or stop.
-        // rampedTurnSpeed is managed by ExecuteTurn; reset it here so that
-        // the next turn always starts its ramp from zero (clean entry).
+        // the entry of a turn.
+        // NOTE: do NOT touch rampedTurnSpeed here — ExecuteTurn owns it.
+        //       Zeroing it here (inside the turn branch) caused the ramp to
+        //       reset to 0 every tick, keeping it stuck at RAMP_ACCEL_STEP.
         float absRamp = fabsf(rampedLinear);
         if (absRamp > 0.0f) {
             absRamp -= RAMP_DECEL_STEP;
@@ -131,8 +129,16 @@ void Drive::UpdateRamp(float linearTarget)
         }
         float sign   = (rampedLinear >= 0.0f) ? 1.0f : -1.0f;
         rampedLinear = sign * absRamp;
+        return;
+    }
 
-        rampedTurnSpeed = 0.0f;   // turns always start fresh after a linear phase
+    // Stopped or linear mode — reset the turn ramp so the NEXT turn always
+    // starts fresh from zero (smooth entry).  This runs every tick while not
+    // turning, so rampedTurnSpeed is guaranteed to be 0 when a new turn begins.
+    rampedTurnSpeed = 0.0f;
+
+    if (driveMode == DriveMode::Stopped) {
+        rampedLinear = 0.0f;
         return;
     }
 
@@ -202,15 +208,11 @@ void Drive::ExecuteTurn(float angular)
         if (rampedTurnSpeed < targetWheelSpd) rampedTurnSpeed = targetWheelSpd;
     }
 
-    // Feed-forward derived from rampedTurnSpeed so the PID starts near the
-    // right operating point even while still accelerating/decelerating.
-    // Convert rampedTurnSpeed (mm/s wheel) back to an equivalent angular
-    // velocity (deg/s) and apply the same empirical linear mapping.
-    float rampedAngDeg = (wheelbaseMm > 0.0f)
-                       ? (rampedTurnSpeed * 2.0f / wheelbaseMm)
-                         * (180.0f / static_cast<float>(M_PI))
-                       : 0.0f;
-    float feedforward = (rampedAngDeg + FF_OFFSET) / FF_SCALE;
+    // Feed-forward based on the FULL requested angular velocity so the motor
+    // receives enough PWM from the very first tick to overcome static friction.
+    // (Using rampedTurnSpeed here made feedforward too small at startup and kept
+    //  the robot stuck at minPwm even after fixing the ramp reset bug.)
+    float feedforward = (fabsf(angular) + FF_OFFSET) / FF_SCALE;
     if (feedforward < minPwmLeft) feedforward = minPwmLeft;
     if (feedforward > 255.0f)     feedforward = 255.0f;
 
@@ -238,10 +240,22 @@ void Drive::ExecuteTurn(float angular)
     if (coupledTarget > TURN_COUPLED_MAX_FACTOR * rampedTurnSpeed)
         coupledTarget = TURN_COUPLED_MAX_FACTOR * rampedTurnSpeed;
 
-    float outLeft  = freshL ? pidLeft .Compute(speedLeftFiltered,  coupledTarget) : lastOutputLeft;
-    float outRight = freshR ? pidRight.Compute(speedRightFiltered, coupledTarget) : lastOutputRight;
-    lastOutputLeft  = outLeft;
-    lastOutputRight = outRight;
+    // When both wheels are still at rest (motor not yet started), force the PID
+    // history to the neutral point (50%) so trim = 0 and the feedforward alone
+    // drives the motor.  Without this the initial trim of −225 cancels the
+    // feedforward and keeps the motor stuck at minPwm regardless of ramp state.
+    float outLeft, outRight;
+    if (speedLeftFiltered < 1.0f && speedRightFiltered < 1.0f) {
+        outLeft  = lastOutputLeft  = 50.0f;
+        outRight = lastOutputRight = 50.0f;
+        pidLeft .Reset();
+        pidRight.Reset();
+    } else {
+        outLeft  = freshL ? pidLeft .Compute(speedLeftFiltered,  coupledTarget) : lastOutputLeft;
+        outRight = freshR ? pidRight.Compute(speedRightFiltered, coupledTarget) : lastOutputRight;
+        lastOutputLeft  = outLeft;
+        lastOutputRight = outRight;
+    }
 
     float trimL = (outLeft  - 50.0f) / 50.0f * (255.0f - minPwmLeft);
     float trimR = (outRight - 50.0f) / 50.0f * (255.0f - minPwmRight);
