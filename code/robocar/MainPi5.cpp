@@ -218,9 +218,12 @@ static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position po
                         heeftPad = true;
                         mislukteTeller = 0;
                     } else {
+                        // Doel ligt in een obstakel of marge — blacklist het en stop.
+                        // Vooruit rijden hier stuurde de robot recht terug in het obstakel.
+                        // Bij de volgende scan kiest KiesFrontierDoel een ander doel.
                         ++mislukteTeller;
                         VoegToeAanBlacklist(frontierBlacklist, doel.GetX(), doel.GetY());
-                        ka.SetCommand(200.0f, 0.0f);
+                        ka.Stop();
                     }
                 }
             }

@@ -61,7 +61,8 @@ private:
     int         fd;
 
     SensorData  lastData{};
-    char        lineBuffer[128];
+    char        lineBuffer[256]; // 128 was too small for long [FWD]/[BWD] lines (~150 chars),
+                                 // causing overflow → linePos reset → tail printed as "[Pico] 500"
     int         linePos;
 
     bool ConfigureerPoort();
