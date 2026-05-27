@@ -240,14 +240,13 @@ void Drive::ExecuteTurn(float angular)
     if (coupledTarget > TURN_COUPLED_MAX_FACTOR * rampedTurnSpeed)
         coupledTarget = TURN_COUPLED_MAX_FACTOR * rampedTurnSpeed;
 
-    // When both wheels are still at rest (motor not yet started), force the PID
-    // history to the neutral point (50%) so trim = 0 and the feedforward alone
-    // drives the motor.  Without this the initial trim of −225 cancels the
-    // feedforward and keeps the motor stuck at minPwm regardless of ramp state.
+    // When both wheels are still at rest, reset the PID history so accumulated
+    // integral from the previous linear phase does not pollute the turn startup.
+    // Force output to 0 (= no trim, feedforward alone drives the motor).
     float outLeft, outRight;
     if (speedLeftFiltered < 1.0f && speedRightFiltered < 1.0f) {
-        outLeft  = lastOutputLeft  = 50.0f;
-        outRight = lastOutputRight = 50.0f;
+        outLeft  = lastOutputLeft  = 0.0f;   // neutral trim — feedforward handles startup
+        outRight = lastOutputRight = 0.0f;
         pidLeft .Reset();
         pidRight.Reset();
     } else {
@@ -257,8 +256,14 @@ void Drive::ExecuteTurn(float angular)
         lastOutputRight = outRight;
     }
 
-    float trimL = (outLeft  - 50.0f) / 50.0f * (255.0f - minPwmLeft);
-    float trimR = (outRight - 50.0f) / 50.0f * (255.0f - minPwmRight);
+    // PIDController::Compute returns values in [-100, 100] with 0 = on-target.
+    // Map to a PWM trim in [-(255-minPwm), +(255-minPwm)].
+    //
+    // BUG that was here: (outLeft - 50) / 50 * 225 assumes PID center = 50.
+    // Actual PID center = 0, so a healthy output of ~5 gave trim = -202,
+    // collapsing magL to negative → clamped to minPwm → motor stuck at 30 PWM.
+    float trimL = outLeft  / 100.0f * (255.0f - minPwmLeft);
+    float trimR = outRight / 100.0f * (255.0f - minPwmRight);
 
     float magL = feedforward + trimL;
     float magR = feedforward + trimR;
