@@ -369,6 +369,11 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
                 loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
                 huidigeImuYaw = NormDeg(huidigeImuYaw + icp.dtheta);
                 pos = Position(loc.GetX(), loc.GetY(), huidigeImuYaw);
+            } else {
+                // ICP mislukt: synchroniseer het ankerpunt met de huidige
+                // odometriepositie zodat de volgende geslaagde ICP-match
+                // weet waar de robot nu staat.
+                loc.SetIcpAnchor();
             }
 
             mapper.UpdateMotionCorrected(lastRanges, angles, 360, pos, omegaDegS, scanDuurSec);
