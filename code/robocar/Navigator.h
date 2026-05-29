@@ -85,12 +85,9 @@ private:
     static constexpr float SLOW_TURN_THRESHOLD   = 60.0f;
     static constexpr float SLOW_TURN_FACTOR      = 0.6f;
 
-    // The navigator holds a command until a real event forces a recompute:
-    // mode change (straight↔turn), turn direction flip, waypoint reached,
-    // or obstacle. A hysteresis margin prevents flip-flopping near boundaries.
-    static constexpr float OBSTACLE_INTERRUPT_MM = 400.0f;
-    static constexpr float MODE_HYSTERESIS_DEG   = 5.0f;   // dead-band around mode transitions
-    static constexpr float TURN_FLIP_DEADBAND_DEG = 15.0f; // min error to allow turn direction flip
+    // Stable command: only recompute after N ticks or on obstacle/event
+    static constexpr int   CMD_STABLE_TICKS      = 3;      // herteken snel zodat slip wordt gecorrigeerd
+    static constexpr float OBSTACLE_INTERRUPT_MM = 400.0f; // front stop threshold
 
     // ── Recovery constants ────────────────────────────────────────
     static constexpr int   RECOVERY_TRIGGER      = 5;      // # blocked ticks
@@ -99,11 +96,7 @@ private:
     static constexpr int   RECOVERY_TICKS        = 15;     // duration of action
 
     // ── Wall follower constants ───────────────────────────────────
-    // Doel-afstand van de LIDAR (in het midden) tot de muur. Robot is 24x24cm:
-    // de hoek zit op 12*sqrt(2) ~= 170mm vanuit het midden (worst-case bij draaien).
-    // 250mm gewenste vrije ruimte + 170mm = 420mm zodat de robot fysiek ~25cm
-    // van de muur blijft, ook met de diagonaal meegerekend.
-    static constexpr float WF_TARGET_DIST_MM     = 420.0f;
+    static constexpr float WF_TARGET_DIST_MM     = 300.0f;
     static constexpr float WF_WALL_PRESENT_MM    = 600.0f;
     static constexpr float WF_FRONT_CRITICAL_MM  = 350.0f;
     static constexpr float WF_FRONT_BRAKE_MM     = 500.0f;
@@ -123,18 +116,11 @@ private:
     bool     isUpdated;
     bool     hasPath;
 
-    // Event-driven command hold. stableLin/stableAng are kept until a real
-    // navigation event forces a recompute: mode change, direction flip, obstacle.
-    // cmdTicks counts for logging only.
+    // Stable command state
     float stableLin      = 0.0f;
     float stableAng      = 0.0f;
     bool  hasStableCmd   = false;
     int   cmdTicks       = 0;
-
-    // Current navigation mode — used to detect real mode transitions.
-    enum class NavMode { Stopped, Straight, Turn };
-    NavMode navMode      = NavMode::Stopped;
-    float   turnDir      = 0.0f;  // +1 or -1, latched when turn starts
 
     // Recovery / block state
     int   blockCounter   = 0;      // consecutive blocked ticks

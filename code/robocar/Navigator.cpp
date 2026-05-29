@@ -106,8 +106,6 @@ Navigator::Navigator()
     , stableAng(0.0f)
     , hasStableCmd(false)
     , cmdTicks(0)
-    , navMode(NavMode::Stopped)
-    , turnDir(0.0f)
     , blockCounter(0)
     , recoveryTicks(0)
     , blocked(false)
@@ -126,8 +124,6 @@ void Navigator::SetPath(const Path& newPath) {
     path.Reset();
     hasPath      = !path.IsEmpty();
     hasStableCmd = false;
-    navMode      = NavMode::Stopped;
-    turnDir      = 0.0f;
     cmdTicks     = 0;
     blockCounter = 0;
     // recoveryTicks is NOT reset: if a recovery action (e.g. reversing) is
@@ -147,8 +143,6 @@ void Navigator::Update(Position current) {
         if (!path.IsEmpty()) {
             currentTarget = path.GetCurrentWaypoint();
             hasStableCmd  = false;
-            navMode       = NavMode::Stopped;
-            turnDir       = 0.0f;
             cmdTicks      = 0;
         } else {
             hasPath = false;
@@ -218,10 +212,8 @@ DriveCommand Navigator::GetNextCommand(Position current, float minFront, float m
     // -- 2. Obstacle interrupt + block detection -------------------------------
     if (minFront < OBSTACLE_INTERRUPT_MM) {
         ++blockCounter;
-        if (hasStableCmd) {
-            hasStableCmd = false;
-            navMode      = NavMode::Stopped;
-        }
+        hasStableCmd = false;
+        cmdTicks     = 0;
 
         if (blockCounter >= RECOVERY_TRIGGER) {
             if (minRear > REVERSE_SAFE_MM) {
@@ -250,87 +242,50 @@ DriveCommand Navigator::GetNextCommand(Position current, float minFront, float m
 
     float dist     = CalculateDistance(current, currentTarget);
     float angleErr = CalculateAngleError(current, currentTarget);
-    float absErr   = std::fabs(angleErr);
 
     // -- 3. Waypoint reached --------------------------------------------------
     if (dist < REACHED_THRESHOLD_MM) {
         hasStableCmd = false;
-        navMode      = NavMode::Stopped;
         cmdTicks     = 0;
         return DriveCommand(0.0f, 0.0f);
     }
 
-    // -- 4. Detect real events that require a command recompute ---------------
-    //
-    // The navigator holds its current command (stableLin, stableAng) until one
-    // of these events occurs:
-    //
-    //   A. No command yet (fresh start or after waypoint/obstacle).
-    //   B. Mode transition: Straight → Turn or Turn → Straight, with hysteresis
-    //      so small oscillations around the threshold don't cause recomputes.
-    //   C. Turn direction flip: the chosen turn direction is no longer correct
-    //      AND the error is large enough to be certain (TURN_FLIP_DEADBAND).
-    //
-    // Everything else (small angle drift, tiny speed variations, ICP noise)
-    // does NOT trigger a recompute — the Drive layer handles those with its
-    // own PID and yaw correction.
-
-    bool needRecompute = false;
-
-    if (!hasStableCmd) {
-        needRecompute = true;                                     // A: no command yet
-    } else if (navMode == NavMode::Straight) {
-        // Currently driving straight — switch to Turn only when error is clearly
-        // above threshold (threshold + hysteresis), not on every small excursion.
-        if (absErr > SLOW_TURN_THRESHOLD + MODE_HYSTERESIS_DEG)
-            needRecompute = true;                                 // B: gone off-heading, must turn
-    } else if (navMode == NavMode::Turn) {
-        // Currently turning — switch to Straight only when error is clearly
-        // below threshold (threshold - hysteresis), i.e. robot is well aligned.
-        if (absErr < SLOW_TURN_THRESHOLD - MODE_HYSTERESIS_DEG)
-            needRecompute = true;                                 // B: aligned, start driving
-
-        // C: turn direction flip — only if error has crossed zero by enough.
-        // TURN_FLIP_DEADBAND prevents flip-flopping when the robot is nearly aligned.
-        if (!needRecompute) {
-            // Benodigde draairichting = -teken(fout)  (+ang verlaagt theta).
-            float neededAng = (angleErr > 0.0f) ? -1.0f : 1.0f;
-            float curAng    = (stableAng > 0.0f) ?  1.0f : -1.0f;
-            if (neededAng != curAng && absErr > TURN_FLIP_DEADBAND_DEG)
-                needRecompute = true;                             // C: overshot, flip direction
-        }
-    }
-
-    // -- 5. Return the held command if no event occurred ----------------------
-    if (!needRecompute) {
+    // -- 4. Repeat the stable command -----------------------------------------
+    bool grooteDraai = (std::fabs(angleErr) > SLOW_TURN_THRESHOLD);
+    if (hasStableCmd && (cmdTicks < CMD_STABLE_TICKS || grooteDraai)) {
         ++cmdTicks;
         return DriveCommand(stableLin, stableAng);
     }
 
-    // -- 6. Compute a new command ---------------------------------------------
+    // -- 5. Compute a new command ---------------------------------------------
+    float absErr = std::fabs(angleErr);
     float newLin, newAng;
 
     if (absErr > SLOW_TURN_THRESHOLD) {
-        // Grote heading-fout → draai op de plek.
-        // +fout = doel linksom → -ang (linksom draaien verhoogt theta).
-        newLin  = 0.0f;
-        newAng  = (angleErr > 0.0f) ? -MAX_ANGULAR_DEG_S : MAX_ANGULAR_DEG_S;
-        turnDir = (angleErr > 0.0f) ? -1.0f : 1.0f;
-        navMode = NavMode::Turn;
+        // Large heading error → turn in place.
+        // Lock the direction once to prevent flipping around ±180°.
+        if (!hasStableCmd) {
+            // Negative angleErr means target is to the right → turn right (+ang).
+            newAng = (angleErr < 0.0f) ? MAX_ANGULAR_DEG_S : -MAX_ANGULAR_DEG_S;
+        } else {
+            newAng = stableAng; // keep already-chosen direction
+        }
+        newLin = 0.0f;
 
     } else if (absErr > ANGLE_DEADBAND_DEG) {
-        // Middelgrote fout → rijden met een gebogen baan (lin én ang tegelijk).
-        newLin  = computeLinearSpeed(absErr);
-        newAng  = ANGULAR_GAIN * absErr;
+        // Medium heading error → move while gently steering.
+        // Speed is scaled down so the robot slows before tight turns.
+        newLin = computeLinearSpeed(absErr);
+        newAng = ANGULAR_GAIN * absErr;
         if (newAng > MAX_ANGULAR_DEG_S) newAng = MAX_ANGULAR_DEG_S;
-        if (angleErr > 0.0f) newAng = -newAng;   // +fout → -ang
-        navMode = NavMode::Straight;
+        if (angleErr > 0.0f) newAng = -newAng;
 
     } else {
-        // Small heading error → drive straight, let Drive's yaw PID handle it.
-        newLin  = LINEAR_SPEED_MM_S;
-        newAng  = 0.0f;
-        navMode = NavMode::Straight;
+        // Small heading error → drive straight at speed scaled to remaining error.
+        // This avoids an abrupt jump from slow-steer speed to full speed the
+        // moment the error drops below ANGLE_DEADBAND_DEG.
+        newLin = computeLinearSpeed(absErr);
+        newAng = 0.0f;
     }
 
     stableLin    = newLin;
@@ -338,10 +293,8 @@ DriveCommand Navigator::GetNextCommand(Position current, float minFront, float m
     hasStableCmd = true;
     cmdTicks     = 0;
 
-    printf("[NAV] NEW cmd lin=%.0f ang=%.1f mode=%s (dist=%.0fmm err=%.1fdeg)\n",
-           newLin, newAng,
-           navMode == NavMode::Turn ? "TURN" : "STRAIGHT",
-           dist, angleErr);
+    printf("[NAV] cmd lin=%.0f ang=%.1f (dist=%.0fmm err=%.1fdeg)\n",
+           newLin, newAng, dist, angleErr);
 
     return DriveCommand(stableLin, stableAng);
 }
@@ -369,12 +322,15 @@ float Navigator::CalculateDistance(Position a, Position b) const {
 float Navigator::CalculateAngleError(Position current, Position target) const {
     float dx = target.GetX() - current.GetX();
     float dy = target.GetY() - current.GetY();
-    // Heading-fout in het CCW kaart-frame (theta = loc.GetTheta()).
-    // Positieve fout = doel ligt linksom van de huidige heading → theta moet
-    // omhoog. Let op: een +ang-commando draait de robot RECHTSOM en VERLAAGT
-    // theta, dus om een positieve fout weg te sturen geven we -ang.
-    float desired = std::atan2(dy, dx) * (180.0f / 3.14159265358979f);
-    return NormalizeDeg(desired - current.GetTheta());
+    // atan2 returns a CCW angle, but theta comes from the IMU which is
+    // CW-positive (compass convention).  The LIDAR CW-angle convention also
+    // causes the Y-axis in the map to be mirrored relative to standard math.
+    // Both effects flip the sign of the angular error, so we negate the
+    // result here.  The rest of GetNextCommand is written with the
+    // convention "negative error = target is to the right = turn right",
+    // which remains correct after this negation.
+    float desired = std::atan2(dy, dx) * (180.0f / static_cast<float>(M_PI));
+    return NormalizeDeg(-(desired - current.GetTheta()));
 }
 
 float Navigator::NormalizeDeg(float deg) const {
