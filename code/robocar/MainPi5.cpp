@@ -277,6 +277,38 @@ static void HandleReturnToHome(Navigator& navigator, Mapper& mapper, Position po
     }
 }
 
+// ─────────────────────────────────────────────────────────────────
+// EncoderMetTeken — corrigeert altijd-positieve encoder-waarden
+//
+// De Pico-encoders geven de rijsnelheid als absolute waarde (magnitude),
+// ongeacht de rijrichting. Deze functie bepaalt het teken van elk wiel
+// op basis van het laatste gestuurde commando.
+//
+// Formule zelfde als Drive.cpp ExecuteLinear:
+//   vLeft_cmd  = lin + omega_rad * wheelbase/2
+//   vRight_cmd = lin - omega_rad * wheelbase/2
+//
+// Het teken van vLeft_cmd / vRight_cmd geeft de rijrichting van elk wiel.
+// Bij transitie (ramp loopt nog) kan het teken 1 tick te vroeg omslaan,
+// maar dat is verwaarloosbaar t.o.v. de permanente drift bij geen fix.
+// ─────────────────────────────────────────────────────────────────
+static void EncoderMetTeken(float cmdLin, float cmdAng,
+                             float& vLeft, float& vRight)
+{
+    constexpr float HALF_BASE = 219.0f / 2.0f;                     // 109.5 mm
+    constexpr float DEG2RAD   = static_cast<float>(M_PI) / 180.0f;
+
+    float omegaRad  = cmdAng * DEG2RAD;
+    float cmdVLeft  = cmdLin + omegaRad * HALF_BASE;   // positief = vooruit
+    float cmdVRight = cmdLin - omegaRad * HALF_BASE;
+
+    float signLeft  = (cmdVLeft  >= 0.0f) ? 1.0f : -1.0f;
+    float signRight = (cmdVRight >= 0.0f) ? 1.0f : -1.0f;
+
+    vLeft  = signLeft  * std::fabs(vLeft);
+    vRight = signRight * std::fabs(vRight);
+}
+
 static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
     Localisation loc(219.0f);
     Mapper mapper(500, 500, 0.03f);
@@ -359,11 +391,17 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
         SensorData sens = uart.GetSensorData();
         if (sens.geldig) {
             if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
-            omegaDegS = (sens.speedRechts - sens.speedLinks) / 219.0f * (180.0f / M_PI);
+
+            // Teken herstellen voor beide wielen (encoders zijn altijd positief).
+            float vL = sens.speedLinks, vR = sens.speedRechts;
+            EncoderMetTeken(ka.GetLin(), ka.GetAng(), vL, vR);
+
+            // omegaDegS op basis van gecorrigeerde snelheden (voor mapper).
+            omegaDegS = (vR - vL) / 219.0f * (180.0f / M_PI);
 
             // Predict/UpdateIMU ALLEEN op vers pakket — voorkomt stale-data drift.
             if (versData) {
-                loc.Predict(sens.speedLinks, sens.speedRechts, DT);
+                loc.Predict(vL, vR, DT);
                 loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
             }
 
@@ -535,7 +573,13 @@ static int RunRijdenEnMappenwf(Pi5UARTHandler& uart, LIDAR& lidar) {
         SensorData sens = uart.GetSensorData();
         if (sens.geldig) {
             if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
-            omegaDegS = (sens.speedRechts - sens.speedLinks) / 219.0f * (180.0f / M_PI);
+
+            // Teken herstellen voor beide wielen (encoders zijn altijd positief).
+            float vL = sens.speedLinks, vR = sens.speedRechts;
+            EncoderMetTeken(ka.GetLin(), ka.GetAng(), vL, vR);
+
+            // omegaDegS op basis van gecorrigeerde snelheden (voor mapper).
+            omegaDegS = (vR - vL) / 219.0f * (180.0f / M_PI);
 
             bool beweegt = (sens.speedLinks != 0.0f || sens.speedRechts != 0.0f);
 
@@ -543,7 +587,7 @@ static int RunRijdenEnMappenwf(Pi5UARTHandler& uart, LIDAR& lidar) {
             // robot beweegt. Zonder versData-check zou dezelfde snelheid opnieuw
             // geïntegreerd worden (stale-data drift).
             if (versData && beweegt) {
-                loc.Predict(sens.speedLinks, sens.speedRechts, DT);
+                loc.Predict(vL, vR, DT);
                 loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
             }
 
@@ -796,10 +840,17 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
             bool beweegt = false;
             if (sens.geldig) {
                 if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
-                omegaDegS = (sens.speedRechts - sens.speedLinks) / 219.0f * (180.0f / M_PI);
+
+                // Teken herstellen voor beide wielen (encoders zijn altijd positief).
+                float vL = sens.speedLinks, vR = sens.speedRechts;
+                EncoderMetTeken(ka.GetLin(), ka.GetAng(), vL, vR);
+
+                // omegaDegS op basis van gecorrigeerde snelheden (voor mapper).
+                omegaDegS = (vR - vL) / 219.0f * (180.0f / M_PI);
+
                 beweegt = (sens.speedLinks != 0.0f || sens.speedRechts != 0.0f);
                 if (beweegt) {
-                    loc.Predict(sens.speedLinks, sens.speedRechts, DT);
+                    loc.Predict(vL, vR, DT);
                     loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
                 }
                 huidigeImuYaw = sens.yawGraden - imuOffset;
