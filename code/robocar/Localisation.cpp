@@ -20,7 +20,7 @@ static float NormalizeDeg(float deg) {
 // ─────────────────────────────────────────────────────────────────
 Localisation::Localisation(float wheelBaseMm)
     : x(0.0f), y(0.0f), theta(0.0f), wheelBase(wheelBaseMm)
-    , x_anchor(0.0f), y_anchor(0.0f)
+    , x_anchor(0.0f), y_anchor(0.0f), theta_anchor(0.0f)
 {
     for (int i = 0; i < 3; i++)
         for (int j = 0; j < 3; j++)
@@ -113,17 +113,24 @@ float Localisation::GetTheta() const { return theta; }   // graden
 // ──────────────────────────────────────────────────────────────────
 void Localisation::ApplyIcpCorrection(float dx, float dy, float dtheta)
 {
-    // Gebruik het ankerpunt (positie bij vorige geslaagde scan) + ICP-meting
-    // als nieuwe positie, in plaats van optellen bij de al-door-odometrie-
-    // bijgewerkte positie. Odometrie en ICP meten beide de verplaatsing,
-    // dus optellen zou 140% van de echte beweging geven (dubbeltelling).
-    x      = x_anchor + dx;
-    y      = y_anchor + dy;
-    theta  = NormalizeDeg(theta + dtheta);
+    // ICP geeft de verplaatsing (dx, dy, dtheta) ten opzichte van de positie
+    // bij de vorige geslaagde scan (= het ankerpunt). We vervangen de
+    // odometrie-schatting volledig door anker + ICP-delta, voor ALLE drie
+    // toestandsvariabelen. Zo wordt odometrie-drift (ook in theta) volledig
+    // gecorrigeerd zonder dubbeltelling.
+    //
+    // Vroegere fout: x/y waren anchor-based maar theta was cumulatief
+    // (theta += dtheta). Omdat odometrie theta al bijwerkte met dezelfde
+    // rotatie die ICP ook rapporteerde, telde de rotatie dubbel op →
+    // de geschatte heading liep veel sneller weg dan de werkelijke.
+    x     = x_anchor     + dx;
+    y     = y_anchor     + dy;
+    theta = NormalizeDeg(theta_anchor + dtheta);
 
     // Bewaar als nieuw anker voor de volgende ICP-match
-    x_anchor = x;
-    y_anchor = y;
+    x_anchor     = x;
+    y_anchor     = y;
+    theta_anchor = theta;
 
     // Verklein onzekerheid licht als ICP slaagt
     P[0][0] *= 0.8f;
@@ -136,6 +143,7 @@ void Localisation::SetIcpAnchor()
     // Synchroniseer het anker met de huidige odometriepositie.
     // Aanroepen wanneer ICP mislukt zodat het volgende geslaagde ICP
     // weet waar de robot volgens odometrie stond bij de vorige scan.
-    x_anchor = x;
-    y_anchor = y;
+    x_anchor     = x;
+    y_anchor     = y;
+    theta_anchor = theta;
 }

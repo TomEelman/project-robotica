@@ -36,11 +36,13 @@ private:
 
     float wheelBase;
 
-    // Ankerpunt: de positie op het moment van de vorige geslaagde ICP-scan.
-    // ApplyIcpCorrection stelt x = x_anchor + dx in (vervangt odometrie)
-    // in plaats van x += dx (optellen = dubbeltelling).
+    // Ankerpunten: positie + heading op het moment van de vorige geslaagde
+    // ICP-scan. ApplyIcpCorrection stelt x/y/theta in als anchor + delta,
+    // zodat odometrie-drift tussen twee scans volledig vervangen wordt door
+    // de ICP-meting (geen dubbeltelling).
     float x_anchor;
     float y_anchor;
+    float theta_anchor; // graden
 };
 
 #endif

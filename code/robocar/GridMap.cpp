@@ -69,16 +69,28 @@ void GridMap::RaycastUpdate(int x0, int y0, int x1, int y1) {
     static thread_local std::vector<std::pair<int,int>> cells;
     BresenhamLine(x0, y0, x1, y1, cells);
 
-    // Alle cellen behalve de laatste: vrij markeren
+    // Loop over de vrije cellen (alles behalve de laatste).
+    // Zodra we een cel tegenkomen die al stevig bezet is (>= CELL_OCCUPIED),
+    // stoppen we: er kan nooit een muur ACHTER een bestaande muur geplaatst
+    // worden. De straal eindigt hier — het eindpunt wordt genegeerd.
+    // Dit voorkomt ghost-muren bij slecht gematche scans.
     for (size_t i = 0; i + 1 < cells.size(); ++i) {
         auto [cx, cy] = cells[i];
         if (!InBounds(cx, cy)) continue;
+
         int8_t& cell = logOdds[cy][cx];
+
+        if (cell >= CELL_OCCUPIED) {
+            // Bestaande muur in de weg: straal afkappen, eindpunt negeren.
+            binaryDirty = true;
+            return;
+        }
+
         cell = static_cast<int8_t>(cell + L_FREE);
         ClampLogOdds(cell);
     }
 
-    // Laatste cel: bezet markeren
+    // Eindcel: bezet markeren — alleen bereikbaar als de straal niet geblokkeerd werd.
     if (!cells.empty()) {
         auto [cx, cy] = cells.back();
         if (InBounds(cx, cy)) {
