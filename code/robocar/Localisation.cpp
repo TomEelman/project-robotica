@@ -24,6 +24,8 @@ Localisation::Localisation(float wheelBaseMm)
     , totalEncDist(0.0f), totalLocDist(0.0f)
     , prevX(0.0f), prevY(0.0f)
     , debugTickCounter(0)
+    , prevVLeft(-99999.0f), prevVRight(-99999.0f)
+    , staleCount(0)
 {
     for (int i = 0; i < 3; i++)
         for (int j = 0; j < 3; j++)
@@ -48,31 +50,64 @@ Localisation::Localisation(float wheelBaseMm)
 // ─────────────────────────────────────────────────────────────────
 void Localisation::Predict(float vLeft, float vRight, float dt)
 {
-    float v     = 0.5f * (vLeft + vRight);       // mm/s
-    float omega = (vRight - vLeft) / wheelBase;  // rad/s — BUG2 FIX: consistent 219mm
+    // ── Stale-data detectie ────────────────────────────────────────
+    // Identieke waarden als vorige tick = waarschijnlijk geen nieuw
+    // Pico-pakket ontvangen. We integreren dan dezelfde snelheid
+    // opnieuw, wat drift veroorzaakt.
+    if (vLeft == prevVLeft && vRight == prevVRight) {
+        ++staleCount;
+    } else {
+        if (staleCount > 1) {
+            printf("[LOC-STALE] %d ticks lang dezelfde encoderwaarden "
+                   "(vL=%.1f vR=%.1f) — mogelijk geen vers Pico-pakket!\n",
+                   staleCount, prevVLeft, prevVRight);
+        }
+        staleCount = 1;
+    }
+    prevVLeft  = vLeft;
+    prevVRight = vRight;
 
-    float thetaRad = theta * DEG2RAD;
-    float c = std::cos(thetaRad);
-    float s = std::sin(thetaRad);
+    // ── Kinematica ─────────────────────────────────────────────────
+    float v        = 0.5f * (vLeft + vRight);       // mm/s
+    float omega    = (vRight - vLeft) / wheelBase;  // rad/s — consistent 219mm
+    float omegaDeg = omega * RAD2DEG;               // graden/s (voor debug)
 
-    // Bewaar positie voor de update om lokalisatie-afstand bij te houden
+    float thetaRad  = theta * DEG2RAD;
+    float c         = std::cos(thetaRad);
+    float s         = std::sin(thetaRad);
+
     prevX = x;
     prevY = y;
+    float thetaVoor = theta;
 
-    x     += v * c * dt;
-    y     += v * s * dt;
-    theta  = NormalizeDeg(theta + omega * RAD2DEG * dt);
+    float dx_enc    = v * c * dt;
+    float dy_enc    = v * s * dt;
+    float dtheta_enc = omegaDeg * dt;
 
-    // ── Encoder- vs lokalisatie-afstand accumuleren ────────────────
-    // encoderDist: wat de wielen claimen (v * dt, 1D afstand)
-    // locDist:     werkelijke 2D verplaatsing na EKF-update
-    // Ratio ver van 1.0 → slip, verkeerde wheelbase, of encoderfout
+    x     += dx_enc;
+    y     += dy_enc;
+    theta  = NormalizeDeg(theta + dtheta_enc);
+
+    // ── Afstandstellers ────────────────────────────────────────────
     float encoderDist = std::fabs(v * dt);
     float locDist     = std::hypot(x - prevX, y - prevY);
     totalEncDist += encoderDist;
     totalLocDist += locDist;
 
-    // Jacobiaan F — ∂x/∂θ en ∂y/∂θ in mm/graad
+    // ── Per-tick debug ─────────────────────────────────────────────
+    // Lees hieruit af:
+    //   omega≠0 terwijl je rechtdoor rijdt → encoder-asymmetrie / wieldiameter-verschil
+    //   dtheta groot maar IMU zegt 0 → EKF trekt theta verkeerde kant op
+    //   [STALE] → geen vers Pico-pakket, dezelfde snelheid opnieuw geïntegreerd
+    printf("[LOC-ENC] vL=%6.1f vR=%6.1f | v=%6.1f omega=%+5.2f°/s | "
+           "dx=%+5.1f dy=%+5.1f dtheta=%+5.2f° | "
+           "pos=(%.1f,%.1f,%.1f)%s\n",
+           vLeft, vRight, v, omegaDeg,
+           dx_enc, dy_enc, dtheta_enc,
+           x, y, theta,
+           (staleCount > 1) ? " [STALE]" : "");
+
+    // ── Jacobiaan + covariantie P ──────────────────────────────────
     float vdt = v * dt;
     float F[3][3] = {
         {1.0f, 0.0f, -vdt * s * DEG2RAD},
@@ -80,7 +115,6 @@ void Localisation::Predict(float vLeft, float vRight, float dt)
         {0.0f, 0.0f,  1.0f             }
     };
 
-    // P ← F·P·Fᵀ + Q
     float Pnew[3][3] = {};
     for (int i = 0; i < 3; i++)
         for (int j = 0; j < 3; j++) {
@@ -89,29 +123,22 @@ void Localisation::Predict(float vLeft, float vRight, float dt)
                     Pnew[i][j] += F[i][k] * P[k][l] * F[j][l];
             Pnew[i][j] += Q[i][j];
         }
-
     for (int i = 0; i < 3; i++)
         for (int j = 0; j < 3; j++)
             P[i][j] = Pnew[i][j];
 
-    // ── Debug print elke 10 ticks (~1 seconde bij 100ms loop) ─────
-    // Wat te letten op:
-    //   ratio ~1.0  → encoder en lokalisatie komen overeen (goed)
-    //   ratio < 0.9 → slip of de robot rijdt niet rechtdoor
-    //   ratio > 1.1 → encoders overdrijven of wheelbase is te klein
-    //   P groeit snel → model onzeker, IMU/ICP nodig
+    // ── Samenvattende print elke 10 ticks (~1 seconde) ────────────
     ++debugTickCounter;
     if (debugTickCounter >= 10) {
         debugTickCounter = 0;
-        printf("[LOC] pos=(%.1f,%.1f) theta=%.1f | "
-               "vL=%.1f vR=%.1f | "
-               "enc=%.0fmm loc=%.0fmm ratio=%.3f | "
-               "P=(%.3f,%.3f,%.3f)\n",
+        float ratio = totalEncDist > 0.1f ? totalLocDist / totalEncDist : 1.0f;
+        printf("[LOC-SUM] pos=(%.1f,%.1f) theta=%.1f | "
+               "totEnc=%.0fmm totLoc=%.0fmm ratio=%.3f | "
+               "P=(%.3f,%.3f,%.3f)%s\n",
                x, y, theta,
-               vLeft, vRight,
-               totalEncDist, totalLocDist,
-               totalEncDist > 0.1f ? totalLocDist / totalEncDist : 1.0f,
-               P[0][0], P[1][1], P[2][2]);
+               totalEncDist, totalLocDist, ratio,
+               P[0][0], P[1][1], P[2][2],
+               (ratio < 0.9f || ratio > 1.1f) ? " *** RATIO AFWIJKEND ***" : "");
     }
 }
 
@@ -121,7 +148,7 @@ void Localisation::Predict(float vLeft, float vRight, float dt)
 void Localisation::UpdateIMU(float imuYawDeg, float /*dt*/)
 {
     float thetaVoor = theta;
-    float innov = NormalizeDeg(imuYawDeg - theta);
+    float innov     = NormalizeDeg(imuYawDeg - theta);
 
     float S = P[2][2] + R;
     if (S < 1e-9f) return;
@@ -138,12 +165,16 @@ void Localisation::UpdateIMU(float imuYawDeg, float /*dt*/)
     P[1][2] -= Ky * P[2][2];
     P[2][2] *= (1.0f - Kt);
 
-    // Debug: grote IMU-correcties wijzen op odometrie-drift of IMU-ruis
     float correctie = NormalizeDeg(theta - thetaVoor);
-    if (std::fabs(correctie) > 2.0f) {
-        printf("[IMU-CORR] grote correctie: imu=%.2f ekf_voor=%.2f correctie=%.2f innov=%.2f Kt=%.3f\n",
-               imuYawDeg, thetaVoor, correctie, innov, Kt);
-    }
+
+    // Altijd printen zodat je per tick kunt zien:
+    //   innov≈0 en Kt groot → IMU bevestigt odometrie (goed)
+    //   innov groot en Kt groot → IMU corrigeert encoder-drift (gewenst)
+    //   innov groot maar Kt klein → EKF vertrouwt IMU nauwelijks → heading loopt weg
+    //   correctie en innov tegengesteld teken → oscillatie tussen IMU en encoders
+    printf("[LOC-IMU]  imu=%+7.2f ekf_voor=%+7.2f innov=%+6.2f Kt=%.3f -> dtheta=%+5.2f theta=%+7.2f%s\n",
+           imuYawDeg, thetaVoor, innov, Kt, correctie, theta,
+           std::fabs(correctie) > 2.0f ? " *** GROTE CORRECTIE ***" : "");
 }
 
 float Localisation::GetX()     const { return x;     }

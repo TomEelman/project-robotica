@@ -62,6 +62,12 @@ private:
     float totalLocDist;    // gecumuleerde 2D-verplaatsing na EKF (mm)
     float prevX, prevY;    // positie vorige Predict-aanroep
     int   debugTickCounter;
+
+    // Stale-data detectie: als vLinks en vRechts identiek zijn aan de
+    // vorige aanroep, is er waarschijnlijk geen nieuw Pico-pakket binnengekomen.
+    float prevVLeft;
+    float prevVRight;
+    int   staleCount;      // opeenvolgende ticks met identieke snelheidswaarden
 };
 
 #endif

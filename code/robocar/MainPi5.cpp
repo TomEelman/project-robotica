@@ -344,13 +344,18 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
     while (running) {
         auto tStart = std::chrono::steady_clock::now();
 
-        uart.LeesData();
+        bool versData = uart.LeesData();   // true = nieuw Pico-pakket ontvangen
         SensorData sens = uart.GetSensorData();
         if (sens.geldig) {
             if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
-            omegaDegS = (sens.speedRechts - sens.speedLinks) / 219.0f * (180.0f / M_PI); // BUG2 FIX: consistent 219mm
-            loc.Predict(sens.speedLinks, sens.speedRechts, DT);
-            loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
+            omegaDegS = (sens.speedRechts - sens.speedLinks) / 219.0f * (180.0f / M_PI);
+
+            // Predict/UpdateIMU ALLEEN op vers pakket — voorkomt stale-data drift.
+            if (versData) {
+                loc.Predict(sens.speedLinks, sens.speedRechts, DT);
+                loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
+            }
+
             huidigeImuYaw = sens.yawGraden - imuOffset;
 
             if (!beginPuntVergrendeld) {
@@ -515,26 +520,28 @@ static int RunRijdenEnMappenwf(Pi5UARTHandler& uart, LIDAR& lidar) {
     while (running) {
         auto tStart = std::chrono::steady_clock::now();
 
-        uart.LeesData();
+        bool versData = uart.LeesData();   // true = nieuw Pico-pakket ontvangen
         SensorData sens = uart.GetSensorData();
-if (sens.geldig) {
-    if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
-    omegaDegS = (sens.speedRechts - sens.speedLinks) / 219.0f * (180.0f / M_PI);
+        if (sens.geldig) {
+            if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
+            omegaDegS = (sens.speedRechts - sens.speedLinks) / 219.0f * (180.0f / M_PI);
 
-    bool beweegt = (sens.speedLinks != 0.0f || sens.speedRechts != 0.0f);
+            bool beweegt = (sens.speedLinks != 0.0f || sens.speedRechts != 0.0f);
 
-    if (beweegt) {
-        loc.Predict(sens.speedLinks, sens.speedRechts, DT);
-        loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
-    }
+            // Predict/UpdateIMU ALLEEN aanroepen als er een vers pakket is én de
+            // robot beweegt. Zonder versData-check zou dezelfde snelheid opnieuw
+            // geïntegreerd worden (stale-data drift).
+            if (versData && beweegt) {
+                loc.Predict(sens.speedLinks, sens.speedRechts, DT);
+                loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
+            }
 
-    huidigeImuYaw = sens.yawGraden - imuOffset;
+            huidigeImuYaw = sens.yawGraden - imuOffset;
 
-    // Debug
-    printf("[LOC] x=%.1f y=%.1f theta=%.2f | vL=%.1f vR=%.1f beweegt=%d\n",
-        loc.GetX(), loc.GetY(), loc.GetTheta(),
-        sens.speedLinks, sens.speedRechts, (int)beweegt);
-}
+            if (!versData && beweegt) {
+                printf("[UART] geen vers pakket deze tick — Predict overgeslagen\n");
+            }
+        }
 
         Position pos(loc.GetX(), loc.GetY(), loc.GetTheta()); // BUG4 FIX
 
