@@ -349,7 +349,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
         SensorData sens = uart.GetSensorData();
         if (sens.geldig) {
             if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
-            omegaDegS = (sens.speedRechts - sens.speedLinks) / 219.0f * (180.0f / M_PI); // BUG2 FIX: was 235, consistent met wheelbase
+            omegaDegS = (sens.speedRechts - sens.speedLinks) / 219.0f * (180.0f / M_PI); // BUG2 FIX: consistent 219mm
             loc.Predict(sens.speedLinks, sens.speedRechts, DT);
             loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
             huidigeImuYaw = sens.yawGraden - imuOffset;
@@ -360,9 +360,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
             }
         }
 
-        // BUG4 FIX: gebruik loc.GetTheta() (EKF) als heading, niet huidigeImuYaw (rauwe IMU).
-        // huidigeImuYaw wordt alleen nog gebruikt als meetingang voor UpdateIMU.
-        Position pos(loc.GetX(), loc.GetY(), loc.GetTheta());
+        Position pos(loc.GetX(), loc.GetY(), loc.GetTheta()); // BUG4 FIX: EKF-theta
 
         bool nieuweScan = false;
         if (lidar.Update()) {
@@ -385,9 +383,9 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
             if (icp.valid) {
                 loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
                 // BUG3 FIX: huidigeImuYaw NIET optellen met icp.dtheta —
-                // ApplyIcpCorrection past theta al anchor-based aan.
-                // huidigeImuYaw blijft de rauwe IMU-referentie voor UpdateIMU.
-                pos = Position(loc.GetX(), loc.GetY(), loc.GetTheta());
+                // ApplyIcpCorrection past theta anchor-based aan, dtheta
+                // zit al verwerkt in loc.GetTheta().
+                pos = Position(loc.GetX(), loc.GetY(), loc.GetTheta()); // BUG4 FIX
             } else {
                 // ICP mislukt: synchroniseer het ankerpunt met de huidige
                 // odometriepositie zodat de volgende geslaagde ICP-match
@@ -541,8 +539,7 @@ if (sens.geldig) {
         sens.speedLinks, sens.speedRechts, (int)beweegt);
 }
 
-        // BUG4 FIX: gebruik loc.GetTheta() (EKF) als heading
-        Position pos(loc.GetX(), loc.GetY(), loc.GetTheta());
+        Position pos(loc.GetX(), loc.GetY(), loc.GetTheta()); // BUG4 FIX
 
         if (lidar.Update()) {
             float angles[360];
@@ -563,10 +560,8 @@ if (sens.geldig) {
                                               encDx, encDy);
             if (icp.valid) {
                 loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
-                // BUG3 FIX: huidigeImuYaw NIET optellen met icp.dtheta —
-                // ApplyIcpCorrection past theta al anchor-based aan.
-                // huidigeImuYaw blijft de rauwe IMU-referentie voor UpdateIMU.
-                pos = Position(loc.GetX(), loc.GetY(), loc.GetTheta());
+                // BUG3 FIX: huidigeImuYaw niet optellen met icp.dtheta
+                pos = Position(loc.GetX(), loc.GetY(), loc.GetTheta()); // BUG4 FIX
             } else {
                 loc.SetIcpAnchor();
             }
@@ -603,7 +598,7 @@ if (sens.geldig) {
 // RunMappen
 // ─────────────────────────────────────────────────────────────────
 static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
-    Localisation loc(235.0f);
+    Localisation loc(219.0f); // BUG2 FIX: consistent 219mm
     Mapper mapper(5000, 500, 0.03f);
     constexpr float DT = 0.1f, LOOP_US = 100000;
     int scanCount = 0;
@@ -848,8 +843,8 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
                         IcpResult icp = scanMatcher.Match(lastRanges, huidigeImuYaw, encDx, encDy);
                         if (icp.valid) {
                             loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
-                            // BUG3 FIX: huidigeImuYaw NIET optellen met icp.dtheta
-                            pos = Position(loc.GetX(), loc.GetY(), loc.GetTheta());
+                            // BUG3 FIX: huidigeImuYaw niet optellen met icp.dtheta
+                            pos = Position(loc.GetX(), loc.GetY(), loc.GetTheta()); // BUG4 FIX
                         } else {
                             // ICP onbetrouwbaar: synchroniseer het anker met de
                             // odometriepositie zodat de volgende match niet terugspringt.
