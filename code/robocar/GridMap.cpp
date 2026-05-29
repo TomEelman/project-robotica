@@ -470,7 +470,7 @@ bool GridMap::SavePGMCropped(const std::string& filename, float margin_m) const 
     fill(barX0 - 1, barY - 8, 3, 17, 200, 40, 40);          // eindstreep links
     fill(barX1 - 1, barY - 8, 3, 17, 200, 40, 40);          // eindstreep rechts
 
-    // Pijlpunten
+    // Pijlpuntenf
     for (int i = 0; i < 8; ++i) {
         int half = (4 - i / 2);
         fill(barX0 + i, barY - half, 1, half * 2 + 1, 200, 40, 40);

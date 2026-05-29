@@ -55,7 +55,8 @@ Drive::Drive(Motor&     leftMotor,
              float      minAngVel,
              float      maxAngVel,
              float      minPwmLeft,
-             float      minPwmRight)
+             float      minPwmRight,
+             float      maxAngAccel)
     : motorLeft(leftMotor),
       motorRight(rightMotor),
       sensorHub(sensors),
@@ -76,11 +77,13 @@ Drive::Drive(Motor&     leftMotor,
       targetYaw(0.0f),
       yawInitialized(false),
       rampedLinear(0.0f),
-      rampedTurnSpeed(0.0f),
+      rampedAngular(0.0f),
+      turnPidInitialized(false),
       minAngVel(minAngVel),
       maxAngVel(maxAngVel),
       minPwmLeft(minPwmLeft),
-      minPwmRight(minPwmRight)
+      minPwmRight(minPwmRight),
+      maxAngAccel(maxAngAccel)
 {
 }
 
@@ -119,9 +122,9 @@ void Drive::UpdateRamp(float linearTarget)
         // Ramp linear speed down to zero instead of snapping instantly.
         // This prevents the sudden motor reversal jerk that causes slip at
         // the entry of a turn.
-        // NOTE: do NOT touch rampedTurnSpeed here — ExecuteTurn owns it.
-        //       Zeroing it here (inside the turn branch) caused the ramp to
-        //       reset to 0 every tick, keeping it stuck at RAMP_ACCEL_STEP.
+        // NOTE: do NOT touch rampedAngular here — ExecuteTurn owns it and
+        //       slew-rate limits it so a left<->right reversal passes through
+        //       zero gradually instead of flipping the wheels instantly.
         float absRamp = fabsf(rampedLinear);
         if (absRamp > 0.0f) {
             absRamp -= RAMP_DECEL_STEP;
@@ -132,10 +135,10 @@ void Drive::UpdateRamp(float linearTarget)
         return;
     }
 
-    // Stopped or linear mode — reset the turn ramp so the NEXT turn always
+    // Stopped or linear mode — reset the angular ramp so the NEXT turn always
     // starts fresh from zero (smooth entry).  This runs every tick while not
-    // turning, so rampedTurnSpeed is guaranteed to be 0 when a new turn begins.
-    rampedTurnSpeed = 0.0f;
+    // turning, so rampedAngular is guaranteed to be 0 when a new turn begins.
+    rampedAngular = 0.0f;
 
     if (driveMode == DriveMode::Stopped) {
         rampedLinear = 0.0f;
@@ -187,32 +190,54 @@ float Drive::ComputeYawCorrection()
     return pidYaw.Compute(0.0f, -yawError);
 }
 
-void Drive::ExecuteTurn(float angular)
+void Drive::ExecuteTurn(float angularCmd)
 {
     yawInitialized = false;
 
-    float wheelbaseMm    = wheelbaseMeters * 1000.0f;
-    float angularRad     = fabsf(angular) * (static_cast<float>(M_PI) / 180.0f);
-    float targetWheelSpd = angularRad * wheelbaseMm * 0.5f;   // final (full-speed) setpoint
+    // ── Signed angular slew-rate limiter (the anti-slip guard) ───────────────
+    // rampedAngular (deg/s, signed) is nudged toward the commanded angular by
+    // at most maxAngAccel per tick. Because it is SIGNED, a command flip from
+    // right (+) to left (-) does NOT reverse the wheels instantly: rampedAngular
+    // first decelerates through zero and only then builds up in the new
+    // direction. maxAngAccel is the tunable "max angular acceleration":
+    //   small  -> gentle, for low-grip / slippery floors
+    //   large  -> snappy, for high-grip floors
+    float angDiff = angularCmd - rampedAngular;
+    if (angDiff >  maxAngAccel) angDiff =  maxAngAccel;
+    if (angDiff < -maxAngAccel) angDiff = -maxAngAccel;
+    rampedAngular += angDiff;
 
-    // ── Ramp the effective turn speed ────────────────────────────────────────
-    // Instead of jumping straight to targetWheelSpd we nudge rampedTurnSpeed
-    // toward it each tick.  This avoids the sudden torque spike (and resulting
-    // tyre slip / encoder noise) that occurs when a pure rotation starts or
-    // stops abruptly.
-    if (rampedTurnSpeed < targetWheelSpd) {
-        rampedTurnSpeed += RAMP_ACCEL_STEP;
-        if (rampedTurnSpeed > targetWheelSpd) rampedTurnSpeed = targetWheelSpd;
-    } else if (rampedTurnSpeed > targetWheelSpd) {
-        rampedTurnSpeed -= RAMP_DECEL_STEP;
-        if (rampedTurnSpeed < targetWheelSpd) rampedTurnSpeed = targetWheelSpd;
+    // ── Zero-crossing hold ───────────────────────────────────────────────────
+    // While the ramp passes through ~0 (direction reversal, or very first tick
+    // of a turn) there is no meaningful rotation. Hold the motors at rest and
+    // clear the wheel PID/integrator so accumulated history from the previous
+    // direction does not get dumped into the new one. The ramp keeps advancing
+    // next tick, so the new direction starts building immediately afterwards.
+    const float ANG_DEAD = 1.0f;
+    if (fabsf(rampedAngular) < ANG_DEAD) {
+        pwmLeft            = 0.0f;
+        pwmRight           = 0.0f;
+        lastOutputLeft     = 0.0f;
+        lastOutputRight    = 0.0f;
+        turnPidInitialized = false;   // next direction gets a fresh one-shot reset
+        pidLeft .Reset();
+        pidRight.Reset();
+        printf("[TURN] zero-cross ramp=%.2f (cmd=%.1f) -> hold\n", rampedAngular, angularCmd);
+        return;
     }
 
-    // Feed-forward based on the FULL requested angular velocity so the motor
-    // receives enough PWM from the very first tick to overcome static friction.
-    // (Using rampedTurnSpeed here made feedforward too small at startup and kept
-    //  the robot stuck at minPwm even after fixing the ramp reset bug.)
-    float feedforward = (fabsf(angular) + FF_OFFSET) / FF_SCALE;
+    bool  turnLeft = (rampedAngular < 0.0f);
+    float absAng   = fabsf(rampedAngular);
+
+    float wheelbaseMm    = wheelbaseMeters * 1000.0f;
+    float angularRad     = absAng * (static_cast<float>(M_PI) / 180.0f);
+    float targetWheelSpd = angularRad * wheelbaseMm * 0.5f;   // mm/s, from RAMPED angular
+
+    // Feed-forward from the RAMPED angular (not the raw command) so the PWM also
+    // follows the slew limit. The FF_OFFSET guarantees feedforward stays above
+    // minPwm even when absAng is small, so the motor still overcomes static
+    // friction at the start of a turn without an abrupt jump to full speed.
+    float feedforward = (absAng + FF_OFFSET) / FF_SCALE;
     if (feedforward < minPwmLeft) feedforward = minPwmLeft;
     if (feedforward > 255.0f)     feedforward = 255.0f;
 
@@ -231,37 +256,37 @@ void Drive::ExecuteTurn(float angular)
     if (freshR) speedRightFiltered = EMA_ALPHA * rawR + (1.0f - EMA_ALPHA) * speedRightFiltered;
 
     // Coupled target: drive both wheels toward their current average and only
-    // gently pull that average toward the ramped setpoint.
+    // gently pull that average toward the (already slew-limited) setpoint.
     float avgSpeed      = 0.5f * (speedLeftFiltered + speedRightFiltered);
-    float avgError      = rampedTurnSpeed - avgSpeed;
+    float avgError      = targetWheelSpd - avgSpeed;
     float coupledTarget = avgSpeed + TURN_SPEED_GAIN * avgError;
-    if (coupledTarget < TURN_COUPLED_MIN_FACTOR * rampedTurnSpeed)
-        coupledTarget = TURN_COUPLED_MIN_FACTOR * rampedTurnSpeed;
-    if (coupledTarget > TURN_COUPLED_MAX_FACTOR * rampedTurnSpeed)
-        coupledTarget = TURN_COUPLED_MAX_FACTOR * rampedTurnSpeed;
+    if (coupledTarget < TURN_COUPLED_MIN_FACTOR * targetWheelSpd)
+        coupledTarget = TURN_COUPLED_MIN_FACTOR * targetWheelSpd;
+    if (coupledTarget > TURN_COUPLED_MAX_FACTOR * targetWheelSpd)
+        coupledTarget = TURN_COUPLED_MAX_FACTOR * targetWheelSpd;
 
-    // When both wheels are still at rest, reset the PID history so accumulated
-    // integral from the previous linear phase does not pollute the turn startup.
-    // Force output to 0 (= no trim, feedforward alone drives the motor).
-    float outLeft, outRight;
-    if (speedLeftFiltered < 1.0f && speedRightFiltered < 1.0f) {
-        outLeft  = lastOutputLeft  = 0.0f;   // neutral trim — feedforward handles startup
-        outRight = lastOutputRight = 0.0f;
+    // Reset PID once on the very first tick of a new turn (signalled by
+    // turnPidInitialized == false). After that let the PID accumulate normally
+    // even when the encoder still reads 0 — the feedforward carries the motor
+    // through the dead-zone and the PID builds up to correct any remaining error.
+    // Resetting every tick while speed==0 was causing the robot to stall:
+    // the PID never accumulated, feedforward alone was occasionally insufficient
+    // to overcome stiction, and the robot would sit at 73 PWM doing nothing.
+    if (!turnPidInitialized) {
         pidLeft .Reset();
         pidRight.Reset();
-    } else {
-        outLeft  = freshL ? pidLeft .Compute(speedLeftFiltered,  coupledTarget) : lastOutputLeft;
-        outRight = freshR ? pidRight.Compute(speedRightFiltered, coupledTarget) : lastOutputRight;
-        lastOutputLeft  = outLeft;
-        lastOutputRight = outRight;
+        lastOutputLeft  = 0.0f;
+        lastOutputRight = 0.0f;
+        turnPidInitialized = true;
     }
+
+    float outLeft  = freshL ? pidLeft .Compute(speedLeftFiltered,  coupledTarget) : lastOutputLeft;
+    float outRight = freshR ? pidRight.Compute(speedRightFiltered, coupledTarget) : lastOutputRight;
+    lastOutputLeft  = outLeft;
+    lastOutputRight = outRight;
 
     // PIDController::Compute returns values in [-100, 100] with 0 = on-target.
     // Map to a PWM trim in [-(255-minPwm), +(255-minPwm)].
-    //
-    // BUG that was here: (outLeft - 50) / 50 * 225 assumes PID center = 50.
-    // Actual PID center = 0, so a healthy output of ~5 gave trim = -202,
-    // collapsing magL to negative → clamped to minPwm → motor stuck at 30 PWM.
     float trimL = outLeft  / 100.0f * (255.0f - minPwmLeft);
     float trimR = outRight / 100.0f * (255.0f - minPwmRight);
 
@@ -273,12 +298,15 @@ void Drive::ExecuteTurn(float angular)
     if (magR < minPwmRight) magR = minPwmRight;
     if (magR > 255.0f)      magR = 255.0f;
 
-    if (driveMode == DriveMode::TurnLeft)  { pwmLeft = -magL; pwmRight = +magR; }
-    else                                   { pwmLeft = +magL; pwmRight = -magR; }
+    // Direction follows the SIGN OF THE RAMP, not the raw command. During a
+    // reversal the command may already say "left" while the ramp is still
+    // positive (right); we keep turning right until the ramp crosses zero.
+    if (turnLeft) { pwmLeft = -magL; pwmRight = +magR; }
+    else          { pwmLeft = +magL; pwmRight = -magR; }
 
-    printf("[TURN] dir=%s tgt=%.1f ramp=%.1f coup=%.1f spdL=%.1f spdR=%.1f pwmL=%.0f pwmR=%.0f\n",
-        driveMode == DriveMode::TurnLeft ? "LEFT" : "RIGHT",
-        targetWheelSpd, rampedTurnSpeed, coupledTarget,
+    printf("[TURN] dir=%s cmd=%.1f ramp=%.1f tgt=%.1f coup=%.1f spdL=%.1f spdR=%.1f pwmL=%.0f pwmR=%.0f\n",
+        turnLeft ? "LEFT" : "RIGHT",
+        angularCmd, rampedAngular, targetWheelSpd, coupledTarget,
         speedLeftFiltered, speedRightFiltered, pwmLeft, pwmRight);
 }
 
@@ -391,8 +419,9 @@ void Drive::Execute(const DriveCommand& command)
 void Drive::Stop()
 {
     driveMode         = DriveMode::Stopped;
-    rampedLinear      = 0.0f;
-    rampedTurnSpeed   = 0.0f;
+    rampedLinear       = 0.0f;
+    rampedAngular      = 0.0f;
+    turnPidInitialized = false;
     yawInitialized    = false;
     filterInitialized = false;
     pwmLeft           = 0.0f;

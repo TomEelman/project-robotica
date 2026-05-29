@@ -106,6 +106,8 @@ Navigator::Navigator()
     , stableAng(0.0f)
     , hasStableCmd(false)
     , cmdTicks(0)
+    , navMode(NavMode::Stopped)
+    , turnDir(0.0f)
     , blockCounter(0)
     , recoveryTicks(0)
     , blocked(false)
@@ -124,6 +126,8 @@ void Navigator::SetPath(const Path& newPath) {
     path.Reset();
     hasPath      = !path.IsEmpty();
     hasStableCmd = false;
+    navMode      = NavMode::Stopped;
+    turnDir      = 0.0f;
     cmdTicks     = 0;
     blockCounter = 0;
     // recoveryTicks is NOT reset: if a recovery action (e.g. reversing) is
@@ -143,6 +147,8 @@ void Navigator::Update(Position current) {
         if (!path.IsEmpty()) {
             currentTarget = path.GetCurrentWaypoint();
             hasStableCmd  = false;
+            navMode       = NavMode::Stopped;
+            turnDir       = 0.0f;
             cmdTicks      = 0;
         } else {
             hasPath = false;
@@ -212,8 +218,10 @@ DriveCommand Navigator::GetNextCommand(Position current, float minFront, float m
     // -- 2. Obstacle interrupt + block detection -------------------------------
     if (minFront < OBSTACLE_INTERRUPT_MM) {
         ++blockCounter;
-        hasStableCmd = false;
-        cmdTicks     = 0;
+        if (hasStableCmd) {
+            hasStableCmd = false;
+            navMode      = NavMode::Stopped;
+        }
 
         if (blockCounter >= RECOVERY_TRIGGER) {
             if (minRear > REVERSE_SAFE_MM) {
@@ -242,50 +250,88 @@ DriveCommand Navigator::GetNextCommand(Position current, float minFront, float m
 
     float dist     = CalculateDistance(current, currentTarget);
     float angleErr = CalculateAngleError(current, currentTarget);
+    float absErr   = std::fabs(angleErr);
 
     // -- 3. Waypoint reached --------------------------------------------------
     if (dist < REACHED_THRESHOLD_MM) {
         hasStableCmd = false;
+        navMode      = NavMode::Stopped;
         cmdTicks     = 0;
         return DriveCommand(0.0f, 0.0f);
     }
 
-    // -- 4. Repeat the stable command -----------------------------------------
-    bool grooteDraai = (std::fabs(angleErr) > SLOW_TURN_THRESHOLD);
-    if (hasStableCmd && (cmdTicks < CMD_STABLE_TICKS || grooteDraai)) {
+    // -- 4. Detect real events that require a command recompute ---------------
+    //
+    // The navigator holds its current command (stableLin, stableAng) until one
+    // of these events occurs:
+    //
+    //   A. No command yet (fresh start or after waypoint/obstacle).
+    //   B. Mode transition: Straight → Turn or Turn → Straight, with hysteresis
+    //      so small oscillations around the threshold don't cause recomputes.
+    //   C. Turn direction flip: the chosen turn direction is no longer correct
+    //      AND the error is large enough to be certain (TURN_FLIP_DEADBAND).
+    //
+    // Everything else (small angle drift, tiny speed variations, ICP noise)
+    // does NOT trigger a recompute — the Drive layer handles those with its
+    // own PID and yaw correction.
+
+    bool needRecompute = false;
+
+    if (!hasStableCmd) {
+        needRecompute = true;                                     // A: no command yet
+    } else if (navMode == NavMode::Straight) {
+        // Currently driving straight — switch to Turn only when error is clearly
+        // above threshold (threshold + hysteresis), not on every small excursion.
+        if (absErr > SLOW_TURN_THRESHOLD + MODE_HYSTERESIS_DEG)
+            needRecompute = true;                                 // B: gone off-heading, must turn
+    } else if (navMode == NavMode::Turn) {
+        // Currently turning — switch to Straight only when error is clearly
+        // below threshold (threshold - hysteresis), i.e. robot is well aligned.
+        if (absErr < SLOW_TURN_THRESHOLD - MODE_HYSTERESIS_DEG)
+            needRecompute = true;                                 // B: aligned, start driving
+
+        // C: turn direction flip — only if error has crossed zero by enough.
+        // TURN_FLIP_DEADBAND prevents flip-flopping when the robot is nearly aligned.
+        if (!needRecompute) {
+            float expectedDir = (stableAng > 0.0f) ? -1.0f : 1.0f; // ang+ → turns right → err goes negative
+            float errorDir    = (angleErr  > 0.0f) ?  1.0f : -1.0f;
+            if (expectedDir != errorDir && absErr > TURN_FLIP_DEADBAND_DEG)
+                needRecompute = true;                             // C: overshot, flip direction
+        }
+    }
+
+    // -- 5. Return the held command if no event occurred ----------------------
+    if (!needRecompute) {
         ++cmdTicks;
         return DriveCommand(stableLin, stableAng);
     }
 
-    // -- 5. Compute a new command ---------------------------------------------
-    float absErr = std::fabs(angleErr);
+    // -- 6. Compute a new command ---------------------------------------------
     float newLin, newAng;
 
     if (absErr > SLOW_TURN_THRESHOLD) {
         // Large heading error → turn in place.
-        // Lock the direction once to prevent flipping around ±180°.
-        if (!hasStableCmd) {
-            // Negative angleErr means target is to the right → turn right (+ang).
-            newAng = (angleErr < 0.0f) ? MAX_ANGULAR_DEG_S : -MAX_ANGULAR_DEG_S;
-        } else {
-            newAng = stableAng; // keep already-chosen direction
+        // Latch direction on first compute; only flip on event C above.
+        if (navMode != NavMode::Turn) {
+            turnDir = (angleErr < 0.0f) ? 1.0f : -1.0f; // negative err = target right = turn right (+ang)
         }
-        newLin = 0.0f;
+        newLin  = 0.0f;
+        newAng  = turnDir * MAX_ANGULAR_DEG_S;
+        navMode = NavMode::Turn;
 
     } else if (absErr > ANGLE_DEADBAND_DEG) {
         // Medium heading error → move while gently steering.
-        // Speed is scaled down so the robot slows before tight turns.
-        newLin = computeLinearSpeed(absErr);
-        newAng = ANGULAR_GAIN * absErr;
+        newLin  = computeLinearSpeed(absErr);
+        newAng  = ANGULAR_GAIN * absErr;
         if (newAng > MAX_ANGULAR_DEG_S) newAng = MAX_ANGULAR_DEG_S;
         if (angleErr > 0.0f) newAng = -newAng;
+        navMode = NavMode::Straight;
 
     } else {
-        // Small heading error → drive straight at speed scaled to remaining error.
-        // This avoids an abrupt jump from slow-steer speed to full speed the
-        // moment the error drops below ANGLE_DEADBAND_DEG.
-        newLin = computeLinearSpeed(absErr);
-        newAng = 0.0f;
+        // Small heading error → drive straight, let Drive's yaw PID handle it.
+        newLin  = LINEAR_SPEED_MM_S;
+        newAng  = 0.0f;
+        navMode = NavMode::Straight;
     }
 
     stableLin    = newLin;
@@ -293,8 +339,10 @@ DriveCommand Navigator::GetNextCommand(Position current, float minFront, float m
     hasStableCmd = true;
     cmdTicks     = 0;
 
-    printf("[NAV] cmd lin=%.0f ang=%.1f (dist=%.0fmm err=%.1fdeg)\n",
-           newLin, newAng, dist, angleErr);
+    printf("[NAV] NEW cmd lin=%.0f ang=%.1f mode=%s (dist=%.0fmm err=%.1fdeg)\n",
+           newLin, newAng,
+           navMode == NavMode::Turn ? "TURN" : "STRAIGHT",
+           dist, angleErr);
 
     return DriveCommand(stableLin, stableAng);
 }

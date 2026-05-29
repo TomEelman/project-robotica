@@ -23,7 +23,11 @@ public:
           float      minAngVel   = 13.0f,
           float      maxAngVel   = 35.0f,
           float      minPwmLeft  = 30.0f,
-          float      minPwmRight = 30.0f);
+          float      minPwmRight = 30.0f,
+          // Max change in angular setpoint per Execute() tick (deg/s per tick).
+          // This caps the angular acceleration so a turn cannot reverse
+          // instantly. Lower it for slippery floors, raise it for grippy ones.
+          float      maxAngAccel = 4.0f);
 
     void Execute(const DriveCommand& command);
     void Stop();
@@ -57,12 +61,14 @@ private:
     bool  yawInitialized;
 
     float rampedLinear;
-    float rampedTurnSpeed;  // wheel speed setpoint for in-place turns (mm/s)
+    float rampedAngular;      // signed angular setpoint for in-place turns (deg/s)
+    bool  turnPidInitialized; // true after the one-shot PID reset at turn entry
 
     float minAngVel;
     float maxAngVel;
     float minPwmLeft;
     float minPwmRight;
+    float maxAngAccel;     // slew-rate limit on rampedAngular (deg/s per tick)
     
     // Clamps |pwm| to [minPwm, 255]. Values below minPwm are zeroed to avoid
     // stalling the motor driver in a region where no movement occurs.
