@@ -383,8 +383,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
             if (icp.valid) {
                 loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
                 // BUG3 FIX: huidigeImuYaw NIET optellen met icp.dtheta —
-                // ApplyIcpCorrection past theta anchor-based aan, dtheta
-                // zit al verwerkt in loc.GetTheta().
+                // theta zit al anchor-based verwerkt in loc.GetTheta().
                 pos = Position(loc.GetX(), loc.GetY(), loc.GetTheta()); // BUG4 FIX
             } else {
                 // ICP mislukt: synchroniseer het ankerpunt met de huidige
