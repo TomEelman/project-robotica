@@ -13,6 +13,8 @@
 #include <iostream>
 #include <limits>
 #include <string>
+#include <sstream>
+#include <vector>
 #include <unistd.h>
 #include <termios.h>
 
@@ -516,13 +518,24 @@ static int RunRijdenEnMappenwf(Pi5UARTHandler& uart, LIDAR& lidar) {
 
         uart.LeesData();
         SensorData sens = uart.GetSensorData();
-        if (sens.geldig) {
-            if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
-            omegaDegS = (sens.speedRechts - sens.speedLinks) / 235.0f * (180.0f / M_PI);
-            loc.Predict(sens.speedLinks, sens.speedRechts, DT);
-            loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
-            huidigeImuYaw = sens.yawGraden - imuOffset;
-        }
+if (sens.geldig) {
+    if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
+    omegaDegS = (sens.speedRechts - sens.speedLinks) / 219.0f * (180.0f / M_PI);
+
+    bool beweegt = (sens.speedLinks != 0.0f || sens.speedRechts != 0.0f);
+
+    if (beweegt) {
+        loc.Predict(sens.speedLinks, sens.speedRechts, DT);
+        loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
+    }
+
+    huidigeImuYaw = sens.yawGraden - imuOffset;
+
+    // Debug
+    printf("[LOC] x=%.1f y=%.1f theta=%.2f | vL=%.1f vR=%.1f beweegt=%d\n",
+        loc.GetX(), loc.GetY(), loc.GetTheta(),
+        sens.speedLinks, sens.speedRechts, (int)beweegt);
+}
 
         Position pos(loc.GetX(), loc.GetY(), huidigeImuYaw);
 
@@ -632,24 +645,86 @@ static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// RunPicoCommunicatie — handmatig besturen + live mappen
+// RunPicoCommunicatie — commando-reeks afspelen + live mappen
 //
-// Gebruik:
-//   w / s        vooruit / achteruit  (+/- LIN_SPEED mm/s)
-//   a / d        links / rechts draaien (+/- ANG_SPEED deg/s)
-//   spatie        stop
-//   q             afsluiten en kaart opslaan
+// In plaats van een afstandsbestuurbare auto type je vooraf een reeks
+// commando's in (komma-gescheiden). De robot speelt ze één voor één af
+// en bouwt ondertussen de kaart op — maar alleen terwijl hij beweegt,
+// zodat stilstand-drift de kaart niet vervuilt.
 //
-// De LIDAR + lokalisatie lopen in dezelfde lus als RunMappen zodat de
-// kaart live wordt opgebouwd terwijl je handmatig rijdt. Zo kun je
-// stap voor stap uitsluiten of slechte kaartdelen door rijgedrag of
-// door de mapping/lokalisatie worden veroorzaakt.
+// Commando's (optioneel ":seconden" voor de duur, standaard 2s):
+//   vooruit    lin  278  ang   0
+//   achteruit  lin -278  ang   0
+//   links      lin    0  ang -40   (bocht op zijn plaats, linksom)
+//   rechts     lin    0  ang  40   (bocht op zijn plaats, rechtsom)
+//   bochtl     lin   10  ang -40   (al rijdend een bocht naar links)
+//   bochtr     lin   10  ang  40   (al rijdend een bocht naar rechts)
+//   stop       lin    0  ang   0
+//
+// Voorbeeld:  vooruit:3, bochtr:2, vooruit, achteruit:1
+// Lege regel of 'q' = stoppen en kaart opslaan.
 // ─────────────────────────────────────────────────────────────────
+// RijCommando — één afspeelbaar rijcommando (OOP: data + gedrag bij elkaar).
+class RijCommando {
+public:
+    RijCommando(std::string naam, float lin, float ang, float duurSec)
+        : naam_(naam), lin_(lin), ang_(ang), duurSec_(duurSec) {}
+
+    const std::string& Naam() const { return naam_; }
+    float Lin()     const { return lin_; }
+    float Ang()     const { return ang_; }
+    float DuurSec() const { return duurSec_; }
+
+    // True als dit commando de robot laat bewegen (anders puur stilstand).
+    bool IsBeweging() const { return lin_ != 0.0f || ang_ != 0.0f; }
+
+private:
+    std::string naam_;
+    float       lin_;
+    float       ang_;
+    float       duurSec_;
+};
+
+// Zet een ingetypte reeks ("vooruit:3, bochtr, stop") om naar commando's.
+// Onbekende tokens worden overgeslagen met een waarschuwing.
+static std::vector<RijCommando> ParseCommandoReeks(const std::string& invoer) {
+    std::vector<RijCommando> reeks;
+    std::stringstream ss(invoer);
+    std::string token;
+
+    while (std::getline(ss, token, ',')) {
+        // Spaties rond het token wegknippen.
+        size_t b = token.find_first_not_of(" \t");
+        if (b == std::string::npos) continue;            // leeg token
+        size_t e = token.find_last_not_of(" \t");
+        token = token.substr(b, e - b + 1);
+
+        // Optioneel ":duur" achtervoegsel afsplitsen (anders 2s).
+        float       duurSec = 2.0f;
+        std::string naam    = token;
+        size_t      dp      = token.find(':');
+        if (dp != std::string::npos) {
+            naam = token.substr(0, dp);
+            try { duurSec = std::stof(token.substr(dp + 1)); }
+            catch (...) { printf("[PICO] Ongeldige duur in '%s' - 2.0s gebruikt\n", token.c_str()); }
+        }
+
+        if      (naam == "vooruit")   reeks.push_back(RijCommando(naam,  278.0f,   0.0f, duurSec));
+        else if (naam == "achteruit") reeks.push_back(RijCommando(naam, -278.0f,   0.0f, duurSec));
+        else if (naam == "links")     reeks.push_back(RijCommando(naam,    0.0f, -40.0f, duurSec));
+        else if (naam == "rechts")    reeks.push_back(RijCommando(naam,    0.0f,  40.0f, duurSec));
+        else if (naam == "bochtl")    reeks.push_back(RijCommando(naam,   10.0f, -40.0f, duurSec));
+        else if (naam == "bochtr")    reeks.push_back(RijCommando(naam,   10.0f,  40.0f, duurSec));
+        else if (naam == "stop")      reeks.push_back(RijCommando(naam,    0.0f,   0.0f, duurSec));
+        else printf("[PICO] Onbekend commando '%s' - overgeslagen\n", naam.c_str());
+    }
+    return reeks;
+}
+
 static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
-    constexpr float DT       = 0.1f;
-    constexpr long  LOOP_US  = 100000;
-    constexpr float LIN_SPEED = 200.0f;   // mm/s — bewust lager dan autonoom voor controle
-    constexpr float ANG_SPEED =  45.0f;   // deg/s
+    constexpr float DT          = 0.1f;
+    constexpr long  LOOP_US     = 100000;
+    constexpr float scanDuurSec = 0.1f;
 
     Localisation loc(219.0f);
     Mapper       mapper(260, 160, 0.03f);
@@ -664,21 +739,7 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
     float lastRanges[360] = {};
     bool  heeftRanges     = false;
 
-    // Huidig handmatig commando
-    float handLin = 0.0f;
-    float handAng = 0.0f;
-
     CommandKeepAlive ka(uart);
-
-    // Zet terminal in raw mode zodat toetsen direct beschikbaar zijn
-    // zonder Enter te hoeven drukken.
-    struct termios oudeTermios, nieuweTermios;
-    tcgetattr(STDIN_FILENO, &oudeTermios);
-    nieuweTermios = oudeTermios;
-    nieuweTermios.c_lflag &= ~(ICANON | ECHO); // geen line-buffering, geen echo
-    nieuweTermios.c_cc[VMIN]  = 0;             // niet-blokkerende read
-    nieuweTermios.c_cc[VTIME] = 0;
-    tcsetattr(STDIN_FILENO, TCSANOW, &nieuweTermios);
 
     usleep(1200000);
     for (int i = 0; i < 5; ++i) { uart.StuurStop(); usleep(20000); }
@@ -695,75 +756,101 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
 
     ka.Start();
 
-    printf("\n[PICO] Handmatige besturing actief\n");
-    printf("  w/s = voor/achteruit  a/d = links/rechts  spatie = stop  q = afsluiten\n\n");
+    printf("\n[PICO] Commando-modus actief\n");
+    printf("  Type een reeks, bv:  vooruit:3, bochtr:2, vooruit, achteruit:1\n");
+    printf("  Commando's: vooruit achteruit links rechts bochtl bochtr stop\n");
+    printf("  Lege regel of 'q' = stoppen en kaart opslaan.\n");
 
     while (running) {
-        auto tStart = std::chrono::steady_clock::now();
+        // Robot stilzetten terwijl we op invoer wachten.
+        ka.SetCommand(0.0f, 0.0f);
 
-        // ── Lees toetsenbord (niet-blokkerend) ──────────────────────
-        char toets = 0;
-        if (read(STDIN_FILENO, &toets, 1) == 1) {
-            switch (toets) {
-                case 'w': handLin =  LIN_SPEED; handAng =  0.0f;      break;
-                case 's': handLin = -LIN_SPEED; handAng =  0.0f;      break;
-                case 'a': handLin =  0.0f;      handAng = -ANG_SPEED; break;
-                case 'd': handLin =  0.0f;      handAng =  ANG_SPEED; break;
-                case ' ': handLin =  0.0f;      handAng =  0.0f;      break;
-                case 'q': running = false;                             break;
-                default:  break;
-            }
-            if (toets != 'q') {
-                ka.SetCommand(handLin, handAng);
-                printf("[PICO] cmd lin=%.0f ang=%.0f\n", handLin, handAng);
+        printf("\nreeks> ");
+        fflush(stdout);
+
+        std::string regel;
+        if (!std::getline(std::cin, regel)) break;                            // EOF
+        if (regel.find_first_not_of(" \t\r\n") == std::string::npos) break;   // lege regel
+        if (regel == "q" || regel == "Q") break;
+
+        std::vector<RijCommando> reeks = ParseCommandoReeks(regel);
+        if (reeks.empty()) {
+            printf("[PICO] Geen geldige commando's herkend.\n");
+            continue;
+        }
+
+        // Speel de reeks één commando per keer af.
+        for (size_t c = 0; c < reeks.size() && running; ++c) {
+            const RijCommando& cmd = reeks[c];
+
+            int ticks = static_cast<int>(cmd.DuurSec() / DT);
+            if (ticks < 1) ticks = 1;
+
+            printf("[PICO] %s  lin=%.0f ang=%.0f  %.1fs %s\n",
+                   cmd.Naam().c_str(), cmd.Lin(), cmd.Ang(), cmd.DuurSec(),
+                   cmd.IsBeweging() ? "(rijdt + mapt)" : "(stilstand)");
+
+            ka.SetCommand(cmd.Lin(), cmd.Ang());
+
+            for (int t = 0; t < ticks && running; ++t) {
+                auto tStart = std::chrono::steady_clock::now();
+
+                // Sensordata + lokalisatie: alleen bijwerken als de robot
+                // daadwerkelijk beweegt (stilstand-drift vervuilt anders alles).
+                uart.LeesData();
+                SensorData sens = uart.GetSensorData();
+                bool beweegt = false;
+                if (sens.geldig) {
+                    if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
+                    omegaDegS = (sens.speedRechts - sens.speedLinks) / 219.0f * (180.0f / M_PI);
+                    beweegt = (sens.speedLinks != 0.0f || sens.speedRechts != 0.0f);
+                    if (beweegt) {
+                        loc.Predict(sens.speedLinks, sens.speedRechts, DT);
+                        loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
+                    }
+                    huidigeImuYaw = sens.yawGraden - imuOffset;
+                }
+
+                // LIDAR lezen we elke tick zodat de scan vers blijft, maar
+                // mappen doen we alleen tijdens beweging.
+                if (lidar.Update()) {
+                    float angles[360];
+                    for (int a = 0; a < 360; ++a) {
+                        lastRanges[a] = lidar.GetDistance(a).distance;
+                        angles[a]     = static_cast<float>(a);
+                    }
+
+                    if (beweegt) {
+                        Position pos(loc.GetX(), loc.GetY(), huidigeImuYaw);
+
+                        IcpResult icp = scanMatcher.Match(lastRanges, huidigeImuYaw);
+                        if (icp.valid) {
+                            loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
+                            huidigeImuYaw = NormDeg(huidigeImuYaw + icp.dtheta);
+                            pos = Position(loc.GetX(), loc.GetY(), huidigeImuYaw);
+                        }
+
+                        mapper.UpdateMotionCorrected(lastRanges, angles, 360, pos, omegaDegS, scanDuurSec);
+                        ++scanCount;
+                        mapper.PrintMap(loc.GetX(), loc.GetY(), scanCount, mapper.GetCoverage());
+                    }
+                }
+
+                // Loop timing op 100 ms.
+                auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - tStart).count();
+                long rest = LOOP_US - static_cast<long>(elapsed);
+                if (rest > 0) usleep(static_cast<useconds_t>(rest));
             }
         }
 
-        // ── Sensordata + lokalisatie ─────────────────────────────────
-        uart.LeesData();
-        SensorData sens = uart.GetSensorData();
-        if (sens.geldig) {
-            if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
-            omegaDegS = (sens.speedRechts - sens.speedLinks) / 219.0f * (180.0f / M_PI);
-            loc.Predict(sens.speedLinks, sens.speedRechts, DT);
-            loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
-            huidigeImuYaw = sens.yawGraden - imuOffset;
-        }
-
-        Position pos(loc.GetX(), loc.GetY(), huidigeImuYaw);
-
-        // ── LIDAR + mapping ──────────────────────────────────────────
-        if (lidar.Update()) {
-            float angles[360];
-            for (int a = 0; a < 360; ++a) {
-                lastRanges[a] = lidar.GetDistance(a).distance;
-                angles[a]     = static_cast<float>(a);
-            }
-
-            IcpResult icp = scanMatcher.Match(lastRanges, huidigeImuYaw);
-            if (icp.valid) {
-                loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
-                huidigeImuYaw = NormDeg(huidigeImuYaw + icp.dtheta);
-                pos = Position(loc.GetX(), loc.GetY(), huidigeImuYaw);
-            }
-
-            constexpr float scanDuurSec = 0.1f;
-            mapper.UpdateMotionCorrected(lastRanges, angles, 360, pos, omegaDegS, scanDuurSec);
-            ++scanCount;
-
-            mapper.PrintMap(loc.GetX(), loc.GetY(), scanCount, mapper.GetCoverage());
-        }
-
-        // ── Loop timing ──────────────────────────────────────────────
-        auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::steady_clock::now() - tStart).count();
-        long rest = LOOP_US - static_cast<long>(elapsed);
-        if (rest > 0) usleep(static_cast<useconds_t>(rest));
+        // Reeks klaar: robot stilzetten en wachten op de volgende invoer.
+        ka.SetCommand(0.0f, 0.0f);
+        uart.StuurStop();
+        printf("[PICO] Reeks klaar.\n");
     }
 
-    // Herstel terminal
-    tcsetattr(STDIN_FILENO, TCSANOW, &oudeTermios);
-
+    ka.SetCommand(0.0f, 0.0f);
     ka.Stop();
     ka.Shutdown();
     for (int i = 0; i < 10; ++i) { uart.StuurStop(); usleep(50000); }
