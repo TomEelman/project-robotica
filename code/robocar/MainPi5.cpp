@@ -87,9 +87,9 @@ static bool HandleObstacleAvoidance(const ScanAnalysis& scan, Localisation& loc,
 
 static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position pos, bool nieuweScan,
     int& scansSindsHerplan, int& mislukteTeller, HoofdModus& hoofdModus, bool& heeftPad,
-    float ontsnapX, float ontsnapY, CommandKeepAlive& ka, PathPlanner& planner,
+    float /*ontsnapX*/, float /*ontsnapY*/, CommandKeepAlive& ka, PathPlanner& planner,
     std::vector<BlacklistItem>& frontierBlacklist, int HERPLAN_SCANS, int MIN_DEKKING_PCT,
-    int MISLUKT_DREMPEL, float ONTSNAP_RADIUS, const float* lastRanges,
+    int MISLUKT_DREMPEL, float /*ONTSNAP_RADIUS*/, const float* lastRanges,
     float minFront);
 
 static void HandleReturnToHome(Navigator& navigator, Mapper& mapper, Position pos, Position beginPunt,
@@ -157,9 +157,9 @@ static bool HandleObstacleAvoidance(const ScanAnalysis& scan, Localisation& loc,
 
 static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position pos, bool nieuweScan,
     int& scansSindsHerplan, int& mislukteTeller, HoofdModus& hoofdModus, bool& heeftPad,
-    float ontsnapX, float ontsnapY, CommandKeepAlive& ka, PathPlanner& planner,
+    float /*ontsnapX*/, float /*ontsnapY*/, CommandKeepAlive& ka, PathPlanner& planner,
     std::vector<BlacklistItem>& frontierBlacklist, int HERPLAN_SCANS, int MIN_DEKKING_PCT,
-    int MISLUKT_DREMPEL, float ONTSNAP_RADIUS, const float* lastRanges,
+    int MISLUKT_DREMPEL, float /*ONTSNAP_RADIUS*/, const float* lastRanges,
     float minFront) {
 
     // Muurvolger-check verwijderd: robot schakelt niet meer automatisch
@@ -265,7 +265,7 @@ static void HandleReturnToHome(Navigator& navigator, Mapper& mapper, Position po
                 mapper.SetWaypoints(pad);
                 heeftPad = true;
             } else {
-                float hoek = static_cast<float>(std::atan2(-dy, -dx)) * (180.0f / M_PI);
+                float hoek = static_cast<float>(std::atan2(-dy, -dx)) * (180.0f / static_cast<float>(M_PI));
                 ka.SetCommand(200.0f, NormDeg(hoek - pos.GetTheta()) * 0.5f);
             }
         }
@@ -397,7 +397,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
             EncoderMetTeken(ka.GetLin(), ka.GetAng(), vL, vR);
 
             // omegaDegS op basis van gecorrigeerde snelheden (voor mapper).
-            omegaDegS = (vR - vL) / 219.0f * (180.0f / M_PI);
+            omegaDegS = (vR - vL) / 219.0f * (180.0f / static_cast<float>(M_PI));
 
             // Predict/UpdateIMU ALLEEN op vers pakket — voorkomt stale-data drift.
             if (versData) {
@@ -579,7 +579,7 @@ static int RunRijdenEnMappenwf(Pi5UARTHandler& uart, LIDAR& lidar) {
             EncoderMetTeken(ka.GetLin(), ka.GetAng(), vL, vR);
 
             // omegaDegS op basis van gecorrigeerde snelheden (voor mapper).
-            omegaDegS = (vR - vL) / 219.0f * (180.0f / M_PI);
+            omegaDegS = (vR - vL) / 219.0f * (180.0f / static_cast<float>(M_PI));
 
             bool beweegt = (sens.speedLinks != 0.0f || sens.speedRechts != 0.0f);
 
@@ -666,7 +666,6 @@ static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
 
     float imuOffset  = 0.0f;
     bool  imuGenulld = false;
-    float huidigeImuYaw = 0.0f;
 
     usleep(1200000);
 
@@ -679,7 +678,6 @@ static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
             if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
             loc.Predict(sens.speedLinks, sens.speedRechts, DT);
             loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
-            huidigeImuYaw = sens.yawGraden - imuOffset;
         }
 
         if (!lidar.Update()) { usleep(200000); continue; }
@@ -846,7 +844,7 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
                 EncoderMetTeken(ka.GetLin(), ka.GetAng(), vL, vR);
 
                 // omegaDegS op basis van gecorrigeerde snelheden (voor mapper).
-                omegaDegS = (vR - vL) / 219.0f * (180.0f / M_PI);
+                omegaDegS = (vR - vL) / 219.0f * (180.0f / static_cast<float>(M_PI));
 
                 beweegt = (sens.speedLinks != 0.0f || sens.speedRechts != 0.0f);
                 if (beweegt) {

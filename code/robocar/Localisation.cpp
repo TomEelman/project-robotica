@@ -78,15 +78,16 @@ void Localisation::Predict(float vLeft, float vRight, float dt)
 
     prevX = x;
     prevY = y;
-    float thetaVoor = theta;
 
     float dx_enc    = v * c * dt;
     float dy_enc    = v * s * dt;
     float dtheta_enc = omegaDeg * dt;
 
-    x     += dx_enc;
-    y     += dy_enc;
-    theta  = NormalizeDeg(theta + dtheta_enc);
+    x += dx_enc;
+    y += dy_enc;
+    // theta NIET bijwerken uit de encoders: heading komt volledig van de IMU
+    // (zie UpdateIMU). Encoder-rotatie (dtheta_enc) is onbetrouwbaar door
+    // wielasymmetrie/slip. We tonen dtheta_enc alleen nog ter info in de log.
 
     // ── Afstandstellers ────────────────────────────────────────────
     float encoderDist = std::fabs(v * dt);
@@ -150,31 +151,23 @@ void Localisation::UpdateIMU(float imuYawDeg, float /*dt*/)
     float thetaVoor = theta;
     float innov     = NormalizeDeg(imuYawDeg - theta);
 
-    float S = P[2][2] + R;
-    if (S < 1e-9f) return;
+    // Heading volledig vertrouwen op de IMU (interne sensorfusie). De
+    // encoder-heading is onbetrouwbaar, dus we overschrijven theta direct
+    // met de IMU-yaw i.p.v. een gedeeltelijke EKF-correctie. x/y blijven
+    // ongemoeid: die komen uit Predict (encoderafstand + IMU-heading).
+    theta = NormalizeDeg(imuYawDeg);
 
-    float Kx = P[0][2] / S;
-    float Ky = P[1][2] / S;
-    float Kt = P[2][2] / S;
-
-    x     += Kx * innov;
-    y     += Ky * innov;
-    theta  = NormalizeDeg(theta + Kt * innov);
-
-    P[0][2] -= Kx * P[2][2];
-    P[1][2] -= Ky * P[2][2];
-    P[2][2] *= (1.0f - Kt);
+    // Heading-onzekerheid is nu klein: de IMU is de waarheid.
+    P[2][2] = 0.01f;
 
     float correctie = NormalizeDeg(theta - thetaVoor);
 
-    // Altijd printen zodat je per tick kunt zien:
-    //   innov≈0 en Kt groot → IMU bevestigt odometrie (goed)
-    //   innov groot en Kt groot → IMU corrigeert encoder-drift (gewenst)
-    //   innov groot maar Kt klein → EKF vertrouwt IMU nauwelijks → heading loopt weg
-    //   correctie en innov tegengesteld teken → oscillatie tussen IMU en encoders
-    printf("[LOC-IMU]  imu=%+7.2f ekf_voor=%+7.2f innov=%+6.2f Kt=%.3f -> dtheta=%+5.2f theta=%+7.2f%s\n",
-           imuYawDeg, thetaVoor, innov, Kt, correctie, theta,
-           std::fabs(correctie) > 2.0f ? " *** GROTE CORRECTIE ***" : "");
+    // innov = verschil tussen IMU en de oude theta = de sprong die we nu zetten.
+    // Grote innov terwijl je recht rijdt = IMU ving een echte draai die de
+    // encoders misten (gewenst). theta volgt nu 1-op-1 de IMU.
+    printf("[LOC-IMU]  imu=%+7.2f theta_voor=%+7.2f innov=%+6.2f -> theta=%+7.2f%s\n",
+           imuYawDeg, thetaVoor, innov, theta,
+           std::fabs(correctie) > 5.0f ? " *** GROTE SPRONG ***" : "");
 }
 
 float Localisation::GetX()     const { return x;     }
@@ -197,10 +190,11 @@ void Localisation::ApplyIcpCorrection(float dx, float dy, float dtheta)
     float yVoor     = y;
     float thetaVoor = theta;
 
-    // Anchor-based voor alle drie — geen dubbeltelling mogelijk
-    x     = x_anchor     + dx;
-    y     = y_anchor     + dy;
-    theta = NormalizeDeg(theta_anchor + dtheta);
+    // Alleen translatie uit ICP toepassen. Heading komt uitsluitend van de
+    // IMU, dus theta wordt hier NIET aangeraakt — de ICP-rotatie is in deze
+    // omgeving slecht bepaald en liet de kaart eerder krombuigen.
+    x = x_anchor + dx;
+    y = y_anchor + dy;
 
     // Verschil tussen wat odometrie dacht en wat ICP zegt
     float corrX = x - xVoor;
