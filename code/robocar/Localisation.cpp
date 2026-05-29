@@ -248,3 +248,4 @@ void Localisation::ResetDistanceCounters()
     totalLocDist = 0.0f;
     printf("[LOC] afstandstellers gereset\n");
 }
+//test
