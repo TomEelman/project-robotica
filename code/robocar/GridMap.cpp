@@ -233,6 +233,95 @@ float GridMap::GetCoveragePercent() const {
     return total > 0 ? 100.0f * static_cast<float>(known) / static_cast<float>(total) : 0.0f;
 }
 
+// ─────────────────────────────────────────────────────────────────
+//  GetRoomCoverage
+//
+//  Geeft drie waarden terug die samen beschrijven of de ruimte
+//  volledig in kaart is gebracht:
+//
+//  outerWallPct   — % van de buitenste rand (BAND_WIDTH cellen dik)
+//                   van het gescande gebied dat als bezet (muur)
+//                   is geclassificeerd. Hoog = muren rondom gevonden.
+//
+//  interiorPct    — % van de cellen BINNEN die buitenste rand dat
+//                   bekend is (vrij of bezet). Hoog = interieur gemapt.
+//
+//  relCoveragePct — % van de gehele bounding box dat bekend is.
+//                   Correctere vervanging voor GetCoveragePercent()
+//                   (die deelt door het totale grid en geeft zo een
+//                   veel te laag getal voor kleine kamers).
+//
+//  BAND_WIDTH = 5 cellen ≈ 15 cm bij 3 cm/cel — dik genoeg om
+//  muren te vangen, klein genoeg om het interieur niet te claimen.
+// ─────────────────────────────────────────────────────────────────
+void GridMap::GetRoomCoverage(float& outerWallPct,
+                               float& interiorPct,
+                               float& relCoveragePct) const
+{
+    constexpr int BAND = 5;   // dikte buitenste rand in cellen
+
+    // ── Bounding box van alle bekende cellen ─────────────────────
+    int minX = width,  maxX = -1;
+    int minY = height, maxY = -1;
+    for (int y = 0; y < height; ++y)
+        for (int x = 0; x < width; ++x)
+            if (!IsUnknown(x, y)) {
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+            }
+
+    if (maxX < 0) {
+        // Nog niets gescand
+        outerWallPct = interiorPct = relCoveragePct = 0.0f;
+        return;
+    }
+
+    int bboxW = maxX - minX + 1;
+    int bboxH = maxY - minY + 1;
+
+    // ── Relatieve coverage over bounding box ─────────────────────
+    int bboxTotal = bboxW * bboxH;
+    int bboxKnown = 0;
+    for (int y = minY; y <= maxY; ++y)
+        for (int x = minX; x <= maxX; ++x)
+            if (!IsUnknown(x, y)) ++bboxKnown;
+    relCoveragePct = 100.0f * static_cast<float>(bboxKnown)
+                             / static_cast<float>(bboxTotal);
+
+    // ── Buitenste rand: ring van BAND cellen aan de binnenkant ───
+    // Een cel behoort tot de buitenste rand als hij binnen BAND
+    // cellen van een bbox-rand valt.
+    int outerTotal = 0, outerOccupied = 0;
+    int innerTotal = 0, innerKnown   = 0;
+
+    for (int y = minY; y <= maxY; ++y) {
+        for (int x = minX; x <= maxX; ++x) {
+            bool inBand = (x < minX + BAND || x > maxX - BAND ||
+                           y < minY + BAND || y > maxY - BAND);
+
+            if (inBand) {
+                ++outerTotal;
+                if (IsOccupied(x, y)) ++outerOccupied;
+            } else {
+                ++innerTotal;
+                if (!IsUnknown(x, y)) ++innerKnown;
+            }
+        }
+    }
+
+    outerWallPct = (outerTotal > 0)
+        ? 100.0f * static_cast<float>(outerOccupied)
+                 / static_cast<float>(outerTotal)
+        : 0.0f;
+
+    interiorPct = (innerTotal > 0)
+        ? 100.0f * static_cast<float>(innerKnown)
+                 / static_cast<float>(innerTotal)
+        : 100.0f;   // te klein voor interieur → beschouw als volledig
+}
+
 const std::vector<std::vector<int8_t>>& GridMap::GetLogOddsGrid() const {
     return logOdds;
 }

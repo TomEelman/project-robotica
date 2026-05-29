@@ -88,7 +88,7 @@ static bool HandleObstacleAvoidance(const ScanAnalysis& scan, Localisation& loc,
 static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position pos, bool nieuweScan,
     int& scansSindsHerplan, int& mislukteTeller, HoofdModus& hoofdModus, bool& heeftPad,
     float /*ontsnapX*/, float /*ontsnapY*/, CommandKeepAlive& ka, PathPlanner& planner,
-    std::vector<BlacklistItem>& frontierBlacklist, int HERPLAN_SCANS, int MIN_DEKKING_PCT,
+    std::vector<BlacklistItem>& frontierBlacklist, int HERPLAN_SCANS, int /*MIN_DEKKING_PCT*/,
     int MISLUKT_DREMPEL, float /*ONTSNAP_RADIUS*/, const float* lastRanges,
     float minFront);
 
@@ -158,7 +158,7 @@ static bool HandleObstacleAvoidance(const ScanAnalysis& scan, Localisation& loc,
 static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position pos, bool nieuweScan,
     int& scansSindsHerplan, int& mislukteTeller, HoofdModus& hoofdModus, bool& heeftPad,
     float /*ontsnapX*/, float /*ontsnapY*/, CommandKeepAlive& ka, PathPlanner& planner,
-    std::vector<BlacklistItem>& frontierBlacklist, int HERPLAN_SCANS, int MIN_DEKKING_PCT,
+    std::vector<BlacklistItem>& frontierBlacklist, int HERPLAN_SCANS, int /*MIN_DEKKING_PCT*/,
     int MISLUKT_DREMPEL, float /*ONTSNAP_RADIUS*/, const float* lastRanges,
     float minFront) {
 
@@ -202,17 +202,35 @@ static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position po
         }
         if (nieuweScan) {
             scansSindsHerplan = 0;
-            int dekking = mapper.GetCoverage();
+
+            // ── Kamer-dekkingscheck ───────────────────────────────────
+            // outerWallPct   : % van de buitenste rand (5-cel-band) dat
+            //                  als muur geclassificeerd is → muren rondom gevonden.
+            // interiorPct    : % bekende cellen BINNEN die rand → interieur gemapt.
+            // relCoveragePct : % van de bounding box dat bekend is (eerlijk getal,
+            //                  vervangt de gebroken GetCoverage() die door het
+            //                  hele grid deelt en zo veel te laag uitkomt).
+            constexpr float OUTER_WALL_MIN  = 25.0f;  // % buitenste rand = muur
+            constexpr float INTERIOR_MIN    = 80.0f;  // % interieur bekend
+            float outerWallPct, interiorPct, relCoveragePct;
+            mapper.GetRoomCoverage(outerWallPct, interiorPct, relCoveragePct);
+
+            bool kaartKlaar = (outerWallPct  >= OUTER_WALL_MIN &&
+                               interiorPct   >= INTERIOR_MIN);
+
 #if DEBUG_PRINT
-            printf("[MAIN] FRONTIER dekking=%d%% mislukt=%d\n", dekking, mislukteTeller);
+            printf("[MAIN] FRONTIER rand=%.0f%% int=%.0f%% rel=%.0f%% mislukt=%d%s\n",
+                   outerWallPct, interiorPct, relCoveragePct, mislukteTeller,
+                   kaartKlaar ? " *** KAART KLAAR ***" : "");
 #endif
 
-            if (dekking >= MIN_DEKKING_PCT || mislukteTeller >= MISLUKT_DREMPEL) {
+            if (kaartKlaar || mislukteTeller >= MISLUKT_DREMPEL) {
                 hoofdModus = HoofdModus::TERUG_HOME;
                 heeftPad = false;
                 mislukteTeller = 0;
 #if DEBUG_PRINT
-                printf("[MAIN] Klaar (%d%%) -> TERUG_HOME\n", dekking);
+                printf("[MAIN] Kaart gemapped (rand=%.0f%% int=%.0f%%) -> TERUG_HOME\n",
+                       outerWallPct, interiorPct);
 #endif
                 Path pad = planner.PlanPath(pos, Position(0.0f, 0.0f, 0.0f), mapper.GetMap());
                 if (!pad.IsEmpty()) { navigator.SetPath(pad); mapper.SetWaypoints(pad); heeftPad = true; }
@@ -252,7 +270,7 @@ static void HandleReturnToHome(Navigator& navigator, Mapper& mapper, Position po
     if (std::hypot(dx, dy) < HOME_DREMPEL_MM) {
         ka.Stop();
         mapper.SaveDebugMap("kaart.pgm");
-        printf("[MAIN] Thuis aangekomen!\n");
+        printf("[MAIN] Kaart gemapped!\n");
         hoofdModus = HoofdModus::KLAAR;
         running = false;
         return;
