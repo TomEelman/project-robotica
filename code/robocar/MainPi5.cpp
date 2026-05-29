@@ -17,6 +17,9 @@
 #include <unistd.h>
 #include <termios.h>
 
+// Zet op 1 om de LIDAR-kaart + debug-printf's te tonen, 0 om ze te verbergen
+#define DEBUG_PRINT 0
+
 std::atomic<bool> running{true};
 static Pi5UARTHandler* g_uart = nullptr;
 
@@ -170,7 +173,9 @@ static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position po
 
         // Replan als de Navigator klem zat en een herstelactie uitvoerde
         if (navigator.IsBlocked()) {
+#if DEBUG_PRINT
             printf("[MAIN] Navigator blocked -> replan\n");
+#endif
             Position bt = navigator.GetCurrentTarget();
             VoegToeAanBlacklist(frontierBlacklist, bt.GetX(), bt.GetY());
             navigator.ResetBlock();
@@ -179,7 +184,9 @@ static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position po
         }
 
         if (navigator.IsBlocked()) {
+#if DEBUG_PRINT
             printf("[MAIN] Navigator blocked -> wacht op stabiele lokalisatie\n");
+#endif
             Position bt = navigator.GetCurrentTarget();
             VoegToeAanBlacklist(frontierBlacklist, bt.GetX(), bt.GetY());
             navigator.ResetBlock();
@@ -196,13 +203,17 @@ static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position po
         if (nieuweScan) {
             scansSindsHerplan = 0;
             int dekking = mapper.GetCoverage();
+#if DEBUG_PRINT
             printf("[MAIN] FRONTIER dekking=%d%% mislukt=%d\n", dekking, mislukteTeller);
+#endif
 
             if (dekking >= MIN_DEKKING_PCT || mislukteTeller >= MISLUKT_DREMPEL) {
                 hoofdModus = HoofdModus::TERUG_HOME;
                 heeftPad = false;
                 mislukteTeller = 0;
+#if DEBUG_PRINT
                 printf("[MAIN] Klaar (%d%%) -> TERUG_HOME\n", dekking);
+#endif
                 Path pad = planner.PlanPath(pos, Position(0.0f, 0.0f, 0.0f), mapper.GetMap());
                 if (!pad.IsEmpty()) { navigator.SetPath(pad); mapper.SetWaypoints(pad); heeftPad = true; }
             } else {
@@ -539,7 +550,9 @@ static int RunRijdenEnMappenwf(Pi5UARTHandler& uart, LIDAR& lidar) {
             huidigeImuYaw = sens.yawGraden - imuOffset;
 
             if (!versData && beweegt) {
+#if DEBUG_PRINT
                 printf("[UART] geen vers pakket deze tick — Predict overgeslagen\n");
+#endif
             }
         }
 
@@ -637,7 +650,9 @@ static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
         mapper.Update(ranges, angles, 360, pos);
         ++scanCount;
 
+#if DEBUG_PRINT
         mapper.PrintMap(loc.GetX(), loc.GetY(), scanCount, mapper.GetCoverage());
+#endif
 
         auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - tStart).count();
@@ -815,7 +830,9 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
                     lastScanX = loc.GetX(); lastScanY = loc.GetY(); hasLastScanPos = true;
                     mapper.UpdateMotionCorrected(lastRanges, angles, 360, pos, omegaDegS, scanDuurSec);
                     ++scanCount;
+#if DEBUG_PRINT
                     mapper.PrintMap(loc.GetX(), loc.GetY(), scanCount, mapper.GetCoverage());
+#endif
                 }
             }
 
