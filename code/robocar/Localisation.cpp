@@ -86,7 +86,7 @@ void Localisation::Predict(float vLeft, float vRight, float dt)
     // Positie alleen bijwerken bij lineaire beweging. Bij een pure turn
     // (linear ≈ 0, vLeft ≈ -vRight) is v ≈ 0 en is de werkelijke
     // verplaatsing verwaarloosbaar klein op de kaart — die ruis weghouden.
-    constexpr float LIN_DEAD_MM_S = 20.0f;
+    constexpr float LIN_DEAD_MM_S = 5.0f;
     if (std::fabs(v) > LIN_DEAD_MM_S) {
         x += dx_enc;
         y += dy_enc;
@@ -163,13 +163,7 @@ void Localisation::UpdateIMU(float imuYawDeg, float /*dt*/)
     // encoder-heading is onbetrouwbaar, dus we overschrijven theta direct
     // met de IMU-yaw i.p.v. een gedeeltelijke EKF-correctie. x/y blijven
     // ongemoeid: die komen uit Predict (encoderafstand + IMU-heading).
-    //
-    // EMA-filter op de innovation (al wrap-safe via NormalizeDeg):
-    //   alpha=0.6 → 60% nieuwe IMU, 40% oude theta.
-    //   Dempt IMU-ruis (motoren, trillingen) zonder echte draaiingen te missen.
-    //   Tijdens een bocht volgt theta de IMU binnen ~3 ticks (~300ms).
-    constexpr float ALPHA = 0.6f;
-    theta = NormalizeDeg(theta + ALPHA * innov);
+    theta = NormalizeDeg(imuYawDeg);
 
     // Heading-onzekerheid is nu klein: de IMU is de waarheid.
     P[2][2] = 0.01f;
