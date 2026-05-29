@@ -268,7 +268,7 @@ static void HandleReturnToHome(Navigator& navigator, Mapper& mapper, Position po
 
 static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
     Localisation loc(219.0f);
-    Mapper mapper(500, 500, 0.03f);
+    Mapper mapper(260, 160, 0.03f);
 
     constexpr float DT          = 0.1f;
     constexpr long  LOOP_US     = 100000;
@@ -470,7 +470,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
 // ─────────────────────────────────────────────────────────────────
 static int RunRijdenEnMappenwf(Pi5UARTHandler& uart, LIDAR& lidar) {
     Localisation loc(219.0f);
-    Mapper mapper(500, 500, 0.03f);
+    Mapper mapper(260, 160, 0.03f);
 
     constexpr float DT          = 0.1f;
     constexpr long  LOOP_US     = 100000;
@@ -596,7 +596,7 @@ if (sens.geldig) {
 // ─────────────────────────────────────────────────────────────────
 static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
     Localisation loc(235.0f);
-    Mapper mapper(5000, 500, 0.03f);
+    Mapper mapper(260, 160, 0.03f);
     constexpr float DT = 0.1f, LOOP_US = 100000;
     int scanCount = 0;
 
