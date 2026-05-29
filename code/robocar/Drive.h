@@ -59,6 +59,11 @@ private:
     float rampedLinear;
     float rampedTurnSpeed;  // wheel speed setpoint for in-place turns (mm/s)
 
+    // Smoothed version of the incoming linear command.
+    // Limits how fast the navigator can change the requested speed per tick,
+    // preventing abrupt jumps like 278 → 0 from reaching the ramp in one step.
+    float cmdSmoothedLinear;
+
     float minAngVel;
     float maxAngVel;
     float minPwmLeft;

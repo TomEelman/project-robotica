@@ -46,6 +46,13 @@ static constexpr float TURN_COUPLED_MAX_FACTOR  = 1.5f;
 static constexpr float RAMP_ACCEL_STEP = 5.0f;
 static constexpr float RAMP_DECEL_STEP = 5.0f;
 
+// Maximum change in the incoming linear command per Execute() call.
+// Acts as a safety gate before the internal ramp: no matter what the navigator
+// requests, the speed seen by the ramp can only shift by this much each tick.
+// At 278 mm/s top speed and step=20, a full stop takes ~14 ticks (~140 ms at 100 Hz).
+// Raise to allow faster commanded transitions; lower to smooth more aggressively.
+static constexpr float CMD_MAX_LIN_STEP = 20.0f;
+
 
 
 Drive::Drive(Motor&     leftMotor,
@@ -77,6 +84,7 @@ Drive::Drive(Motor&     leftMotor,
       yawInitialized(false),
       rampedLinear(0.0f),
       rampedTurnSpeed(0.0f),
+      cmdSmoothedLinear(0.0f),
       minAngVel(minAngVel),
       maxAngVel(maxAngVel),
       minPwmLeft(minPwmLeft),
@@ -138,7 +146,15 @@ void Drive::UpdateRamp(float linearTarget)
     rampedTurnSpeed = 0.0f;
 
     if (driveMode == DriveMode::Stopped) {
-        rampedLinear = 0.0f;
+        // Ramp down instead of snapping to 0 — matches the deceleration
+        // behaviour of the linear branch so the motor doesn't jolt on stop.
+        float absRamp = fabsf(rampedLinear);
+        if (absRamp > RAMP_DECEL_STEP) {
+            float sign   = (rampedLinear >= 0.0f) ? 1.0f : -1.0f;
+            rampedLinear = sign * (absRamp - RAMP_DECEL_STEP);
+        } else {
+            rampedLinear = 0.0f;
+        }
         return;
     }
 
@@ -356,6 +372,30 @@ void Drive::Execute(const DriveCommand& command)
     float linear  = command.GetLinVelocity();
     float angular = command.GetAngVelocity();
 
+    // ── Command rate limiter ────────────────────────────────────────────────
+    // Cap the change in requested linear speed to CMD_MAX_LIN_STEP per call.
+    // This prevents the navigator from jumping speed (e.g. 278 → 150) in one
+    // tick, which would bypass the internal ramp entirely.
+    //
+    // Exception: when the navigator commands linear ≈ 0 (pure turn or stop),
+    // pass 0 through immediately so the drive mode transitions correctly to
+    // TurnLeft/TurnRight (those modes already ramp rampedLinear down gradually).
+    // cmdSmoothedLinear still tracks toward 0 so the next forward command
+    // starts from a consistent point.
+    if (fabsf(linear) < 0.001f) {
+        float delta = -cmdSmoothedLinear;
+        if (delta < -CMD_MAX_LIN_STEP) delta = -CMD_MAX_LIN_STEP;
+        if (delta >  CMD_MAX_LIN_STEP) delta =  CMD_MAX_LIN_STEP;
+        cmdSmoothedLinear += delta;
+        linear = 0.0f;
+    } else {
+        float linDelta = linear - cmdSmoothedLinear;
+        if (linDelta >  CMD_MAX_LIN_STEP) linDelta =  CMD_MAX_LIN_STEP;
+        if (linDelta < -CMD_MAX_LIN_STEP) linDelta = -CMD_MAX_LIN_STEP;
+        cmdSmoothedLinear += linDelta;
+        linear = cmdSmoothedLinear;
+    }
+
     if (fabsf(linear) < 0.001f && fabsf(angular) < 0.001f) {
         Stop();
         return;
@@ -393,6 +433,7 @@ void Drive::Stop()
     driveMode         = DriveMode::Stopped;
     rampedLinear      = 0.0f;
     rampedTurnSpeed   = 0.0f;
+    cmdSmoothedLinear = 0.0f;
     yawInitialized    = false;
     filterInitialized = false;
     pwmLeft           = 0.0f;
