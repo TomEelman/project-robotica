@@ -293,9 +293,10 @@ DriveCommand Navigator::GetNextCommand(Position current, float minFront, float m
         // C: turn direction flip — only if error has crossed zero by enough.
         // TURN_FLIP_DEADBAND prevents flip-flopping when the robot is nearly aligned.
         if (!needRecompute) {
-            float expectedDir = (stableAng > 0.0f) ? -1.0f : 1.0f; // ang+ → turns right → err goes negative
-            float errorDir    = (angleErr  > 0.0f) ?  1.0f : -1.0f;
-            if (expectedDir != errorDir && absErr > TURN_FLIP_DEADBAND_DEG)
+            // Benodigde draairichting = -teken(fout)  (+ang verlaagt theta).
+            float neededAng = (angleErr > 0.0f) ? -1.0f : 1.0f;
+            float curAng    = (stableAng > 0.0f) ?  1.0f : -1.0f;
+            if (neededAng != curAng && absErr > TURN_FLIP_DEADBAND_DEG)
                 needRecompute = true;                             // C: overshot, flip direction
         }
     }
@@ -310,21 +311,19 @@ DriveCommand Navigator::GetNextCommand(Position current, float minFront, float m
     float newLin, newAng;
 
     if (absErr > SLOW_TURN_THRESHOLD) {
-        // Large heading error → turn in place.
-        // Latch direction on first compute; only flip on event C above.
-        if (navMode != NavMode::Turn) {
-            turnDir = (angleErr < 0.0f) ? 1.0f : -1.0f; // negative err = target right = turn right (+ang)
-        }
+        // Grote heading-fout → draai op de plek.
+        // +fout = doel linksom → -ang (linksom draaien verhoogt theta).
         newLin  = 0.0f;
-        newAng  = turnDir * MAX_ANGULAR_DEG_S;
+        newAng  = (angleErr > 0.0f) ? -MAX_ANGULAR_DEG_S : MAX_ANGULAR_DEG_S;
+        turnDir = (angleErr > 0.0f) ? -1.0f : 1.0f;
         navMode = NavMode::Turn;
 
     } else if (absErr > ANGLE_DEADBAND_DEG) {
-        // Medium heading error → move while gently steering.
+        // Middelgrote fout → rijden met een gebogen baan (lin én ang tegelijk).
         newLin  = computeLinearSpeed(absErr);
         newAng  = ANGULAR_GAIN * absErr;
         if (newAng > MAX_ANGULAR_DEG_S) newAng = MAX_ANGULAR_DEG_S;
-        if (angleErr > 0.0f) newAng = -newAng;
+        if (angleErr > 0.0f) newAng = -newAng;   // +fout → -ang
         navMode = NavMode::Straight;
 
     } else {
@@ -370,15 +369,12 @@ float Navigator::CalculateDistance(Position a, Position b) const {
 float Navigator::CalculateAngleError(Position current, Position target) const {
     float dx = target.GetX() - current.GetX();
     float dy = target.GetY() - current.GetY();
-    // atan2 returns a CCW angle, but theta comes from the IMU which is
-    // CW-positive (compass convention).  The LIDAR CW-angle convention also
-    // causes the Y-axis in the map to be mirrored relative to standard math.
-    // Both effects flip the sign of the angular error, so we negate the
-    // result here.  The rest of GetNextCommand is written with the
-    // convention "negative error = target is to the right = turn right",
-    // which remains correct after this negation.
-    float desired = std::atan2(dy, dx) * (180.0f / static_cast<float>(M_PI));
-    return NormalizeDeg(-(desired - current.GetTheta()));
+    // Heading-fout in het CCW kaart-frame (theta = loc.GetTheta()).
+    // Positieve fout = doel ligt linksom van de huidige heading → theta moet
+    // omhoog. Let op: een +ang-commando draait de robot RECHTSOM en VERLAAGT
+    // theta, dus om een positieve fout weg te sturen geven we -ang.
+    float desired = std::atan2(dy, dx) * (180.0f / 3.14159265358979f);
+    return NormalizeDeg(desired - current.GetTheta());
 }
 
 float Navigator::NormalizeDeg(float deg) const {

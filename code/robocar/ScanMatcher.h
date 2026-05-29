@@ -18,9 +18,13 @@ struct ScanPoint {
 };
 
 struct IcpResult {
-    float dx;       // mm
-    float dy;       // mm
-    float dtheta;   // graden
+    // dx/dy zijn de RESIDU-correctie t.o.v. de meegegeven encoder-gok
+    // (initDx/initDy), niet de volledige verplaatsing. De aanroeper heeft de
+    // encoder-beweging al via dead-reckoning toegepast; dit residu corrigeert
+    // alleen de odometrie-drift. Direct optellen op de positie (loc.ApplyIcp).
+    float dx;       // mm   — residu-correctie in wereldframe
+    float dy;       // mm   — residu-correctie in wereldframe
+    float dtheta;   // graden — gyro-drift correctie (CCW)
     float fitness;  // gemiddelde afstand na matching (lager = beter)
     bool  valid;    // false als matching mislukt of onbetrouwbaar
 };
@@ -38,7 +42,8 @@ public:
     // initDx/initDy: encoder-gebaseerde initiële verplaatsing (mm, wereldframe).
     //   De huidige scan wordt hier EERST mee verschoven zodat ICP al dicht bij
     //   de oplossing begint en minder kans heeft op een verkeerd lokaal minimum.
-    // Geeft de correctie terug die op de positie opgeteld moet worden.
+    // Geeft het RESIDU terug (ICP-meting minus encoder-gok): de drift-correctie
+    // die op de reeds dead-reckonde positie opgeteld moet worden.
     IcpResult Match(const float ranges[360], float robotTheta,
                     float initDx = 0.0f, float initDy = 0.0f);
 

@@ -256,7 +256,8 @@ static void HandleReturnToHome(Navigator& navigator, Mapper& mapper, Position po
                 heeftPad = true;
             } else {
                 float hoek = static_cast<float>(std::atan2(-dy, -dx)) * (180.0f / M_PI);
-                ka.SetCommand(200.0f, NormDeg(hoek - pos.GetTheta()) * 0.5f);
+                // +fout → -ang (rechtsom verlaagt theta in het CCW kaart-frame)
+                ka.SetCommand(200.0f, -NormDeg(hoek - pos.GetTheta()) * 0.5f);
             }
         }
         if (heeftPad && !navigator.IsFinished()) {
@@ -294,11 +295,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
     int   vastzitTicks = 0;
     float vastzitRefX  = 0.0f, vastzitRefY = 0.0f;
 
-    float imuOffset  = 0.0f;
-    bool  imuGenulld = false;
-
-    float huidigeImuYaw = 0.0f;
-    float omegaDegS     = 0.0f;
+    float omegaDegS = 0.0f;
 
     std::vector<BlacklistItem> frontierBlacklist;
     PathPlanner planner(mapper.GetMap(), true);
@@ -348,11 +345,8 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
         uart.LeesData();
         SensorData sens = uart.GetSensorData();
         if (sens.geldig) {
-            if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
-            omegaDegS = (sens.speedRechts - sens.speedLinks) / 235.0f * (180.0f / M_PI);
-            loc.Predict(sens.speedLinks, sens.speedRechts, DT);
-            loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
-            huidigeImuYaw = sens.yawGraden - imuOffset;
+            loc.Update(sens.speedLinks, sens.speedRechts, sens.yawGraden, DT);
+            omegaDegS = -sens.hoeksnelheid;   // CW gyro-rate -> CCW kaart-frame
 
             if (!beginPuntVergrendeld) {
                 beginPunt = Position(loc.GetX(), loc.GetY(), loc.GetTheta());
@@ -360,7 +354,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
             }
         }
 
-        Position pos(loc.GetX(), loc.GetY(), huidigeImuYaw);
+        Position pos(loc.GetX(), loc.GetY(), loc.GetTheta());
 
         bool nieuweScan = false;
         if (lidar.Update()) {
@@ -378,17 +372,11 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
                 encDx = loc.GetX() - lastScanX;
                 encDy = loc.GetY() - lastScanY;
             }
-            IcpResult icp = scanMatcher.Match(lastRanges, huidigeImuYaw,
+            IcpResult icp = scanMatcher.Match(lastRanges, loc.GetTheta(),
                                               encDx, encDy);
             if (icp.valid) {
-                loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
-                huidigeImuYaw = NormDeg(huidigeImuYaw + icp.dtheta);
-                pos = Position(loc.GetX(), loc.GetY(), huidigeImuYaw);
-            } else {
-                // ICP mislukt: synchroniseer het ankerpunt met de huidige
-                // odometriepositie zodat de volgende geslaagde ICP-match
-                // weet waar de robot nu staat.
-                loc.SetIcpAnchor();
+                loc.ApplyIcp(icp.dx, icp.dy, icp.dtheta);
+                pos = Position(loc.GetX(), loc.GetY(), loc.GetTheta());
             }
 
             // Bewaar huidige EKF-positie voor encoder-seeding van de volgende ICP-ronde.
@@ -477,11 +465,8 @@ static int RunRijdenEnMappenwf(Pi5UARTHandler& uart, LIDAR& lidar) {
     constexpr long  LOOP_US     = 100000;
     constexpr float scanDuurSec = 0.1f;
 
-    int   scanCount     = 0;
-    float imuOffset     = 0.0f;
-    bool  imuGenulld    = false;
-    float huidigeImuYaw = 0.0f;
-    float omegaDegS     = 0.0f;
+    int   scanCount = 0;
+    float omegaDegS = 0.0f;
 
     Navigator   navigator;
     navigator.ResetWallFollower();
@@ -518,26 +503,19 @@ static int RunRijdenEnMappenwf(Pi5UARTHandler& uart, LIDAR& lidar) {
 
         uart.LeesData();
         SensorData sens = uart.GetSensorData();
-if (sens.geldig) {
-    if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
-    omegaDegS = (sens.speedRechts - sens.speedLinks) / 219.0f * (180.0f / M_PI);
+        if (sens.geldig) {
+            omegaDegS = -sens.hoeksnelheid;   // CW gyro-rate -> CCW kaart-frame
+            bool beweegt = (sens.speedLinks != 0.0f || sens.speedRechts != 0.0f);
+            if (beweegt) {
+                loc.Update(sens.speedLinks, sens.speedRechts, sens.yawGraden, DT);
+            }
 
-    bool beweegt = (sens.speedLinks != 0.0f || sens.speedRechts != 0.0f);
+            printf("[LOC] x=%.1f y=%.1f theta=%.2f | vL=%.1f vR=%.1f beweegt=%d\n",
+                loc.GetX(), loc.GetY(), loc.GetTheta(),
+                sens.speedLinks, sens.speedRechts, (int)beweegt);
+        }
 
-    if (beweegt) {
-        loc.Predict(sens.speedLinks, sens.speedRechts, DT);
-        loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
-    }
-
-    huidigeImuYaw = sens.yawGraden - imuOffset;
-
-    // Debug
-    printf("[LOC] x=%.1f y=%.1f theta=%.2f | vL=%.1f vR=%.1f beweegt=%d\n",
-        loc.GetX(), loc.GetY(), loc.GetTheta(),
-        sens.speedLinks, sens.speedRechts, (int)beweegt);
-}
-
-        Position pos(loc.GetX(), loc.GetY(), huidigeImuYaw);
+        Position pos(loc.GetX(), loc.GetY(), loc.GetTheta());
 
         if (lidar.Update()) {
             float angles[360];
@@ -554,14 +532,11 @@ if (sens.geldig) {
                 encDx = loc.GetX() - lastScanX;
                 encDy = loc.GetY() - lastScanY;
             }
-            IcpResult icp = scanMatcher.Match(lastRanges, huidigeImuYaw,
+            IcpResult icp = scanMatcher.Match(lastRanges, loc.GetTheta(),
                                               encDx, encDy);
             if (icp.valid) {
-                loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
-                huidigeImuYaw = NormDeg(huidigeImuYaw + icp.dtheta);
-                pos = Position(loc.GetX(), loc.GetY(), huidigeImuYaw);
-            } else {
-                loc.SetIcpAnchor();
+                loc.ApplyIcp(icp.dx, icp.dy, icp.dtheta);
+                pos = Position(loc.GetX(), loc.GetY(), loc.GetTheta());
             }
 
             lastScanX      = loc.GetX();
@@ -596,14 +571,10 @@ if (sens.geldig) {
 // RunMappen
 // ─────────────────────────────────────────────────────────────────
 static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
-    Localisation loc(235.0f);
+    Localisation loc(219.0f);
     Mapper mapper(5000, 500, 0.03f);
     constexpr float DT = 0.1f, LOOP_US = 100000;
     int scanCount = 0;
-
-    float imuOffset  = 0.0f;
-    bool  imuGenulld = false;
-    float huidigeImuYaw = 0.0f;
 
     usleep(1200000);
 
@@ -613,10 +584,7 @@ static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
         uart.LeesData();
         SensorData sens = uart.GetSensorData();
         if (sens.geldig) {
-            if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
-            loc.Predict(sens.speedLinks, sens.speedRechts, DT);
-            loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
-            huidigeImuYaw = sens.yawGraden - imuOffset;
+            loc.Update(sens.speedLinks, sens.speedRechts, sens.yawGraden, DT);
         }
 
         if (!lidar.Update()) { usleep(200000); continue; }
@@ -627,7 +595,7 @@ static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
             angles[a] = static_cast<float>(a);
         }
 
-        Position pos(loc.GetX(), loc.GetY(), huidigeImuYaw);
+        Position pos(loc.GetX(), loc.GetY(), loc.GetTheta());
         mapper.Update(ranges, angles, 360, pos);
         ++scanCount;
 
@@ -730,11 +698,8 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
     Mapper       mapper(260, 160, 0.03f);
     ScanMatcher  scanMatcher;
 
-    float imuOffset     = 0.0f;
-    bool  imuGenulld    = false;
-    float huidigeImuYaw = 0.0f;
-    float omegaDegS     = 0.0f;
-    int   scanCount     = 0;
+    float omegaDegS = 0.0f;
+    int   scanCount = 0;
 
     float lastRanges[360] = {};
     bool  heeftRanges     = false;
@@ -806,14 +771,11 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
                 SensorData sens = uart.GetSensorData();
                 bool beweegt = false;
                 if (sens.geldig) {
-                    if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
-                    omegaDegS = (sens.speedRechts - sens.speedLinks) / 219.0f * (180.0f / M_PI);
+                    omegaDegS = -sens.hoeksnelheid;   // CW gyro-rate -> CCW kaart-frame
                     beweegt = (sens.speedLinks != 0.0f || sens.speedRechts != 0.0f);
                     if (beweegt) {
-                        loc.Predict(sens.speedLinks, sens.speedRechts, DT);
-                        loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
+                        loc.Update(sens.speedLinks, sens.speedRechts, sens.yawGraden, DT);
                     }
-                    huidigeImuYaw = sens.yawGraden - imuOffset;
                 }
 
                 // LIDAR lezen we elke tick zodat de scan vers blijft, maar
@@ -826,7 +788,7 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
                     }
 
                     if (beweegt) {
-                        Position pos(loc.GetX(), loc.GetY(), huidigeImuYaw);
+                        Position pos(loc.GetX(), loc.GetY(), loc.GetTheta());
 
                         // Encoder-seeding: geef ICP de odometrie-verplaatsing
                         // sinds de vorige scan als startgok mee. Zonder die gok
@@ -838,15 +800,10 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
                             encDy = loc.GetY() - lastScanY;
                         }
 
-                        IcpResult icp = scanMatcher.Match(lastRanges, huidigeImuYaw, encDx, encDy);
+                        IcpResult icp = scanMatcher.Match(lastRanges, loc.GetTheta(), encDx, encDy);
                         if (icp.valid) {
-                            loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
-                            huidigeImuYaw = NormDeg(huidigeImuYaw + icp.dtheta);
-                            pos = Position(loc.GetX(), loc.GetY(), huidigeImuYaw);
-                        } else {
-                            // ICP onbetrouwbaar: synchroniseer het anker met de
-                            // odometriepositie zodat de volgende match niet terugspringt.
-                            loc.SetIcpAnchor();
+                            loc.ApplyIcp(icp.dx, icp.dy, icp.dtheta);
+                            pos = Position(loc.GetX(), loc.GetY(), loc.GetTheta());
                         }
 
                         lastScanX      = loc.GetX();

@@ -1,48 +1,59 @@
 #ifndef LOCALISATION_H
 #define LOCALISATION_H
 
+// ─────────────────────────────────────────────────────────────────
+//  Localisation — één heading-bron, geen dubbeltelling
+//
+//  Ontwerpkeuzes (zie ook MainPi5):
+//   • De IMU-yaw is de ENIGE heading-bron. Een gyro is veel
+//     betrouwbaarder voor heading dan differentiële wiel-odometrie,
+//     dus we integreren wielverschillen NIET meer in theta.
+//   • De IMU is CW-positief (rechtsom = +). De kaart projecteert de
+//     LIDAR met standaard cos/sin (CCW-conventie). Om beide in
+//     hetzelfde frame te krijgen draaien we het IMU-teken om:
+//         theta = NormDeg( IMU_SIGN * (imuYaw - imuOffset) + headingBias )
+//     met IMU_SIGN = -1. Klopt de opgeslagen kaart gespiegeld/uitgesmeerd
+//     bij bochten, dan is dit teken het enige dat je hoeft te flippen.
+//   • x/y worden dood-gerekend langs DEZELFDE theta, zodat de richting
+//     waarin de positie opschuift exact gelijk is aan de hoek waarmee
+//     de LIDAR in de kaart wordt geschreven (geen smear meer).
+//   • ICP corrigeert x/y direct en de trage gyro-drift via headingBias.
+// ─────────────────────────────────────────────────────────────────
 class Localisation {
 public:
-    Localisation(float wheelBase);
+    explicit Localisation(float wheelBaseMm);
 
-    // vLeft / vRight in mm/s, dt in seconden
-    void Predict(float vLeft, float vRight, float dt);
+    // Eén control-tick. vLeft/vRight in mm/s (positief = vooruit),
+    // imuYawDeg = rauwe IMU-yaw in graden, dt in seconden.
+    // De eerste aanroep latcht de IMU-offset (nulpunt).
+    void Update(float vLeft, float vRight, float imuYawDeg, float dt);
 
-    // imuYawDeg: yaw van de IMU in graden
-    void UpdateIMU(float imuYawDeg, float dt);
+    // ICP-correctie in het kaart-frame (CCW): dx/dy in mm, dtheta in graden.
+    // x/y worden direct verschoven; dtheta corrigeert de gyro-drift via de
+    // headingBias (zodat de absolute IMU-heading de volgende tick niet de
+    // correctie wegpoetst). Alleen aanroepen bij een geldige ICP-match.
+    void ApplyIcp(float dx, float dy, float dtheta);
 
-    // Pas een ICP scan-matching correctie toe op x, y en theta.
-    // dx/dy in mm, dtheta in graden.
-    // Alleen aanroepen als IcpResult.valid == true.
-    void ApplyIcpCorrection(float dx, float dy, float dtheta);
+    // Herstart de schatting (positie naar opgegeven punt, bias/offset behouden).
+    void Reset(float x = 0.0f, float y = 0.0f);
 
-    // Synchroniseer het ICP-ankerpunt met de huidige odometriepositie.
-    // Aanroepen wanneer ICP mislukt (ScanMatcher geeft valid=false),
-    // zodat het volgende geslaagde ICP weet waar de robot nu staat.
-    void SetIcpAnchor();
-
-    float GetX()     const; // mm
-    float GetY()     const; // mm
-    float GetTheta() const; // graden, genormaliseerd naar (-180, 180]
+    float GetX()     const { return x;     }  // mm
+    float GetY()     const { return y;     }  // mm
+    float GetTheta() const { return theta; }  // graden, CCW, (-180,180]
 
 private:
-    float x;
-    float y;
-    float theta; // intern opgeslagen in graden
+    // Flip dit teken als IMU-draairichting niet bij de kaart past.
+    static constexpr float IMU_SIGN = -1.0f;
 
-    float P[3][3];
-    float Q[3][3];
-    float R;
+    float x;            // mm
+    float y;            // mm
+    float theta;        // graden, CCW map-frame
 
-    float wheelBase;
+    float wheelBase;    // mm (informatief; heading komt van IMU)
 
-    // Ankerpunten: positie + heading op het moment van de vorige geslaagde
-    // ICP-scan. ApplyIcpCorrection stelt x/y/theta in als anchor + delta,
-    // zodat odometrie-drift tussen twee scans volledig vervangen wordt door
-    // de ICP-meting (geen dubbeltelling).
-    float x_anchor;
-    float y_anchor;
-    float theta_anchor; // graden
+    float imuOffset;    // graden, rauwe IMU-yaw bij start
+    bool  imuInit;
+    float headingBias;  // graden, trage ICP-driftcorrectie
 };
 
 #endif

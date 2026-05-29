@@ -217,14 +217,20 @@ IcpResult ScanMatcher::Match(const float ranges[360], float robotTheta,
         return result;
     }
 
-    result.dx      = totalDx;
-    result.dy      = totalDy;
+    // totalDx/totalDy zijn de VOLLEDIGE verplaatsing tussen de scans (start op
+    // de encoder-gok initDx/initDy en convergeert naar de echte beweging). De
+    // positie is via dead-reckoning (loc.Update) al met die encoder-gok mee-
+    // geschoven, dus we geven alleen het RESIDU terug — het verschil tussen wat
+    // ICP meet en wat de encoders al toegepast hebben. Zo telt ApplyIcp de
+    // beweging niet dubbel; het corrigeert alleen de odometrie-drift.
+    result.dx      = totalDx - initDx;
+    result.dy      = totalDy - initDy;
     result.dtheta  = totalDtheta;
     result.fitness = fitness;
     result.valid   = true;
 
-    printf("[ICP] OK: dx=%.1f dy=%.1f dth=%.2f fit=%.1f\n",
-           totalDx, totalDy, totalDtheta, fitness);
+    printf("[ICP] OK: corr dx=%.1f dy=%.1f dth=%.2f (vol dx=%.1f dy=%.1f) fit=%.1f\n",
+           result.dx, result.dy, totalDtheta, totalDx, totalDy, fitness);
 
     // Bewaar getransformeerde scan als nieuwe referentie
     prevPoints = moving;

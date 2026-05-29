@@ -99,7 +99,11 @@ private:
     static constexpr int   RECOVERY_TICKS        = 15;     // duration of action
 
     // ── Wall follower constants ───────────────────────────────────
-    static constexpr float WF_TARGET_DIST_MM     = 300.0f;
+    // Doel-afstand van de LIDAR (in het midden) tot de muur. Robot is 24x24cm:
+    // de hoek zit op 12*sqrt(2) ~= 170mm vanuit het midden (worst-case bij draaien).
+    // 250mm gewenste vrije ruimte + 170mm = 420mm zodat de robot fysiek ~25cm
+    // van de muur blijft, ook met de diagonaal meegerekend.
+    static constexpr float WF_TARGET_DIST_MM     = 420.0f;
     static constexpr float WF_WALL_PRESENT_MM    = 600.0f;
     static constexpr float WF_FRONT_CRITICAL_MM  = 350.0f;
     static constexpr float WF_FRONT_BRAKE_MM     = 500.0f;

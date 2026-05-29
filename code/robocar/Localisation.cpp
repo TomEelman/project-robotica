@@ -1,8 +1,7 @@
 #include "Localisation.h"
 #include <cmath>
 
-static constexpr float DEG2RAD = static_cast<float>(M_PI) / 180.0f;
-static constexpr float RAD2DEG = 180.0f / static_cast<float>(M_PI);
+static constexpr float DEG2RAD = 3.14159265358979f / 180.0f;
 
 // Normaliseer graden naar (-180, 180]
 static float NormalizeDeg(float deg) {
@@ -11,139 +10,52 @@ static float NormalizeDeg(float deg) {
     return deg;
 }
 
-// ─────────────────────────────────────────────────────────────────
-//  Constructor
-//
-//  wheelBaseMm : afstand tussen de wielen IN MILLIMETER (bijv. 235.0f).
-//                Let op: MainPi5 moet Localisation(235.0f) aanroepen,
-//                NIET Localisation(0.235f).
-// ─────────────────────────────────────────────────────────────────
 Localisation::Localisation(float wheelBaseMm)
-    : x(0.0f), y(0.0f), theta(0.0f), wheelBase(wheelBaseMm)
-    , x_anchor(0.0f), y_anchor(0.0f), theta_anchor(0.0f)
+    : x(0.0f), y(0.0f), theta(0.0f)
+    , wheelBase(wheelBaseMm)
+    , imuOffset(0.0f), imuInit(false), headingBias(0.0f)
 {
-    for (int i = 0; i < 3; i++)
-        for (int j = 0; j < 3; j++)
-            P[i][j] = Q[i][j] = 0.0f;
-
-    P[0][0] = 1.0f;   P[1][1] = 1.0f;   P[2][2] = 1.0f;
-    Q[0][0] = 0.5f;   Q[1][1] = 0.5f;   Q[2][2] = 0.1f;
-    R = 0.5f;
 }
 
 // ─────────────────────────────────────────────────────────────────
-//  Predict  —  odometrie EKF
-//
-//  vLeft, vRight : wielsnelheden in mm/s  (positief = vooruit)
-//  dt            : tijdstap in seconden
-//
-//  Eenheden:
-//    v      [mm/s]
-//    omega  [rad/s]  = (vR - vL) [mm/s] / wheelBase [mm]  = rad/s  ✓
-//    x, y   [mm]     += v [mm/s] * cos/sin * dt [s]
-//    theta  [graden] += omega [rad/s] * RAD2DEG * dt [s]
+//  Update — heading van IMU, x/y dood-gerekend langs die heading
 // ─────────────────────────────────────────────────────────────────
-void Localisation::Predict(float vLeft, float vRight, float dt)
+void Localisation::Update(float vLeft, float vRight, float imuYawDeg, float dt)
 {
-    float v     = 0.5f * (vLeft + vRight);          // mm/s
-    float omega = (vRight - vLeft) / wheelBase;      // rad/s
+    // Eerste meting bepaalt het nulpunt van de IMU.
+    if (!imuInit) {
+        imuOffset = imuYawDeg;
+        imuInit   = true;
+    }
+
+    // Heading: rauwe IMU naar CCW kaart-frame + trage ICP-driftcorrectie.
+    theta = NormalizeDeg(IMU_SIGN * (imuYawDeg - imuOffset) + headingBias);
+
+    // Voorwaartse snelheid uit de wielen. Bij een draai op de plek is
+    // vLeft ≈ -vRight, dus v ≈ 0 en schuift de positie niet op — precies wat
+    // we willen: alleen de heading verandert, x/y blijven staan.
+    float v = 0.5f * (vLeft + vRight);   // mm/s
 
     float thetaRad = theta * DEG2RAD;
-    float c = std::cos(thetaRad);
-    float s = std::sin(thetaRad);
-
-    x     += v * c * dt;                             // mm
-    y     += v * s * dt;                             // mm
-    theta  = NormalizeDeg(theta + omega * RAD2DEG * dt);  // graden
-
-    // Jacobiaan F — ∂x/∂θ en ∂y/∂θ in mm/graad
-    float vdt = v * dt;
-    float F[3][3] = {
-        {1.0f, 0.0f, -vdt * s * DEG2RAD},
-        {0.0f, 1.0f,  vdt * c * DEG2RAD},
-        {0.0f, 0.0f,  1.0f             }
-    };
-
-    // P ← F·P·Fᵀ + Q
-    float Pnew[3][3] = {};
-    for (int i = 0; i < 3; i++)
-        for (int j = 0; j < 3; j++) {
-            for (int k = 0; k < 3; k++)
-                for (int l = 0; l < 3; l++)
-                    Pnew[i][j] += F[i][k] * P[k][l] * F[j][l];
-            Pnew[i][j] += Q[i][j];
-        }
-
-    for (int i = 0; i < 3; i++)
-        for (int j = 0; j < 3; j++)
-            P[i][j] = Pnew[i][j];
+    x += v * std::cos(thetaRad) * dt;    // mm
+    y += v * std::sin(thetaRad) * dt;    // mm
 }
 
 // ─────────────────────────────────────────────────────────────────
-//  UpdateIMU  —  EKF correctiestap op basis van IMU-yaw (graden)
+//  ApplyIcp — scan-matching correctie in het kaart-frame
 // ─────────────────────────────────────────────────────────────────
-void Localisation::UpdateIMU(float imuYawDeg, float /*dt*/)
+void Localisation::ApplyIcp(float dx, float dy, float dtheta)
 {
-    float innov = NormalizeDeg(imuYawDeg - theta);
-
-    float S = P[2][2] + R;
-    if (S < 1e-9f) return;
-
-    float Kx = P[0][2] / S;
-    float Ky = P[1][2] / S;
-    float Kt = P[2][2] / S;
-
-    x     += Kx * innov;
-    y     += Ky * innov;
-    theta  = NormalizeDeg(theta + Kt * innov);
-
-    P[0][2] -= Kx * P[2][2];
-    P[1][2] -= Ky * P[2][2];
-    P[2][2] *= (1.0f - Kt);
+    x += dx;
+    y += dy;
+    // dtheta corrigeert de gyro-drift. We schrijven het in de bias zodat de
+    // volgende Update (die theta absoluut uit de IMU zet) de correctie behoudt.
+    headingBias = NormalizeDeg(headingBias + dtheta);
+    theta       = NormalizeDeg(theta + dtheta);
 }
 
-float Localisation::GetX()     const { return x;     }   // mm
-float Localisation::GetY()     const { return y;     }   // mm
-float Localisation::GetTheta() const { return theta; }   // graden
-// ──────────────────────────────────────────────────────────────────
-//  ApplyIcpCorrection  —  pas ICP scan-matching correctie toe
-//
-//  De correctie wordt met een demping (ALPHA) gemengd zodat
-//  ruisige ICP-resultaten de EKF niet destabiliseren.
-// ──────────────────────────────────────────────────────────────────
-void Localisation::ApplyIcpCorrection(float dx, float dy, float dtheta)
+void Localisation::Reset(float x_, float y_)
 {
-    // ICP geeft de verplaatsing (dx, dy, dtheta) ten opzichte van de positie
-    // bij de vorige geslaagde scan (= het ankerpunt). We vervangen de
-    // odometrie-schatting volledig door anker + ICP-delta, voor ALLE drie
-    // toestandsvariabelen. Zo wordt odometrie-drift (ook in theta) volledig
-    // gecorrigeerd zonder dubbeltelling.
-    //
-    // Vroegere fout: x/y waren anchor-based maar theta was cumulatief
-    // (theta += dtheta). Omdat odometrie theta al bijwerkte met dezelfde
-    // rotatie die ICP ook rapporteerde, telde de rotatie dubbel op →
-    // de geschatte heading liep veel sneller weg dan de werkelijke.
-    x     = x_anchor     + dx;
-    y     = y_anchor     + dy;
-    theta = NormalizeDeg(theta_anchor + dtheta);
-
-    // Bewaar als nieuw anker voor de volgende ICP-match
-    x_anchor     = x;
-    y_anchor     = y;
-    theta_anchor = theta;
-
-    // Verklein onzekerheid licht als ICP slaagt
-    P[0][0] *= 0.8f;
-    P[1][1] *= 0.8f;
-    P[2][2] *= 0.8f;
-}
-
-void Localisation::SetIcpAnchor()
-{
-    // Synchroniseer het anker met de huidige odometriepositie.
-    // Aanroepen wanneer ICP mislukt zodat het volgende geslaagde ICP
-    // weet waar de robot volgens odometrie stond bij de vorige scan.
-    x_anchor     = x;
-    y_anchor     = y;
-    theta_anchor = theta;
+    x = x_;
+    y = y_;
 }
