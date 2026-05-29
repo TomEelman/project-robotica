@@ -83,15 +83,23 @@ void Localisation::Predict(float vLeft, float vRight, float dt)
     float dy_enc    = v * s * dt;
     float dtheta_enc = omegaDeg * dt;
 
-    x += dx_enc;
-    y += dy_enc;
+    // Positie alleen bijwerken bij lineaire beweging. Bij een pure turn
+    // (linear ≈ 0, vLeft ≈ -vRight) is v ≈ 0 en is de werkelijke
+    // verplaatsing verwaarloosbaar klein op de kaart — die ruis weghouden.
+    constexpr float LIN_DEAD_MM_S = 5.0f;
+    if (std::fabs(v) > LIN_DEAD_MM_S) {
+        x += dx_enc;
+        y += dy_enc;
+    }
     // theta NIET bijwerken uit de encoders: heading komt volledig van de IMU
     // (zie UpdateIMU). Encoder-rotatie (dtheta_enc) is onbetrouwbaar door
     // wielasymmetrie/slip. We tonen dtheta_enc alleen nog ter info in de log.
 
     // ── Afstandstellers ────────────────────────────────────────────
     float encoderDist = std::fabs(v * dt);
-    float locDist     = std::hypot(x - prevX, y - prevY);
+    float locDist     = (std::fabs(v) > LIN_DEAD_MM_S)
+                        ? std::hypot(x - prevX, y - prevY)
+                        : 0.0f;
     totalEncDist += encoderDist;
     totalLocDist += locDist;
 
@@ -248,4 +256,3 @@ void Localisation::ResetDistanceCounters()
     totalLocDist = 0.0f;
     printf("[LOC] afstandstellers gereset\n");
 }
-//test
