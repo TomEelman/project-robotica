@@ -46,6 +46,7 @@ public:
     bool  IsFree    (int cellX, int cellY) const;
     bool  IsUnknown (int cellX, int cellY) const;
     float GetCoveragePercent() const;
+    void  GetRoomCoverage(float& outerWallPct, float& interiorPct, float& relCoveragePct) const;
 
     // ── Coördinaten conversie ─────────────────────────────────
     void WorldToCell(float wx, float wy, int& cx, int& cy) const;
