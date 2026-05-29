@@ -739,6 +739,11 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
     float lastRanges[360] = {};
     bool  heeftRanges     = false;
 
+    // Encoder-seeding voor ICP: onthoud de EKF-positie bij de vorige scan,
+    // zodat we de odometrie-verplaatsing als initiële gok aan Match() geven.
+    float lastScanX      = 0.0f, lastScanY = 0.0f;
+    bool  hasLastScanPos = false;
+
     CommandKeepAlive ka(uart);
 
     usleep(1200000);
@@ -823,12 +828,30 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
                     if (beweegt) {
                         Position pos(loc.GetX(), loc.GetY(), huidigeImuYaw);
 
-                        IcpResult icp = scanMatcher.Match(lastRanges, huidigeImuYaw);
+                        // Encoder-seeding: geef ICP de odometrie-verplaatsing
+                        // sinds de vorige scan als startgok mee. Zonder die gok
+                        // "glijdt" ICP langs rechte muren (aperture-probleem) en
+                        // mapt hij de voorwaartse beweging weg → uitgesmeerde kaart.
+                        float encDx = 0.0f, encDy = 0.0f;
+                        if (hasLastScanPos) {
+                            encDx = loc.GetX() - lastScanX;
+                            encDy = loc.GetY() - lastScanY;
+                        }
+
+                        IcpResult icp = scanMatcher.Match(lastRanges, huidigeImuYaw, encDx, encDy);
                         if (icp.valid) {
                             loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
                             huidigeImuYaw = NormDeg(huidigeImuYaw + icp.dtheta);
                             pos = Position(loc.GetX(), loc.GetY(), huidigeImuYaw);
+                        } else {
+                            // ICP onbetrouwbaar: synchroniseer het anker met de
+                            // odometriepositie zodat de volgende match niet terugspringt.
+                            loc.SetIcpAnchor();
                         }
+
+                        lastScanX      = loc.GetX();
+                        lastScanY      = loc.GetY();
+                        hasLastScanPos = true;
 
                         mapper.UpdateMotionCorrected(lastRanges, angles, 360, pos, omegaDegS, scanDuurSec);
                         ++scanCount;
