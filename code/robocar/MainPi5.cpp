@@ -13,12 +13,10 @@
 #include <iostream>
 #include <limits>
 #include <string>
+#include <sstream>
 #include <vector>
 #include <unistd.h>
 #include <termios.h>
-
-// Zet op 1 om de LIDAR-kaart + debug-printf's te tonen, 0 om ze te verbergen
-#define DEBUG_PRINT 0
 
 std::atomic<bool> running{true};
 static Pi5UARTHandler* g_uart = nullptr;
@@ -87,9 +85,9 @@ static bool HandleObstacleAvoidance(const ScanAnalysis& scan, Localisation& loc,
 
 static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position pos, bool nieuweScan,
     int& scansSindsHerplan, int& mislukteTeller, HoofdModus& hoofdModus, bool& heeftPad,
-    float /*ontsnapX*/, float /*ontsnapY*/, CommandKeepAlive& ka, PathPlanner& planner,
-    std::vector<BlacklistItem>& frontierBlacklist, int HERPLAN_SCANS, int /*MIN_DEKKING_PCT*/,
-    int MISLUKT_DREMPEL, float /*ONTSNAP_RADIUS*/, const float* lastRanges,
+    float ontsnapX, float ontsnapY, CommandKeepAlive& ka, PathPlanner& planner,
+    std::vector<BlacklistItem>& frontierBlacklist, int HERPLAN_SCANS, int MIN_DEKKING_PCT,
+    int MISLUKT_DREMPEL, float ONTSNAP_RADIUS, const float* lastRanges,
     float minFront);
 
 static void HandleReturnToHome(Navigator& navigator, Mapper& mapper, Position pos, Position beginPunt,
@@ -125,8 +123,9 @@ static bool HandleObstacleAvoidance(const ScanAnalysis& scan, Localisation& loc,
                 ontwijkFase = OntwijkFase::ACHTERUIT;
                 ka.SetCommand(-LIN_SPEED * 0.6f, 0.0f);
             } else {
-                draaiRichting = -draaiRichting;
-                doelHoek = NormDeg(loc.GetTheta() - draaiRichting * 90.0f);
+                // Kies kant met meeste ruimte i.p.v. blind omdraaien
+                draaiRichting = (scan.spaceLeft > scan.spaceRight) ? -1.0f : 1.0f;
+                doelHoek = NormDeg(loc.GetTheta() + draaiRichting * 75.0f);
                 ontwijkFase = OntwijkFase::DRAAIEN;
                 ka.SetCommand(0.0f, draaiRichting * 40.0f);
             }
@@ -139,9 +138,28 @@ static bool HandleObstacleAvoidance(const ScanAnalysis& scan, Localisation& loc,
         }
     } else if (ontwijkFase == OntwijkFase::ACHTERUIT) {
         if (scan.minRear < 300.0f || --achteruitTicks <= 0) {
-            float bh = 0.0f;
-            doelHoek = NormDeg(loc.GetTheta() + bh);
-            draaiRichting = (bh >= 0.0f ? 1.0f : -1.0f);
+            // Kies draairichting op basis van beschikbare ruimte.
+            // scan.spaceLeft / spaceRight = vrije ruimte links/rechts (mm).
+            // Draai naar de kant met de meeste ruimte — niet altijd dezelfde kant.
+            // Dit lost het probleem op waarbij het casterwiel de robot terugdraait
+            // naar het obstakel: we kiezen expliciet de open kant.
+            if (scan.spaceLeft > scan.spaceRight) {
+                draaiRichting = -1.0f; // linksom = negatieve ang
+            } else {
+                draaiRichting =  1.0f; // rechtsom = positieve ang
+            }
+
+            // Draai altijd minimaal 60° weg van het obstakel.
+            // Bij escalatie verder draaien (90°, 120°) zodat hij echt vrij komt.
+            float draaiHoek = 60.0f + std::min(achteruitEscalatie * 30.0f, 60.0f);
+            doelHoek = NormDeg(loc.GetTheta() + draaiRichting * draaiHoek);
+
+            printf("[ONTW] achteruit klaar -> draai %.0f° naar %s (spaceL=%.0f spaceR=%.0f)
+",
+                draaiHoek,
+                draaiRichting < 0 ? "links" : "rechts",
+                scan.spaceLeft, scan.spaceRight);
+
             ontwijkFase = OntwijkFase::DRAAIEN;
             ka.SetCommand(0.0f, draaiRichting * 40.0f);
             ontsnapX = loc.GetX(); ontsnapY = loc.GetY();
@@ -157,9 +175,9 @@ static bool HandleObstacleAvoidance(const ScanAnalysis& scan, Localisation& loc,
 
 static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position pos, bool nieuweScan,
     int& scansSindsHerplan, int& mislukteTeller, HoofdModus& hoofdModus, bool& heeftPad,
-    float /*ontsnapX*/, float /*ontsnapY*/, CommandKeepAlive& ka, PathPlanner& planner,
-    std::vector<BlacklistItem>& frontierBlacklist, int HERPLAN_SCANS, int /*MIN_DEKKING_PCT*/,
-    int MISLUKT_DREMPEL, float /*ONTSNAP_RADIUS*/, const float* lastRanges,
+    float ontsnapX, float ontsnapY, CommandKeepAlive& ka, PathPlanner& planner,
+    std::vector<BlacklistItem>& frontierBlacklist, int HERPLAN_SCANS, int MIN_DEKKING_PCT,
+    int MISLUKT_DREMPEL, float ONTSNAP_RADIUS, const float* lastRanges,
     float minFront) {
 
     // Muurvolger-check verwijderd: robot schakelt niet meer automatisch
@@ -173,9 +191,7 @@ static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position po
 
         // Replan als de Navigator klem zat en een herstelactie uitvoerde
         if (navigator.IsBlocked()) {
-#if DEBUG_PRINT
             printf("[MAIN] Navigator blocked -> replan\n");
-#endif
             Position bt = navigator.GetCurrentTarget();
             VoegToeAanBlacklist(frontierBlacklist, bt.GetX(), bt.GetY());
             navigator.ResetBlock();
@@ -184,9 +200,7 @@ static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position po
         }
 
         if (navigator.IsBlocked()) {
-#if DEBUG_PRINT
             printf("[MAIN] Navigator blocked -> wacht op stabiele lokalisatie\n");
-#endif
             Position bt = navigator.GetCurrentTarget();
             VoegToeAanBlacklist(frontierBlacklist, bt.GetX(), bt.GetY());
             navigator.ResetBlock();
@@ -202,36 +216,14 @@ static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position po
         }
         if (nieuweScan) {
             scansSindsHerplan = 0;
+            int dekking = mapper.GetCoverage();
+            printf("[MAIN] FRONTIER dekking=%d%% mislukt=%d\n", dekking, mislukteTeller);
 
-            // ── Kamer-dekkingscheck ───────────────────────────────────
-            // outerWallPct   : % van de buitenste rand (5-cel-band) dat
-            //                  als muur geclassificeerd is → muren rondom gevonden.
-            // interiorPct    : % bekende cellen BINNEN die rand → interieur gemapt.
-            // relCoveragePct : % van de bounding box dat bekend is (eerlijk getal,
-            //                  vervangt de gebroken GetCoverage() die door het
-            //                  hele grid deelt en zo veel te laag uitkomt).
-            constexpr float OUTER_WALL_MIN  = 25.0f;  // % buitenste rand = muur
-            constexpr float INTERIOR_MIN    = 80.0f;  // % interieur bekend
-            float outerWallPct, interiorPct, relCoveragePct;
-            mapper.GetRoomCoverage(outerWallPct, interiorPct, relCoveragePct);
-
-            bool kaartKlaar = (outerWallPct  >= OUTER_WALL_MIN &&
-                               interiorPct   >= INTERIOR_MIN);
-
-#if DEBUG_PRINT
-            printf("[MAIN] FRONTIER rand=%.0f%% int=%.0f%% rel=%.0f%% mislukt=%d%s\n",
-                   outerWallPct, interiorPct, relCoveragePct, mislukteTeller,
-                   kaartKlaar ? " *** KAART KLAAR ***" : "");
-#endif
-
-            if (kaartKlaar || mislukteTeller >= MISLUKT_DREMPEL) {
+            if (dekking >= MIN_DEKKING_PCT || mislukteTeller >= MISLUKT_DREMPEL) {
                 hoofdModus = HoofdModus::TERUG_HOME;
                 heeftPad = false;
                 mislukteTeller = 0;
-#if DEBUG_PRINT
-                printf("[MAIN] Kaart gemapped (rand=%.0f%% int=%.0f%%) -> TERUG_HOME\n",
-                       outerWallPct, interiorPct);
-#endif
+                printf("[MAIN] Klaar (%d%%) -> TERUG_HOME\n", dekking);
                 Path pad = planner.PlanPath(pos, Position(0.0f, 0.0f, 0.0f), mapper.GetMap());
                 if (!pad.IsEmpty()) { navigator.SetPath(pad); mapper.SetWaypoints(pad); heeftPad = true; }
             } else {
@@ -270,7 +262,7 @@ static void HandleReturnToHome(Navigator& navigator, Mapper& mapper, Position po
     if (std::hypot(dx, dy) < HOME_DREMPEL_MM) {
         ka.Stop();
         mapper.SaveDebugMap("kaart.pgm");
-        printf("[MAIN] Kaart gemapped!\n");
+        printf("[MAIN] Thuis aangekomen!\n");
         hoofdModus = HoofdModus::KLAAR;
         running = false;
         return;
@@ -283,7 +275,7 @@ static void HandleReturnToHome(Navigator& navigator, Mapper& mapper, Position po
                 mapper.SetWaypoints(pad);
                 heeftPad = true;
             } else {
-                float hoek = static_cast<float>(std::atan2(-dy, -dx)) * (180.0f / static_cast<float>(M_PI));
+                float hoek = static_cast<float>(std::atan2(-dy, -dx)) * (180.0f / M_PI);
                 ka.SetCommand(200.0f, NormDeg(hoek - pos.GetTheta()) * 0.5f);
             }
         }
@@ -293,38 +285,6 @@ static void HandleReturnToHome(Navigator& navigator, Mapper& mapper, Position po
             ka.SetCommand(cmd.GetLinVelocity(), cmd.GetAngVelocity());
         }
     }
-}
-
-// ─────────────────────────────────────────────────────────────────
-// EncoderMetTeken — corrigeert altijd-positieve encoder-waarden
-//
-// De Pico-encoders geven de rijsnelheid als absolute waarde (magnitude),
-// ongeacht de rijrichting. Deze functie bepaalt het teken van elk wiel
-// op basis van het laatste gestuurde commando.
-//
-// Formule zelfde als Drive.cpp ExecuteLinear:
-//   vLeft_cmd  = lin + omega_rad * wheelbase/2
-//   vRight_cmd = lin - omega_rad * wheelbase/2
-//
-// Het teken van vLeft_cmd / vRight_cmd geeft de rijrichting van elk wiel.
-// Bij transitie (ramp loopt nog) kan het teken 1 tick te vroeg omslaan,
-// maar dat is verwaarloosbaar t.o.v. de permanente drift bij geen fix.
-// ─────────────────────────────────────────────────────────────────
-static void EncoderMetTeken(float cmdLin, float cmdAng,
-                             float& vLeft, float& vRight)
-{
-    constexpr float HALF_BASE = 219.0f / 2.0f;                     // 109.5 mm
-    constexpr float DEG2RAD   = static_cast<float>(M_PI) / 180.0f;
-
-    float omegaRad  = cmdAng * DEG2RAD;
-    float cmdVLeft  = cmdLin + omegaRad * HALF_BASE;   // positief = vooruit
-    float cmdVRight = cmdLin - omegaRad * HALF_BASE;
-
-    float signLeft  = (cmdVLeft  >= 0.0f) ? 1.0f : -1.0f;
-    float signRight = (cmdVRight >= 0.0f) ? 1.0f : -1.0f;
-
-    vLeft  = signLeft  * std::fabs(vLeft);
-    vRight = signRight * std::fabs(vRight);
 }
 
 static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
@@ -378,8 +338,6 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
     CommandKeepAlive ka(uart);
     ScanMatcher      scanMatcher;  // ICP scan-to-scan matching
 
-    float linSpeed       = 0.0f;  // gemiddelde lineaire snelheid voor ICP-check
-
     // Encoder-seeding voor ICP: onthoud EKF-positie bij de vorige scan zodat
     // we de geschatte verplaatsing als initiële gok aan Match() kunnen meegeven.
     float lastScanX      = 0.0f, lastScanY = 0.0f;
@@ -407,25 +365,13 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
     while (running) {
         auto tStart = std::chrono::steady_clock::now();
 
-        bool versData = uart.LeesData();   // true = nieuw Pico-pakket ontvangen
+        uart.LeesData();
         SensorData sens = uart.GetSensorData();
         if (sens.geldig) {
             if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
-
-            // Teken herstellen voor beide wielen (encoders zijn altijd positief).
-            float vL = sens.speedLinks, vR = sens.speedRechts;
-            EncoderMetTeken(ka.GetLin(), ka.GetAng(), vL, vR);
-
-            // omegaDegS op basis van gecorrigeerde snelheden (voor mapper).
-            omegaDegS = (vR - vL) / 219.0f * (180.0f / static_cast<float>(M_PI));
-            linSpeed  = 0.5f * (vL + vR);  // bijhouden voor ICP-draai-check
-
-            // Predict/UpdateIMU ALLEEN op vers pakket — voorkomt stale-data drift.
-            if (versData) {
-                loc.Predict(vL, vR, DT);
-                loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
-            }
-
+            omegaDegS = (sens.speedRechts - sens.speedLinks) / 235.0f * (180.0f / M_PI);
+            loc.Predict(sens.speedLinks, sens.speedRechts, DT);
+            loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
             huidigeImuYaw = sens.yawGraden - imuOffset;
 
             if (!beginPuntVergrendeld) {
@@ -434,7 +380,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
             }
         }
 
-        Position pos(loc.GetX(), loc.GetY(), loc.GetTheta()); // BUG4 FIX: EKF-theta
+        Position pos(loc.GetX(), loc.GetY(), huidigeImuYaw);
 
         bool nieuweScan = false;
         if (lidar.Update()) {
@@ -454,14 +400,14 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
             }
             IcpResult icp = scanMatcher.Match(lastRanges, huidigeImuYaw,
                                               encDx, encDy);
-            // ICP overslaan tijdens draaien: de roterende puntenwolk geeft
-            // willekeurige translaties terug die de positie laten springen.
-            constexpr float ICP_LIN_MIN = 20.0f;
-            if (std::fabs(linSpeed) > ICP_LIN_MIN && icp.valid) {
+            if (icp.valid) {
                 loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
-                // BUG3 FIX: huidigeImuYaw NIET optellen met icp.dtheta
-                pos = Position(loc.GetX(), loc.GetY(), loc.GetTheta()); // BUG4 FIX
+                huidigeImuYaw = NormDeg(huidigeImuYaw + icp.dtheta);
+                pos = Position(loc.GetX(), loc.GetY(), huidigeImuYaw);
             } else {
+                // ICP mislukt: synchroniseer het ankerpunt met de huidige
+                // odometriepositie zodat de volgende geslaagde ICP-match
+                // weet waar de robot nu staat.
                 loc.SetIcpAnchor();
             }
 
@@ -563,8 +509,6 @@ static int RunRijdenEnMappenwf(Pi5UARTHandler& uart, LIDAR& lidar) {
     CommandKeepAlive ka(uart);
     ScanMatcher      scanMatcher;  // ICP scan-to-scan matching
 
-    float linSpeed       = 0.0f;  // gemiddelde lineaire snelheid voor ICP-check
-
     // Encoder-seeding voor ICP: onthoud EKF-positie bij de vorige scan zodat
     // we de geschatte verplaatsing als initiele gok aan Match() kunnen meegeven.
     float lastScanX      = 0.0f, lastScanY = 0.0f;
@@ -592,39 +536,28 @@ static int RunRijdenEnMappenwf(Pi5UARTHandler& uart, LIDAR& lidar) {
     while (running) {
         auto tStart = std::chrono::steady_clock::now();
 
-        bool versData = uart.LeesData();   // true = nieuw Pico-pakket ontvangen
+        uart.LeesData();
         SensorData sens = uart.GetSensorData();
-        if (sens.geldig) {
-            if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
+if (sens.geldig) {
+    if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
+    omegaDegS = (sens.speedRechts - sens.speedLinks) / 219.0f * (180.0f / M_PI);
 
-            // Teken herstellen voor beide wielen (encoders zijn altijd positief).
-            float vL = sens.speedLinks, vR = sens.speedRechts;
-            EncoderMetTeken(ka.GetLin(), ka.GetAng(), vL, vR);
+    bool beweegt = (sens.speedLinks != 0.0f || sens.speedRechts != 0.0f);
 
-            // omegaDegS op basis van gecorrigeerde snelheden (voor mapper).
-            omegaDegS = (vR - vL) / 219.0f * (180.0f / static_cast<float>(M_PI));
-            linSpeed  = 0.5f * (vL + vR);  // bijhouden voor ICP-draai-check
+    if (beweegt) {
+        loc.Predict(sens.speedLinks, sens.speedRechts, DT);
+        loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
+    }
 
-            bool beweegt = (sens.speedLinks != 0.0f || sens.speedRechts != 0.0f);
+    huidigeImuYaw = sens.yawGraden - imuOffset;
 
-            // Predict/UpdateIMU ALLEEN aanroepen als er een vers pakket is én de
-            // robot beweegt. Zonder versData-check zou dezelfde snelheid opnieuw
-            // geïntegreerd worden (stale-data drift).
-            if (versData && beweegt) {
-                loc.Predict(vL, vR, DT);
-                loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
-            }
+    // Debug
+    printf("[LOC] x=%.1f y=%.1f theta=%.2f | vL=%.1f vR=%.1f beweegt=%d\n",
+        loc.GetX(), loc.GetY(), loc.GetTheta(),
+        sens.speedLinks, sens.speedRechts, (int)beweegt);
+}
 
-            huidigeImuYaw = sens.yawGraden - imuOffset;
-
-            if (!versData && beweegt) {
-#if DEBUG_PRINT
-                printf("[UART] geen vers pakket deze tick — Predict overgeslagen\n");
-#endif
-            }
-        }
-
-        Position pos(loc.GetX(), loc.GetY(), loc.GetTheta()); // BUG4 FIX
+        Position pos(loc.GetX(), loc.GetY(), huidigeImuYaw);
 
         if (lidar.Update()) {
             float angles[360];
@@ -643,11 +576,10 @@ static int RunRijdenEnMappenwf(Pi5UARTHandler& uart, LIDAR& lidar) {
             }
             IcpResult icp = scanMatcher.Match(lastRanges, huidigeImuYaw,
                                               encDx, encDy);
-            constexpr float ICP_LIN_MIN = 20.0f;
-            if (std::fabs(linSpeed) > ICP_LIN_MIN && icp.valid) {
+            if (icp.valid) {
                 loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
-                // BUG3 FIX: huidigeImuYaw niet optellen met icp.dtheta
-                pos = Position(loc.GetX(), loc.GetY(), loc.GetTheta()); // BUG4 FIX
+                huidigeImuYaw = NormDeg(huidigeImuYaw + icp.dtheta);
+                pos = Position(loc.GetX(), loc.GetY(), huidigeImuYaw);
             } else {
                 loc.SetIcpAnchor();
             }
@@ -684,13 +616,14 @@ static int RunRijdenEnMappenwf(Pi5UARTHandler& uart, LIDAR& lidar) {
 // RunMappen
 // ─────────────────────────────────────────────────────────────────
 static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
-    Localisation loc(219.0f); // BUG2 FIX: consistent 219mm
+    Localisation loc(235.0f);
     Mapper mapper(5000, 500, 0.03f);
     constexpr float DT = 0.1f, LOOP_US = 100000;
     int scanCount = 0;
 
     float imuOffset  = 0.0f;
     bool  imuGenulld = false;
+    float huidigeImuYaw = 0.0f;
 
     usleep(1200000);
 
@@ -703,6 +636,7 @@ static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
             if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
             loc.Predict(sens.speedLinks, sens.speedRechts, DT);
             loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
+            huidigeImuYaw = sens.yawGraden - imuOffset;
         }
 
         if (!lidar.Update()) { usleep(200000); continue; }
@@ -713,13 +647,11 @@ static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
             angles[a] = static_cast<float>(a);
         }
 
-        Position pos(loc.GetX(), loc.GetY(), loc.GetTheta()); // BUG4 FIX
+        Position pos(loc.GetX(), loc.GetY(), huidigeImuYaw);
         mapper.Update(ranges, angles, 360, pos);
         ++scanCount;
 
-#if DEBUG_PRINT
         mapper.PrintMap(loc.GetX(), loc.GetY(), scanCount, mapper.GetCoverage());
-#endif
 
         auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - tStart).count();
@@ -733,42 +665,82 @@ static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Terminal helpers — raw mode voor directe toetsdetectie
-// ─────────────────────────────────────────────────────────────────
-
-// Schakelt stdin in raw mode (geen Enter nodig) of terug naar normaal.
-// Bewaart de originele termios de eerste keer zodat we altijd netjes
-// kunnen herstellen, ook na meerdere aan/uit-cycli.
-static void SetTerminalRaw(bool raw) {
-    static struct termios orig;
-    static bool saved = false;
-    if (!saved) { tcgetattr(STDIN_FILENO, &orig); saved = true; }
-    if (raw) {
-        struct termios t = orig;
-        t.c_lflag &= ~(ICANON | ECHO);
-        t.c_cc[VMIN]  = 0;   // niet-blokkerend lezen
-        t.c_cc[VTIME] = 0;
-        tcsetattr(STDIN_FILENO, TCSANOW, &t);
-    } else {
-        tcsetattr(STDIN_FILENO, TCSANOW, &orig);
-        tcflush(STDIN_FILENO, TCIFLUSH);  // gooi eventuele raw-invoer weg
-    }
-}
-
-// Leest één toets zonder te blokkeren. Geeft de char-waarde terug of -1.
-static int PollKey() {
-    char c;
-    return (read(STDIN_FILENO, &c, 1) == 1) ? static_cast<int>((unsigned char)c) : -1;
-}
-
-// ─────────────────────────────────────────────────────────────────
-// RunPicoCommunicatie — interactief rijden + live mappen
+// RunPicoCommunicatie — commando-reeks afspelen + live mappen
 //
-// Type een commando + Enter → robot rijdt tot je SPATIE drukt.
-// SPATIE = nieuw commando invoeren.
-// q (tijdens rijden, zonder Enter) of q + Enter (bij prompt) = stoppen
-// en terug naar het hoofdmenu.
+// In plaats van een afstandsbestuurbare auto type je vooraf een reeks
+// commando's in (komma-gescheiden). De robot speelt ze één voor één af
+// en bouwt ondertussen de kaart op — maar alleen terwijl hij beweegt,
+// zodat stilstand-drift de kaart niet vervuilt.
+//
+// Commando's (optioneel ":seconden" voor de duur, standaard 2s):
+//   vooruit    lin  278  ang   0
+//   achteruit  lin -278  ang   0
+//   links      lin    0  ang -40   (bocht op zijn plaats, linksom)
+//   rechts     lin    0  ang  40   (bocht op zijn plaats, rechtsom)
+//   bochtl     lin   10  ang -40   (al rijdend een bocht naar links)
+//   bochtr     lin   10  ang  40   (al rijdend een bocht naar rechts)
+//   stop       lin    0  ang   0
+//
+// Voorbeeld:  vooruit:3, bochtr:2, vooruit, achteruit:1
+// Lege regel of 'q' = stoppen en kaart opslaan.
 // ─────────────────────────────────────────────────────────────────
+// RijCommando — één afspeelbaar rijcommando (OOP: data + gedrag bij elkaar).
+class RijCommando {
+public:
+    RijCommando(std::string naam, float lin, float ang, float duurSec)
+        : naam_(naam), lin_(lin), ang_(ang), duurSec_(duurSec) {}
+
+    const std::string& Naam() const { return naam_; }
+    float Lin()     const { return lin_; }
+    float Ang()     const { return ang_; }
+    float DuurSec() const { return duurSec_; }
+
+    // True als dit commando de robot laat bewegen (anders puur stilstand).
+    bool IsBeweging() const { return lin_ != 0.0f || ang_ != 0.0f; }
+
+private:
+    std::string naam_;
+    float       lin_;
+    float       ang_;
+    float       duurSec_;
+};
+
+// Zet een ingetypte reeks ("vooruit:3, bochtr, stop") om naar commando's.
+// Onbekende tokens worden overgeslagen met een waarschuwing.
+static std::vector<RijCommando> ParseCommandoReeks(const std::string& invoer) {
+    std::vector<RijCommando> reeks;
+    std::stringstream ss(invoer);
+    std::string token;
+
+    while (std::getline(ss, token, ',')) {
+        // Spaties rond het token wegknippen.
+        size_t b = token.find_first_not_of(" \t");
+        if (b == std::string::npos) continue;            // leeg token
+        size_t e = token.find_last_not_of(" \t");
+        token = token.substr(b, e - b + 1);
+
+        // Optioneel ":duur" achtervoegsel afsplitsen (anders 2s).
+        float       duurSec = 2.0f;
+        std::string naam    = token;
+        size_t      dp      = token.find(':');
+        if (dp != std::string::npos) {
+            naam = token.substr(0, dp);
+            try { duurSec = std::stof(token.substr(dp + 1)); }
+            catch (...) { printf("[PICO] Ongeldige duur in '%s' - 2.0s gebruikt\n", token.c_str()); }
+        }
+
+        if      (naam == "vooruit")   reeks.push_back(RijCommando(naam,  278.0f,   0.0f, duurSec));
+        else if (naam == "achteruit") reeks.push_back(RijCommando(naam, -278.0f,   0.0f, duurSec));
+        else if (naam == "links")     reeks.push_back(RijCommando(naam,    0.0f, -40.0f, duurSec));
+        else if (naam == "rechts")    reeks.push_back(RijCommando(naam,    0.0f,  40.0f, duurSec));
+        else if (naam == "bochtl")    reeks.push_back(RijCommando(naam,   10.0f, -40.0f, duurSec));
+        else if (naam == "bochtr")    reeks.push_back(RijCommando(naam,   10.0f,  40.0f, duurSec));
+        else if (naam == "stop")      reeks.push_back(RijCommando(naam,    0.0f,   0.0f, duurSec));
+        else printf("[PICO] Onbekend commando '%s' - overgeslagen\n", naam.c_str());
+    }
+    return reeks;
+}
+
 static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
     constexpr float DT          = 0.1f;
     constexpr long  LOOP_US     = 100000;
@@ -799,6 +771,7 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
     tcflush(uart.GetFd(), TCIFLUSH);
     for (int i = 0; i < 15; ++i) { uart.LeesData(); usleep(10000); }
 
+    // Wacht op eerste LIDAR-scan
     while (!heeftRanges && running) {
         if (lidar.Update()) {
             for (int a = 0; a < 360; ++a) lastRanges[a] = lidar.GetDistance(a).distance;
@@ -808,134 +781,118 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
 
     ka.Start();
 
-    printf("\n[PICO] Interactieve rijmodus\n");
-    printf("  Commando's: vooruit  achteruit  links  rechts  bochtl  bochtr  stop\n");
-    printf("  SPATIE = nieuw commando invoeren  |  q = stoppen en terug naar menu\n\n");
+    printf("\n[PICO] Commando-modus actief\n");
+    printf("  Type een reeks, bv:  vooruit:3, bochtr:2, vooruit, achteruit:1\n");
+    printf("  Commando's: vooruit achteruit links rechts bochtl bochtr stop\n");
+    printf("  Lege regel of 'q' = stoppen en kaart opslaan.\n");
 
-    bool stopGevraagd = false;
-
-    while (running && !stopGevraagd) {
-        // ── Invoerfase: normale terminal, wacht op Enter ────────────────────
-        SetTerminalRaw(false);
+    while (running) {
+        // Robot stilzetten terwijl we op invoer wachten.
         ka.SetCommand(0.0f, 0.0f);
 
-        printf("commando> ");
+        printf("\nreeks> ");
         fflush(stdout);
 
-        std::string invoer;
-        if (!std::getline(std::cin, invoer)) break;
+        std::string regel;
+        if (!std::getline(std::cin, regel)) break;                            // EOF
+        if (regel.find_first_not_of(" \t\r\n") == std::string::npos) break;   // lege regel
+        if (regel == "q" || regel == "Q") break;
 
-        // Isoleer eerste token (naam van het commando)
-        size_t b = invoer.find_first_not_of(" \t");
-        if (b == std::string::npos) continue;
-        size_t e = invoer.find_first_of(" \t", b);
-        std::string naam = invoer.substr(b, e == std::string::npos ? e : e - b);
-
-        if (naam == "q" || naam == "Q") break;
-
-        float rijLin, rijAng;
-        if      (naam == "vooruit")   { rijLin =  278.0f; rijAng =   0.0f; }
-        else if (naam == "achteruit") { rijLin = -278.0f; rijAng =   0.0f; }
-        else if (naam == "links")     { rijLin =    0.0f; rijAng = -40.0f; }
-        else if (naam == "rechts")    { rijLin =    0.0f; rijAng =  40.0f; }
-        else if (naam == "bochtl")    { rijLin =   10.0f; rijAng = -40.0f; }
-        else if (naam == "bochtr")    { rijLin =   10.0f; rijAng =  40.0f; }
-        else if (naam == "stop")      { rijLin =    0.0f; rijAng =   0.0f; }
-        else {
-            printf("[PICO] Onbekend commando '%s'\n", naam.c_str());
+        std::vector<RijCommando> reeks = ParseCommandoReeks(regel);
+        if (reeks.empty()) {
+            printf("[PICO] Geen geldige commando's herkend.\n");
             continue;
         }
 
-        printf("  → %s  (lin=%.0f ang=%.0f)  |  SPATIE = ander commando  |  q = stoppen\n",
-               naam.c_str(), rijLin, rijAng);
+        // Speel de reeks één commando per keer af.
+        for (size_t c = 0; c < reeks.size() && running; ++c) {
+            const RijCommando& cmd = reeks[c];
 
-        ka.SetCommand(rijLin, rijAng);
+            int ticks = static_cast<int>(cmd.DuurSec() / DT);
+            if (ticks < 1) ticks = 1;
 
-        // ── Rijfase: sensor/mapping loop + wacht op SPATIE of q ────────────
-        SetTerminalRaw(true);
+            printf("[PICO] %s  lin=%.0f ang=%.0f  %.1fs %s\n",
+                   cmd.Naam().c_str(), cmd.Lin(), cmd.Ang(), cmd.DuurSec(),
+                   cmd.IsBeweging() ? "(rijdt + mapt)" : "(stilstand)");
 
-        while (running && !stopGevraagd) {
-            auto tStart = std::chrono::steady_clock::now();
+            ka.SetCommand(cmd.Lin(), cmd.Ang());
 
-            // Sensor + lokalisatie (alleen bijwerken tijdens beweging)
-            uart.LeesData();
-            SensorData sens = uart.GetSensorData();
-            bool  beweegt      = false;
-            float linSpeedPico = 0.0f;  // voor ICP-draai-check
-            if (sens.geldig) {
-                if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
+            for (int t = 0; t < ticks && running; ++t) {
+                auto tStart = std::chrono::steady_clock::now();
 
-                // Teken herstellen voor beide wielen (encoders zijn altijd positief).
-                float vL = sens.speedLinks, vR = sens.speedRechts;
-                EncoderMetTeken(ka.GetLin(), ka.GetAng(), vL, vR);
-
-                // omegaDegS op basis van gecorrigeerde snelheden (voor mapper).
-                omegaDegS      = (vR - vL) / 219.0f * (180.0f / static_cast<float>(M_PI));
-                linSpeedPico   = 0.5f * (vL + vR);
-
-                beweegt = (sens.speedLinks != 0.0f || sens.speedRechts != 0.0f);
-                if (beweegt) {
-                    loc.Predict(vL, vR, DT);
-                    loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
-                }
-                huidigeImuYaw = sens.yawGraden - imuOffset;
-            }
-
-            // LIDAR + mapping (alleen tijdens beweging)
-            if (lidar.Update()) {
-                float angles[360];
-                for (int a = 0; a < 360; ++a) {
-                    lastRanges[a] = lidar.GetDistance(a).distance;
-                    angles[a]     = static_cast<float>(a);
-                }
-                if (beweegt) {
-                    Position pos(loc.GetX(), loc.GetY(), loc.GetTheta()); // Bug4: EKF-theta
-                    float encDx = 0.0f, encDy = 0.0f;
-                    if (hasLastScanPos) {
-                        encDx = loc.GetX() - lastScanX;
-                        encDy = loc.GetY() - lastScanY;
+                // Sensordata + lokalisatie: alleen bijwerken als de robot
+                // daadwerkelijk beweegt (stilstand-drift vervuilt anders alles).
+                uart.LeesData();
+                SensorData sens = uart.GetSensorData();
+                bool beweegt = false;
+                if (sens.geldig) {
+                    if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
+                    omegaDegS = (sens.speedRechts - sens.speedLinks) / 219.0f * (180.0f / M_PI);
+                    beweegt = (sens.speedLinks != 0.0f || sens.speedRechts != 0.0f);
+                    if (beweegt) {
+                        loc.Predict(sens.speedLinks, sens.speedRechts, DT);
+                        loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
                     }
-                    IcpResult icp = scanMatcher.Match(lastRanges, huidigeImuYaw, encDx, encDy);
-                    constexpr float ICP_LIN_MIN = 20.0f;
-                    if (std::fabs(linSpeedPico) > ICP_LIN_MIN && icp.valid) {
-                        loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
-                        // Bug3: huidigeImuYaw NIET optellen met icp.dtheta
-                        pos = Position(loc.GetX(), loc.GetY(), loc.GetTheta()); // Bug4
-                    } else {
-                        loc.SetIcpAnchor();
-                    }
-                    lastScanX = loc.GetX(); lastScanY = loc.GetY(); hasLastScanPos = true;
-                    mapper.UpdateMotionCorrected(lastRanges, angles, 360, pos, omegaDegS, scanDuurSec);
-                    ++scanCount;
-#if DEBUG_PRINT
-                    mapper.PrintMap(loc.GetX(), loc.GetY(), scanCount, mapper.GetCoverage());
-#endif
+                    huidigeImuYaw = sens.yawGraden - imuOffset;
                 }
-            }
 
-            // Toetsdetectie (niet-blokkerend)
-            int ch = PollKey();
-            if (ch == ' ') {
-                // Spatie → stop en vraag een nieuw commando
-                ka.SetCommand(0.0f, 0.0f);
-                printf("\n");
-                break;
-            }
-            if (ch == 'q' || ch == 'Q') {
-                // q → direct stoppen en terug naar menu
-                ka.SetCommand(0.0f, 0.0f);
-                stopGevraagd = true;
-                break;
-            }
+                // LIDAR lezen we elke tick zodat de scan vers blijft, maar
+                // mappen doen we alleen tijdens beweging.
+                if (lidar.Update()) {
+                    float angles[360];
+                    for (int a = 0; a < 360; ++a) {
+                        lastRanges[a] = lidar.GetDistance(a).distance;
+                        angles[a]     = static_cast<float>(a);
+                    }
 
-            auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
-                std::chrono::steady_clock::now() - tStart).count();
-            long rest = LOOP_US - static_cast<long>(elapsed);
-            if (rest > 0) usleep(static_cast<useconds_t>(rest));
+                    if (beweegt) {
+                        Position pos(loc.GetX(), loc.GetY(), huidigeImuYaw);
+
+                        // Encoder-seeding: geef ICP de odometrie-verplaatsing
+                        // sinds de vorige scan als startgok mee. Zonder die gok
+                        // "glijdt" ICP langs rechte muren (aperture-probleem) en
+                        // mapt hij de voorwaartse beweging weg → uitgesmeerde kaart.
+                        float encDx = 0.0f, encDy = 0.0f;
+                        if (hasLastScanPos) {
+                            encDx = loc.GetX() - lastScanX;
+                            encDy = loc.GetY() - lastScanY;
+                        }
+
+                        IcpResult icp = scanMatcher.Match(lastRanges, huidigeImuYaw, encDx, encDy);
+                        if (icp.valid) {
+                            loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
+                            huidigeImuYaw = NormDeg(huidigeImuYaw + icp.dtheta);
+                            pos = Position(loc.GetX(), loc.GetY(), huidigeImuYaw);
+                        } else {
+                            // ICP onbetrouwbaar: synchroniseer het anker met de
+                            // odometriepositie zodat de volgende match niet terugspringt.
+                            loc.SetIcpAnchor();
+                        }
+
+                        lastScanX      = loc.GetX();
+                        lastScanY      = loc.GetY();
+                        hasLastScanPos = true;
+
+                        mapper.UpdateMotionCorrected(lastRanges, angles, 360, pos, omegaDegS, scanDuurSec);
+                        ++scanCount;
+                        mapper.PrintMap(loc.GetX(), loc.GetY(), scanCount, mapper.GetCoverage());
+                    }
+                }
+
+                // Loop timing op 100 ms.
+                auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - tStart).count();
+                long rest = LOOP_US - static_cast<long>(elapsed);
+                if (rest > 0) usleep(static_cast<useconds_t>(rest));
+            }
         }
+
+        // Reeks klaar: robot stilzetten en wachten op de volgende invoer.
+        ka.SetCommand(0.0f, 0.0f);
+        uart.StuurStop();
+        printf("[PICO] Reeks klaar.\n");
     }
 
-    SetTerminalRaw(false);
     ka.SetCommand(0.0f, 0.0f);
     ka.Stop();
     ka.Shutdown();
