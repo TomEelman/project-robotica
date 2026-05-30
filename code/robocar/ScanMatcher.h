@@ -27,10 +27,11 @@ struct IcpResult {
 
 class ScanMatcher {
 public:
-    // max_trans_mm: maximale toegestane translatie-correctie
-    // max_rot_deg:  maximale toegestane rotatie-correctie
-    explicit ScanMatcher(float max_trans_mm = 80.0f,
-                         float max_rot_deg  = 8.0f);
+    // max_trans_mm: maximale ICP-correctie bovenop encoder-seed (niet totale beweging)
+    // max_rot_deg:  maximale rotatie-correctie — bij boogrijden ~3°/tick normaal,
+    //               12° geeft genoeg marge voor slip zonder te veel ruis door te laten
+    explicit ScanMatcher(float max_trans_mm = 40.0f,
+                         float max_rot_deg  = 12.0f);
 
     // Voer ICP uit tussen de opgeslagen vorige scan en de nieuwe scan.
     // ranges[360]: afstanden in mm (0 = ongeldig)

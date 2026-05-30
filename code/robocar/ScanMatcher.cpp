@@ -24,27 +24,29 @@ void ScanMatcher::Reset() {
 }
 
 std::vector<ScanPoint> ScanMatcher::RangesToPoints(
-    const float ranges[360], float theta)
+    const float ranges[360], float /*theta*/)
 {
+    // BUG1 FIX: theta wordt NIET gebruikt voor rotatie naar wereldframe.
+    //
+    // Reden: ICP werkt scan-to-scan (relatief), niet scan-op-kaart.
+    // Als we de vorige scan met theta_oud en de huidige met theta_nieuw
+    // roteren, ziet ICP een rotatie van (theta_nieuw - theta_oud) zelfs
+    // als de robot niet gedraaid heeft. De berekende dtheta is dan het
+    // verschil in worldframe-heading, niet de echte rotatie tussen scans.
+    //
+    // Correct: beide scans in hetzelfde (robot-)frame laten staan (theta=0).
+    // Dan is de dtheta die ICP vindt precies de rotatie tussen de twee scans,
+    // en de encoder-seeding (initDx/initDy) compenseert de translatie.
     std::vector<ScanPoint> pts;
     pts.reserve(360);
 
-    float cosT = std::cos(theta * DEG2RAD);
-    float sinT = std::sin(theta * DEG2RAD);
-
     for (int a = 0; a < 360; ++a) {
         float r = ranges[a];
-        if (r <= 50.0f || r > 8000.0f) continue;  // ongeldige metingen
+        if (r <= 50.0f || r > 8000.0f) continue;
 
-        // Punt in robotframe
-        float localX = r * std::cos(static_cast<float>(a) * DEG2RAD);
-        float localY = r * std::sin(static_cast<float>(a) * DEG2RAD);
-
-        // Roteer naar wereldframe (alleen rotatie, geen translatie —
-        // we werken in een frame relatief aan de vorige positie)
         ScanPoint p;
-        p.x = cosT * localX - sinT * localY;
-        p.y = sinT * localX + cosT * localY;
+        p.x = r * std::cos(static_cast<float>(a) * DEG2RAD);
+        p.y = r * std::sin(static_cast<float>(a) * DEG2RAD);
         pts.push_back(p);
     }
     return pts;
@@ -165,15 +167,18 @@ IcpResult ScanMatcher::Match(const float ranges[360], float robotTheta,
     // ICP iteraties
     std::vector<ScanPoint> moving = curPoints;
 
-    // Pas encoder-schatting toe als initiële verplaatsing: verschuif de huidige
-    // scan al naar de verwachte positie zodat ICP dichtbij de oplossing begint
-    // en minder snel op een verkeerd lokaal minimum convergeert.
-    // curPoints[i] = prevPoints[i] - (encDx, encDy)  →  optellen compenseert de beweging.
+    // Pas encoder-schatting toe als initiële verplaatsing zodat ICP
+    // al dicht bij de oplossing begint.
     if (initDx != 0.0f || initDy != 0.0f) {
         for (auto& p : moving) { p.x += initDx; p.y += initDy; }
     }
 
-    float totalDx = initDx, totalDy = initDy, totalDtheta = 0;
+    // BUG2 FIX: houd encoder-seed en ICP-correctie gescheiden.
+    // totalDx/Dy/Dtheta = alleen de ICP-verfijning bovenop de encoder-seed.
+    // De encoder-seed is de verwachte beweging en telt NIET mee in de
+    // acceptatiecheck — anders wordt rijden zelf al afgewezen (encoder ~20mm
+    // + kleine ICP-stap → totaal >maxTransMm → onterecht afgewezen).
+    float totalDx = 0.0f, totalDy = 0.0f, totalDtheta = 0.0f;
 
     for (int iter = 0; iter < MAX_ITER; ++iter) {
         std::vector<int>   idx;
@@ -203,28 +208,30 @@ IcpResult ScanMatcher::Match(const float ranges[360], float robotTheta,
     for (float d : fdists) { if (d < MAX_DIST_MM) { sumD += d; ++cnt; } }
     float fitness = cnt > 0 ? sumD / static_cast<float>(cnt) : 9999.0f;
 
-    // Accepteer alleen als de correctie binnen de limieten valt
+    // Accepteer alleen als de ICP-CORRECTIE (niet encoder+correctie) binnen de limieten valt.
+    // transMag = grootte van de verfijning die ICP zelf heeft toegevoegd bovenop de encoder-seed.
     float transMag = std::sqrt(totalDx*totalDx + totalDy*totalDy);
-    if (transMag     > maxTransMm ||
-        std::fabs(totalDtheta) > maxRotDeg ||
-        fitness      > 80.0f)
+    if (transMag             > maxTransMm ||
+        std::fabs(totalDtheta) > maxRotDeg  ||
+        fitness              > 80.0f)
     {
-        // Onbetrouwbaar — update vorige scan wel zodat volgende iteratie
-        // niet vast blijft zitten op een slechte referentie
-        printf("[ICP] afgewezen: trans=%.1fmm rot=%.1fdeg fit=%.1f\n",
+        printf("[ICP] afgewezen: icp_corr=%.1fmm rot=%.1fdeg fit=%.1f\n",
                transMag, totalDtheta, fitness);
         prevPoints = curPoints;
         return result;
     }
 
-    result.dx      = totalDx;
-    result.dy      = totalDy;
+    // Geef encoder-seed + ICP-verfijning terug als totale verplaatsing.
+    // ApplyIcpCorrection gebruikt dit als anchor + delta.
+    result.dx      = initDx + totalDx;
+    result.dy      = initDy + totalDy;
     result.dtheta  = totalDtheta;
     result.fitness = fitness;
     result.valid   = true;
 
-    printf("[ICP] OK: dx=%.1f dy=%.1f dth=%.2f fit=%.1f\n",
-           totalDx, totalDy, totalDtheta, fitness);
+    printf("[ICP] OK: dx=%.1f dy=%.1f dth=%.2f fit=%.1f (enc=%.1f,%.1f icp_corr=%.1fmm)\n",
+           result.dx, result.dy, result.dtheta, fitness,
+           initDx, initDy, transMag);
 
     // Bewaar getransformeerde scan als nieuwe referentie
     prevPoints = moving;
