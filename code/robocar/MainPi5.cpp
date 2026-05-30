@@ -81,7 +81,8 @@ enum class OntwijkFase { NORMAAL, DRAAIEN, VRIJRIJDEN, ACHTERUIT };
 static bool HandleObstacleAvoidance(const ScanAnalysis& scan, Localisation& loc,
     OntwijkFase& ontwijkFase, float& doelHoek, float& draaiRichting,
     int& vrijrijTicks, int& achteruitTicks, int& vastzitTeller, int& achteruitEscalatie,
-    float& ontsnapX, float& ontsnapY, CommandKeepAlive& ka, float LIN_SPEED, int& scansSindsHerplan);
+    float& ontsnapX, float& ontsnapY, CommandKeepAlive& ka, float LIN_SPEED, int& scansSindsHerplan,
+    float waypointX, float waypointY);
 
 static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position pos, bool nieuweScan,
     int& scansSindsHerplan, int& mislukteTeller, HoofdModus& hoofdModus, bool& heeftPad,
@@ -99,7 +100,8 @@ static void HandleReturnToHome(Navigator& navigator, Mapper& mapper, Position po
 static bool HandleObstacleAvoidance(const ScanAnalysis& scan, Localisation& loc,
     OntwijkFase& ontwijkFase, float& doelHoek, float& draaiRichting,
     int& vrijrijTicks, int& achteruitTicks, int& vastzitTeller, int& achteruitEscalatie,
-    float& ontsnapX, float& ontsnapY, CommandKeepAlive& ka, float LIN_SPEED, int& scansSindsHerplan) {
+    float& ontsnapX, float& ontsnapY, CommandKeepAlive& ka, float LIN_SPEED, int& scansSindsHerplan,
+    float waypointX, float waypointY) {
 
     if (ontwijkFase == OntwijkFase::DRAAIEN) {
         float fout = NormDeg(doelHoek - loc.GetTheta());
@@ -123,7 +125,11 @@ static bool HandleObstacleAvoidance(const ScanAnalysis& scan, Localisation& loc,
                 ontwijkFase = OntwijkFase::ACHTERUIT;
                 ka.SetCommand(-LIN_SPEED * 0.6f, 0.0f);
             } else {
-                draaiRichting = (scan.spaceLeft > scan.spaceRight) ? -1.0f : 1.0f;
+                // Draai naar de kant van het waypoint
+                float hoekNaarWp2 = NormDeg(
+                    std::atan2(waypointY - loc.GetY(), waypointX - loc.GetX())
+                    * (180.0f / static_cast<float>(M_PI)) - loc.GetTheta());
+                draaiRichting = (hoekNaarWp2 >= 0.0f) ? 1.0f : -1.0f;
                 doelHoek = NormDeg(loc.GetTheta() + draaiRichting * 75.0f);
                 ontwijkFase = OntwijkFase::DRAAIEN;
                 ka.SetCommand(0.0f, draaiRichting * 40.0f);
@@ -137,13 +143,18 @@ static bool HandleObstacleAvoidance(const ScanAnalysis& scan, Localisation& loc,
         }
     } else if (ontwijkFase == OntwijkFase::ACHTERUIT) {
         if (scan.minRear < 300.0f || --achteruitTicks <= 0) {
-            draaiRichting = (scan.spaceLeft > scan.spaceRight) ? -1.0f : 1.0f;
+            // Draai naar de kant van het waypoint, niet puur op ruimte.
+            // Dit voorkomt dat de robot van het doel wegdraait.
+            float hoekNaarWp = NormDeg(
+                std::atan2(waypointY - loc.GetY(), waypointX - loc.GetX())
+                * (180.0f / static_cast<float>(M_PI)) - loc.GetTheta());
+            draaiRichting = (hoekNaarWp >= 0.0f) ? 1.0f : -1.0f;
             float draaiHoek = 60.0f + std::min(static_cast<float>(achteruitEscalatie) * 30.0f, 60.0f);
             doelHoek = NormDeg(loc.GetTheta() + draaiRichting * draaiHoek);
-            printf("[ONTW] achteruit -> draai %.0fdeg naar %s (spaceL=%.0f spaceR=%.0f)\n",
+            printf("[ONTW] achteruit -> draai %.0fdeg naar %s (wp-hoek=%.1f spaceL=%.0f spaceR=%.0f)\n",
                 draaiHoek,
                 draaiRichting < 0 ? "links" : "rechts",
-                scan.spaceLeft, scan.spaceRight);
+                hoekNaarWp, scan.spaceLeft, scan.spaceRight);
             ontwijkFase = OntwijkFase::DRAAIEN;
             ka.SetCommand(0.0f, draaiRichting * 40.0f);
             ontsnapX = loc.GetX(); ontsnapY = loc.GetY();
@@ -385,8 +396,22 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
             IcpResult icp = scanMatcher.Match(lastRanges, huidigeImuYaw,
                                               encDx, encDy);
             if (icp.valid) {
+                float xVoor = loc.GetX(), yVoor = loc.GetY(), thVoor = loc.GetTheta();
                 loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
                 pos = Position(loc.GetX(), loc.GetY(), loc.GetTheta());
+                float sprong = std::hypot(loc.GetX() - xVoor, loc.GetY() - yVoor);
+                float thSprong = std::fabs(NormDeg(loc.GetTheta() - thVoor));
+                if (sprong > 100.0f || thSprong > 10.0f) {
+                    printf("\n!!! GROTE VERANDERING LOCATIE !!!\n"
+                           "  voor : x=%.1f y=%.1f theta=%.1f\n"
+                           "  na   : x=%.1f y=%.1f theta=%.1f\n"
+                           "  delta: dx=%.1f dy=%.1f dtheta=%.1f sprong=%.1fmm\n"
+                           "  icp  : dx=%.1f dy=%.1f dth=%.2f fit=%.1f\n\n",
+                           xVoor, yVoor, thVoor,
+                           loc.GetX(), loc.GetY(), loc.GetTheta(),
+                           loc.GetX()-xVoor, loc.GetY()-yVoor, NormDeg(loc.GetTheta()-thVoor), sprong,
+                           icp.dx, icp.dy, icp.dtheta, icp.fitness);
+                }
             } else {
                 // ICP mislukt: synchroniseer het ankerpunt met de huidige
                 // odometriepositie zodat de volgende geslaagde ICP-match
@@ -431,9 +456,13 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
 
         // Rijlogica
         if (ontwijkFase != OntwijkFase::NORMAAL) {
+            // Geef het huidige waypoint mee zodat de ontwijkrichting
+            // naar het doel wijst in plaats van blind naar de meeste ruimte.
+            Position wp = navigator.GetCurrentTarget();
             HandleObstacleAvoidance(scan, loc, ontwijkFase, doelHoek, draaiRichting,
                 vrijrijTicks, achteruitTicks, vastzitTeller_loc, achteruitEscalatie,
-                ontsnapX, ontsnapY, ka, LIN_SPEED, scansSindsHerplan);
+                ontsnapX, ontsnapY, ka, LIN_SPEED, scansSindsHerplan,
+                wp.GetX(), wp.GetY());
         } else {
             switch (hoofdModus) {
                 case HoofdModus::FRONTIER:
