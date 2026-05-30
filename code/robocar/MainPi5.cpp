@@ -81,8 +81,7 @@ enum class OntwijkFase { NORMAAL, DRAAIEN, VRIJRIJDEN, ACHTERUIT };
 static bool HandleObstacleAvoidance(const ScanAnalysis& scan, Localisation& loc,
     OntwijkFase& ontwijkFase, float& doelHoek, float& draaiRichting,
     int& vrijrijTicks, int& achteruitTicks, int& vastzitTeller, int& achteruitEscalatie,
-    float& ontsnapX, float& ontsnapY, CommandKeepAlive& ka, float LIN_SPEED, int& scansSindsHerplan,
-    float waypointX, float waypointY);
+    float& ontsnapX, float& ontsnapY, CommandKeepAlive& ka, float LIN_SPEED, int& scansSindsHerplan);
 
 static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position pos, bool nieuweScan,
     int& scansSindsHerplan, int& mislukteTeller, HoofdModus& hoofdModus, bool& heeftPad,
@@ -100,8 +99,7 @@ static void HandleReturnToHome(Navigator& navigator, Mapper& mapper, Position po
 static bool HandleObstacleAvoidance(const ScanAnalysis& scan, Localisation& loc,
     OntwijkFase& ontwijkFase, float& doelHoek, float& draaiRichting,
     int& vrijrijTicks, int& achteruitTicks, int& vastzitTeller, int& achteruitEscalatie,
-    float& ontsnapX, float& ontsnapY, CommandKeepAlive& ka, float LIN_SPEED, int& scansSindsHerplan,
-    float waypointX, float waypointY) {
+    float& ontsnapX, float& ontsnapY, CommandKeepAlive& ka, float LIN_SPEED, int& scansSindsHerplan) {
 
     if (ontwijkFase == OntwijkFase::DRAAIEN) {
         float fout = NormDeg(doelHoek - loc.GetTheta());
@@ -125,12 +123,8 @@ static bool HandleObstacleAvoidance(const ScanAnalysis& scan, Localisation& loc,
                 ontwijkFase = OntwijkFase::ACHTERUIT;
                 ka.SetCommand(-LIN_SPEED * 0.6f, 0.0f);
             } else {
-                // Draai naar de kant van het waypoint
-                float hoekNaarWp2 = NormDeg(
-                    std::atan2(waypointY - loc.GetY(), waypointX - loc.GetX())
-                    * (180.0f / static_cast<float>(M_PI)) - loc.GetTheta());
-                draaiRichting = (hoekNaarWp2 >= 0.0f) ? 1.0f : -1.0f;
-                doelHoek = NormDeg(loc.GetTheta() + draaiRichting * 75.0f);
+                draaiRichting = -draaiRichting;
+                doelHoek = NormDeg(loc.GetTheta() - draaiRichting * 90.0f);
                 ontwijkFase = OntwijkFase::DRAAIEN;
                 ka.SetCommand(0.0f, draaiRichting * 40.0f);
             }
@@ -143,18 +137,16 @@ static bool HandleObstacleAvoidance(const ScanAnalysis& scan, Localisation& loc,
         }
     } else if (ontwijkFase == OntwijkFase::ACHTERUIT) {
         if (scan.minRear < 300.0f || --achteruitTicks <= 0) {
-            // Draai naar de kant van het waypoint, niet puur op ruimte.
-            // Dit voorkomt dat de robot van het doel wegdraait.
-            float hoekNaarWp = NormDeg(
-                std::atan2(waypointY - loc.GetY(), waypointX - loc.GetX())
-                * (180.0f / static_cast<float>(M_PI)) - loc.GetTheta());
-            draaiRichting = (hoekNaarWp >= 0.0f) ? 1.0f : -1.0f;
-            float draaiHoek = 60.0f + std::min(static_cast<float>(achteruitEscalatie) * 30.0f, 60.0f);
+            // Draai een kleine hoek naar de kant met de meeste ruimte.
+            // Niet te veel (30 graden) — genoeg om het obstakel te ontwijken
+            // zonder ver van het pad af te raken.
+            draaiRichting = (scan.spaceLeft >= scan.spaceRight) ? -1.0f : 1.0f;
+            float draaiHoek = 30.0f;
             doelHoek = NormDeg(loc.GetTheta() + draaiRichting * draaiHoek);
-            printf("[ONTW] achteruit -> draai %.0fdeg naar %s (wp-hoek=%.1f spaceL=%.0f spaceR=%.0f)\n",
-                draaiHoek,
-                draaiRichting < 0 ? "links" : "rechts",
-                hoekNaarWp, scan.spaceLeft, scan.spaceRight);
+            printf("[ONTW] achteruit klaar -> draai %.0f graden naar %s (spaceL=%.0f spaceR=%.0f)\n",
+                   draaiHoek,
+                   draaiRichting < 0.0f ? "links" : "rechts",
+                   scan.spaceLeft, scan.spaceRight);
             ontwijkFase = OntwijkFase::DRAAIEN;
             ka.SetCommand(0.0f, draaiRichting * 40.0f);
             ontsnapX = loc.GetX(); ontsnapY = loc.GetY();
@@ -270,7 +262,7 @@ static void HandleReturnToHome(Navigator& navigator, Mapper& mapper, Position po
                 mapper.SetWaypoints(pad);
                 heeftPad = true;
             } else {
-                float hoek = static_cast<float>(std::atan2(-dy, -dx)) * (180.0f / static_cast<float>(M_PI));
+                float hoek = static_cast<float>(std::atan2(-dy, -dx)) * (180.0f / M_PI);
                 ka.SetCommand(200.0f, NormDeg(hoek - pos.GetTheta()) * 0.5f);
             }
         }
@@ -364,7 +356,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
         SensorData sens = uart.GetSensorData();
         if (sens.geldig) {
             if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
-            omegaDegS = (sens.speedRechts - sens.speedLinks) / 219.0f * (180.0f / static_cast<float>(M_PI));
+            omegaDegS = (sens.speedRechts - sens.speedLinks) / 235.0f * (180.0f / M_PI);
             loc.Predict(sens.speedLinks, sens.speedRechts, DT);
             loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
             huidigeImuYaw = sens.yawGraden - imuOffset;
@@ -375,7 +367,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
             }
         }
 
-        Position pos(loc.GetX(), loc.GetY(), loc.GetTheta());
+        Position pos(loc.GetX(), loc.GetY(), huidigeImuYaw);
 
         bool nieuweScan = false;
         if (lidar.Update()) {
@@ -396,22 +388,9 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
             IcpResult icp = scanMatcher.Match(lastRanges, huidigeImuYaw,
                                               encDx, encDy);
             if (icp.valid) {
-                float xVoor = loc.GetX(), yVoor = loc.GetY(), thVoor = loc.GetTheta();
                 loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
-                pos = Position(loc.GetX(), loc.GetY(), loc.GetTheta());
-                float sprong = std::hypot(loc.GetX() - xVoor, loc.GetY() - yVoor);
-                float thSprong = std::fabs(NormDeg(loc.GetTheta() - thVoor));
-                if (sprong > 100.0f || thSprong > 10.0f) {
-                    printf("\n!!! GROTE VERANDERING LOCATIE !!!\n"
-                           "  voor : x=%.1f y=%.1f theta=%.1f\n"
-                           "  na   : x=%.1f y=%.1f theta=%.1f\n"
-                           "  delta: dx=%.1f dy=%.1f dtheta=%.1f sprong=%.1fmm\n"
-                           "  icp  : dx=%.1f dy=%.1f dth=%.2f fit=%.1f\n\n",
-                           xVoor, yVoor, thVoor,
-                           loc.GetX(), loc.GetY(), loc.GetTheta(),
-                           loc.GetX()-xVoor, loc.GetY()-yVoor, NormDeg(loc.GetTheta()-thVoor), sprong,
-                           icp.dx, icp.dy, icp.dtheta, icp.fitness);
-                }
+                huidigeImuYaw = NormDeg(huidigeImuYaw + icp.dtheta);
+                pos = Position(loc.GetX(), loc.GetY(), huidigeImuYaw);
             } else {
                 // ICP mislukt: synchroniseer het ankerpunt met de huidige
                 // odometriepositie zodat de volgende geslaagde ICP-match
@@ -456,13 +435,9 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
 
         // Rijlogica
         if (ontwijkFase != OntwijkFase::NORMAAL) {
-            // Geef het huidige waypoint mee zodat de ontwijkrichting
-            // naar het doel wijst in plaats van blind naar de meeste ruimte.
-            Position wp = navigator.GetCurrentTarget();
             HandleObstacleAvoidance(scan, loc, ontwijkFase, doelHoek, draaiRichting,
                 vrijrijTicks, achteruitTicks, vastzitTeller_loc, achteruitEscalatie,
-                ontsnapX, ontsnapY, ka, LIN_SPEED, scansSindsHerplan,
-                wp.GetX(), wp.GetY());
+                ontsnapX, ontsnapY, ka, LIN_SPEED, scansSindsHerplan);
         } else {
             switch (hoofdModus) {
                 case HoofdModus::FRONTIER:
@@ -552,7 +527,7 @@ static int RunRijdenEnMappenwf(Pi5UARTHandler& uart, LIDAR& lidar) {
         SensorData sens = uart.GetSensorData();
 if (sens.geldig) {
     if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
-    omegaDegS = (sens.speedRechts - sens.speedLinks) / 219.0f * (180.0f / static_cast<float>(M_PI));
+    omegaDegS = (sens.speedRechts - sens.speedLinks) / 219.0f * (180.0f / M_PI);
 
     bool beweegt = (sens.speedLinks != 0.0f || sens.speedRechts != 0.0f);
 
@@ -569,7 +544,7 @@ if (sens.geldig) {
         sens.speedLinks, sens.speedRechts, (int)beweegt);
 }
 
-        Position pos(loc.GetX(), loc.GetY(), loc.GetTheta());
+        Position pos(loc.GetX(), loc.GetY(), huidigeImuYaw);
 
         if (lidar.Update()) {
             float angles[360];
@@ -590,7 +565,8 @@ if (sens.geldig) {
                                               encDx, encDy);
             if (icp.valid) {
                 loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
-                pos = Position(loc.GetX(), loc.GetY(), loc.GetTheta());
+                huidigeImuYaw = NormDeg(huidigeImuYaw + icp.dtheta);
+                pos = Position(loc.GetX(), loc.GetY(), huidigeImuYaw);
             } else {
                 loc.SetIcpAnchor();
             }
@@ -627,7 +603,7 @@ if (sens.geldig) {
 // RunMappen
 // ─────────────────────────────────────────────────────────────────
 static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
-    Localisation loc(219.0f);
+    Localisation loc(235.0f);
     Mapper mapper(5000, 500, 0.03f);
     constexpr float DT = 0.1f, LOOP_US = 100000;
     int scanCount = 0;
@@ -658,7 +634,7 @@ static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
             angles[a] = static_cast<float>(a);
         }
 
-        Position pos(loc.GetX(), loc.GetY(), loc.GetTheta());
+        Position pos(loc.GetX(), loc.GetY(), huidigeImuYaw);
         mapper.Update(ranges, angles, 360, pos);
         ++scanCount;
 
@@ -838,7 +814,7 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
                 bool beweegt = false;
                 if (sens.geldig) {
                     if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
-                    omegaDegS = (sens.speedRechts - sens.speedLinks) / 219.0f * (180.0f / static_cast<float>(M_PI));
+                    omegaDegS = (sens.speedRechts - sens.speedLinks) / 219.0f * (180.0f / M_PI);
                     beweegt = (sens.speedLinks != 0.0f || sens.speedRechts != 0.0f);
                     if (beweegt) {
                         loc.Predict(sens.speedLinks, sens.speedRechts, DT);
@@ -857,7 +833,7 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
                     }
 
                     if (beweegt) {
-                        Position pos(loc.GetX(), loc.GetY(), loc.GetTheta());
+                        Position pos(loc.GetX(), loc.GetY(), huidigeImuYaw);
 
                         // Encoder-seeding: geef ICP de odometrie-verplaatsing
                         // sinds de vorige scan als startgok mee. Zonder die gok
@@ -872,7 +848,8 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
                         IcpResult icp = scanMatcher.Match(lastRanges, huidigeImuYaw, encDx, encDy);
                         if (icp.valid) {
                             loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
-                            pos = Position(loc.GetX(), loc.GetY(), loc.GetTheta());
+                            huidigeImuYaw = NormDeg(huidigeImuYaw + icp.dtheta);
+                            pos = Position(loc.GetX(), loc.GetY(), huidigeImuYaw);
                         } else {
                             // ICP onbetrouwbaar: synchroniseer het anker met de
                             // odometriepositie zodat de volgende match niet terugspringt.
