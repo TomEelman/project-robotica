@@ -34,8 +34,8 @@ Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
     gridMap.WorldToCell(start.GetX() * MM2M, start.GetY() * MM2M, sx, sy);
     gridMap.WorldToCell(goal.GetX()  * MM2M, goal.GetY()  * MM2M, gx, gy);
 
-    if (!gridMap.InBounds(sx, sy)) { std::cerr << "Planner: start outside grid\n"; return Path(); }
-    if (!gridMap.InBounds(gx, gy)) { std::cerr << "Planner: goal outside grid\n";  return Path(); }
+   // if (!gridMap.InBounds(sx, sy)) { std::cerr << "Planner: start outside grid\n"; return Path(); }
+    // if (!gridMap.InBounds(gx, gy)) { std::cerr << "Planner: goal outside grid\n";  return Path(); }
 
     // ── 2. Inflatie-masker bouwen ────────────────────────────────
     // Mark every cell within INFLATIE_CELLEN of a wall as
@@ -82,13 +82,13 @@ Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
                     }
                 }
         }
-        if (!gevonden) { std::cerr << "Planner: start trapped (no free neighbour)\n"; return Path(); }
+      //  if (!gevonden) { std::cerr << "Planner: start trapped (no free neighbour)\n"; return Path(); }
     }
 
     // The goal may be a frontier cell bordering unknown space; we
     // only require it is not inside a wall/inflation.
     if (gridMap.InBounds(gx, gy) && blockedCell[idx(gx, gy)]) {
-        std::cerr << "Planner: goal lies in obstacle/margin\n";
+     //   std::cerr << "Planner: goal lies in obstacle/margin\n";
         return Path();
     }
 
@@ -122,7 +122,7 @@ Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
         }
     }
 
-    if (!startReached) { std::cerr << "Planner: no path (wave did not reach start)\n"; return Path(); }
+  //  if (!startReached) { std::cerr << "Planner: no path (wave did not reach start)\n"; return Path(); }
 
     // ── 6. Padreconstructie: volg dalende afstanden ──────────────
     // From the start, step to the neighbour cell with the LOWEST
@@ -183,8 +183,8 @@ Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
     }
 
     currentPath = Path(waypoints);
-    std::cout << "Planner: Wavefront path with " << waypoints.size()
-              << " waypoints (" << rawCells.size() << " cells)\n";
+    //std::cout << "Planner: Wavefront path with " << waypoints.size()
+      //        << " waypoints (" << rawCells.size() << " cells)\n";
     return currentPath;
 }
 

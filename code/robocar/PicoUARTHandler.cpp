@@ -2,6 +2,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
+#include <cmath>
 #include "hardware/watchdog.h"
 
 volatile char    PicoUARTHandler::rxBuffer[128] = {0};
@@ -15,6 +16,10 @@ PicoUARTHandler::PicoUARTHandler(SensorHub& sensorHub)
     , hasPendingCmd(false)
     , lastCmdTimeMs(0)
     , lastPushMs(0)
+    , reversalPending(false)
+    , reversalCmd(0.0f, 0.0f)
+    , reversalStartMs(0)
+    , lastLinearSign(0.0f)
 {
     instance = this;
 }
@@ -71,14 +76,47 @@ bool PicoUARTHandler::Tick(DriveCommand& out)
         lastPushMs = now;
     }
 
-    // 3) Forward pending command
+    // 3) Richtingswissel: wacht tot de wielen echt stilstaan voordat we het
+    //    omgekeerde commando vrijgeven. Niet-blokkerend — Tick blijft draaien.
+    //    Zolang we wachten houden we de robot gestopt. De single-channel
+    //    encoders kunnen geen richting meten, dus dit is de enige manier om
+    //    te voorkomen dat het commando-teken op de Pi5 tegengesteld raakt aan
+    //    de werkelijke (uitrollende) beweging.
+    if (reversalPending) {
+        float spdL = fabsf(sensorHub.GetSpeedLeft());
+        float spdR = fabsf(sensorHub.GetSpeedRight());
+        bool  stil    = (spdL < REVERSAL_STILL_MM_S && spdR < REVERSAL_STILL_MM_S);
+        bool  timeout = (now - reversalStartMs) > REVERSAL_MAX_MS;
+
+        if (stil || timeout) {
+            // Wielen staan stil (of veiligheidstimeout) → geef het bewaarde
+            // commando vrij en keer terug naar normale werking.
+            pendingCmd      = reversalCmd;
+            hasPendingCmd   = false;
+            reversalPending = false;
+            lastCmdTimeMs   = now;
+
+            float relLin   = reversalCmd.GetLinVelocity();
+            lastLinearSign = (relLin >  0.1f) ?  1.0f
+                           : (relLin < -0.1f) ? -1.0f : 0.0f;
+
+            out = reversalCmd;
+            return true;
+        } else {
+            // Nog niet stil → blijf de motoren stoppen.
+            out = DriveCommand(0.0f, 0.0f);
+            return true;
+        }
+    }
+
+    // 4) Forward pending command
     if (hasPendingCmd) {
         out           = pendingCmd;
         hasPendingCmd = false;
         return true;
     }
 
-    // 4) Command timeout → stop robot
+    // 5) Command timeout → stop robot
     if (lastCmdTimeMs > 0 && (now - lastCmdTimeMs) > PICO_CMD_TIMEOUT_MS) {
         lastCmdTimeMs = 0;
         out = DriveCommand(0.0f, 0.0f);
@@ -112,11 +150,15 @@ void PicoUARTHandler::pushData()
 
 void PicoUARTHandler::handleLine(const char* line)
 {
-    // STOP command — highest priority, execute immediately
+    // STOP command — highest priority, execute immediately.
+    // Een expliciete STOP heeft altijd voorrang: een eventuele lopende
+    // richtingswissel wordt afgebroken en de richting-state gereset.
     if (strcmp(line, "STOP") == 0) {
-        pendingCmd    = DriveCommand(0.0f, 0.0f);
-        hasPendingCmd = true;
-        lastCmdTimeMs = to_ms_since_boot(get_absolute_time());
+        pendingCmd      = DriveCommand(0.0f, 0.0f);
+        hasPendingCmd   = true;
+        reversalPending = false;
+        lastLinearSign  = 0.0f;
+        lastCmdTimeMs   = to_ms_since_boot(get_absolute_time());
         send("ACK:STOP\n");
         return;
     }
@@ -131,9 +173,29 @@ void PicoUARTHandler::handleLine(const char* line)
     if (strncmp(line, "CMD:", 4) == 0) {
         float lin = 0.0f, ang = 0.0f;
         if (parseCmd(line, lin, ang)) {
-            pendingCmd    = DriveCommand(lin, ang);
-            hasPendingCmd = true;
+            float newSign = (lin >  0.1f) ?  1.0f
+                          : (lin < -0.1f) ? -1.0f : 0.0f;
+
+            // Richtingsomkering: nieuw linear-teken is tegengesteld aan het
+            // laatst doorgegeven teken. Een nul (stoppen of pure draai) telt
+            // NIET als omkering en mag direct door.
+            bool isReversal = (lastLinearSign > 0.0f && newSign < 0.0f) ||
+                              (lastLinearSign < 0.0f && newSign > 0.0f);
+
+            if (isReversal) {
+                // Bewaar het doelcommando en stop eerst tot de wielen stilstaan.
+                reversalCmd     = DriveCommand(lin, ang);
+                reversalPending = true;
+                reversalStartMs = to_ms_since_boot(get_absolute_time());
+                pendingCmd      = DriveCommand(0.0f, 0.0f);
+                hasPendingCmd   = true;
+            } else {
+                pendingCmd     = DriveCommand(lin, ang);
+                hasPendingCmd  = true;
+                lastLinearSign = newSign;
+            }
             lastCmdTimeMs = to_ms_since_boot(get_absolute_time());
+
             char ack[32];
             snprintf(ack, sizeof(ack), "ACK:OK:lin=%.3f,ang=%.3f\n", lin, ang);
             send(ack);
