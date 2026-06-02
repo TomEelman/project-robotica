@@ -456,6 +456,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
                                               encDx, encDy);
             // ICP overslaan tijdens draaien: de roterende puntenwolk geeft
             // willekeurige translaties terug die de positie laten springen.
+            /*
             constexpr float ICP_LIN_MIN = 20.0f;
             if (std::fabs(linSpeed) > ICP_LIN_MIN && icp.valid) {
                 loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
@@ -464,6 +465,9 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
             } else {
                 loc.SetIcpAnchor();
             }
+                */
+
+            loc.SetIcpAnchor(); 
 
             // Bewaar huidige EKF-positie voor encoder-seeding van de volgende ICP-ronde.
             lastScanX      = loc.GetX();
@@ -643,7 +647,8 @@ static int RunRijdenEnMappenwf(Pi5UARTHandler& uart, LIDAR& lidar) {
             }
             IcpResult icp = scanMatcher.Match(lastRanges, huidigeImuYaw,
                                               encDx, encDy);
-            constexpr float ICP_LIN_MIN = 20.0f;
+            /*
+                                              constexpr float ICP_LIN_MIN = 20.0f;
             if (std::fabs(linSpeed) > ICP_LIN_MIN && icp.valid) {
                 loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
                 // BUG3 FIX: huidigeImuYaw niet optellen met icp.dtheta
@@ -651,6 +656,10 @@ static int RunRijdenEnMappenwf(Pi5UARTHandler& uart, LIDAR& lidar) {
             } else {
                 loc.SetIcpAnchor();
             }
+
+                */
+
+            loc.SetIcpAnchor(); 
 
             lastScanX      = loc.GetX();
             lastScanY      = loc.GetY();
@@ -896,6 +905,7 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
                         encDy = loc.GetY() - lastScanY;
                     }
                     IcpResult icp = scanMatcher.Match(lastRanges, huidigeImuYaw, encDx, encDy);
+                    /*
                     constexpr float ICP_LIN_MIN = 20.0f;
                     if (std::fabs(linSpeedPico) > ICP_LIN_MIN && icp.valid) {
                         loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
@@ -904,6 +914,10 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
                     } else {
                         loc.SetIcpAnchor();
                     }
+
+                        */
+
+            loc.SetIcpAnchor(); 
                     lastScanX = loc.GetX(); lastScanY = loc.GetY(); hasLastScanPos = true;
                     mapper.UpdateMotionCorrected(lastRanges, angles, 360, pos, omegaDegS, scanDuurSec);
                     ++scanCount;
