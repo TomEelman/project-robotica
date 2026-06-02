@@ -177,8 +177,8 @@ void GridMap::IntegrateScanMotionCorrected(
 
         // Gecorrigeerde robothoek op dit moment
         // (t_i - halfDuur): offset t.o.v. het midden van de scan
-        float thetaCorrected = robotThetaDeg + omegaDegS * (t_i - halfDuur);
-
+       // float thetaCorrected = robotThetaDeg + omegaDegS * (t_i - halfDuur);
+        float thetaCorrected = robotThetaDeg - omegaDegS * (t_i - halfDuur);
         // Wereldhoek van deze straal
         float globalAngle = thetaCorrected * DEG2RAD + angles[i] * DEG2RAD;
 
