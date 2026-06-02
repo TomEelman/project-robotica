@@ -26,6 +26,7 @@ Localisation::Localisation(float wheelBaseMm)
     , debugTickCounter(0)
     , prevVLeft(-99999.0f), prevVRight(-99999.0f)
     , staleCount(0)
+    , prevImuYaw(0.0f), prevImuInitialized(false)
 {
     for (int i = 0; i < 3; i++)
         for (int j = 0; j < 3; j++)
@@ -159,25 +160,30 @@ void Localisation::Predict(float vLeft, float vRight, float dt)
 void Localisation::UpdateIMU(float imuYawDeg, float /*dt*/)
 {
     float thetaVoor = theta;
-    float innov     = NormalizeDeg(imuYawDeg - theta);
 
-    // Heading volledig vertrouwen op de IMU (interne sensorfusie). De
-    // encoder-heading is onbetrouwbaar, dus we overschrijven theta direct
-    // met de IMU-yaw i.p.v. een gedeeltelijke EKF-correctie. x/y blijven
-    // ongemoeid: die komen uit Predict (encoderafstand + IMU-heading).
-    theta = NormalizeDeg(imuYawDeg);
+    // Gebruik delta-yaw i.p.v. absolute yaw om wraparound te voorkomen.
+    // Als de IMU van 179° naar -179° springt (of 359°→0°), geeft de
+    // absolute overschrijving een knik van 358° in de heading.
+    // Door de delta te normaliseren blijft de stap altijd klein (-180..+180).
+    //
+    // prevImuYaw bijhouden: eerste tick initialiseren op huidige waarde.
+    if (!prevImuInitialized) {
+        prevImuYaw         = imuYawDeg;
+        prevImuInitialized = true;
+    }
 
-    // Heading-onzekerheid is nu klein: de IMU is de waarheid.
+    float delta = NormalizeDeg(imuYawDeg - prevImuYaw);
+    prevImuYaw  = imuYawDeg;
+
+    theta = NormalizeDeg(theta + delta);
+
+    // Heading-onzekerheid klein houden: IMU is de heading-waarheid.
     P[2][2] = 0.01f;
 
     float correctie = NormalizeDeg(theta - thetaVoor);
-
-    // innov = verschil tussen IMU en de oude theta = de sprong die we nu zetten.
-    // Grote innov terwijl je recht rijdt = IMU ving een echte draai die de
-    // encoders misten (gewenst). theta volgt nu 1-op-1 de IMU.
-    //printf("[LOC-IMU]  imu=%+7.2f theta_voor=%+7.2f innov=%+6.2f -> theta=%+7.2f%s\n",
-      //     imuYawDeg, thetaVoor, innov, theta,
-        //   std::fabs(correctie) > 5.0f ? " *** GROTE SPRONG ***" : "");
+    printf("[LOC-IMU] imu=%+7.2f delta=%+6.2f -> theta=%+7.2f%s\n",
+           imuYawDeg, delta, theta,
+           std::fabs(correctie) > 5.0f ? " *** GROTE SPRONG ***" : "");
 }
 
 float Localisation::GetX()     const { return x;     }

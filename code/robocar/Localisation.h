@@ -68,6 +68,11 @@ private:
     float prevVLeft;
     float prevVRight;
     int   staleCount;      // opeenvolgende ticks met identieke snelheidswaarden
+
+    // IMU wraparound fix: delta-yaw bijhouden i.p.v. absolute yaw.
+    // Voorkomt heading-sprong bij 359°→0° overgang.
+    float prevImuYaw;
+    bool  prevImuInitialized;
 };
 
 #endif

@@ -838,8 +838,8 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
         else if (naam == "achteruit") { rijLin = -278.0f; rijAng =   0.0f; }
         else if (naam == "links")     { rijLin =    0.0f; rijAng = -40.0f; }
         else if (naam == "rechts")    { rijLin =    0.0f; rijAng =  40.0f; }
-        else if (naam == "bochtl")    { rijLin =   10.0f; rijAng = -40.0f; }
-        else if (naam == "bochtr")    { rijLin =   10.0f; rijAng =  40.0f; }
+        else if (naam == "bochtl")    { rijLin =   20.0f; rijAng = -40.0f; }
+        else if (naam == "bochtr")    { rijLin =   20.0f; rijAng =  40.0f; }
         else if (naam == "stop")      { rijLin =    0.0f; rijAng =   0.0f; }
         else {
             printf("[PICO] Onbekend commando '%s'\n", naam.c_str());
