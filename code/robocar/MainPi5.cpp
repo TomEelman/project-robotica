@@ -310,17 +310,18 @@ static void HandleReturnToHome(Navigator& navigator, Mapper& mapper, Position po
 // Bij transitie (ramp loopt nog) kan het teken 1 tick te vroeg omslaan,
 // maar dat is verwaarloosbaar t.o.v. de permanente drift bij geen fix.
 // ─────────────────────────────────────────────────────────────────
-static void EncoderMetTeken(bool fwdLeft, bool fwdRight,
+static void EncoderMetTeken(float cmdLin, float cmdAng,
                              float& vLeft, float& vRight)
 {
+    constexpr float HALF_BASE = 219.0f / 2.0f;
+    constexpr float DEG2RAD   = static_cast<float>(M_PI) / 180.0f;
 
+    float omegaRad  = cmdAng * DEG2RAD;
+    float cmdVLeft  = cmdLin + omegaRad * HALF_BASE;
+    float cmdVRight = cmdLin - omegaRad * HALF_BASE;
 
-    // NIEUW — teken gebaseerd op Pico forward flag (altijd correct)
-    float signLeft  = fwdLeft  ? 1.0f : -1.0f;
-    float signRight = fwdRight ? 1.0f : -1.0f;
-
-    vLeft  = signLeft  * std::fabs(vLeft);
-    vRight = signRight * std::fabs(vRight);
+    vLeft  = (cmdVLeft  >= 0.0f ? 1.0f : -1.0f) * std::fabs(vLeft);
+    vRight = (cmdVRight >= 0.0f ? 1.0f : -1.0f) * std::fabs(vRight);
 }
 
 static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
@@ -410,7 +411,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
 
             // Teken herstellen voor beide wielen (encoders zijn altijd positief).
             float vL = sens.speedLinks, vR = sens.speedRechts;
-            EncoderMetTeken(sens.forwardLeft, sens.forwardRight, vL, vR);
+            EncoderMetTeken(ka.GetLin(), ka.GetAng(), vL, vR);
 
             // omegaDegS op basis van gecorrigeerde snelheden (voor mapper).
             omegaDegS = ka.GetAng();
@@ -600,7 +601,7 @@ static int RunRijdenEnMappenwf(Pi5UARTHandler& uart, LIDAR& lidar) {
 
             // Teken herstellen voor beide wielen (encoders zijn altijd positief).
             float vL = sens.speedLinks, vR = sens.speedRechts;
-            EncoderMetTeken(sens.forwardLeft, sens.forwardRight, vL, vR);
+            EncoderMetTeken(ka.GetLin(), ka.GetAng(), vL, vR);
 
             // omegaDegS op basis van gecorrigeerde snelheden (voor mapper).
             omegaDegS = ka.GetAng();
@@ -868,7 +869,7 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
 
                 // Teken herstellen voor beide wielen (encoders zijn altijd positief).
                 float vL = sens.speedLinks, vR = sens.speedRechts;
-                EncoderMetTeken(sens.forwardLeft, sens.forwardRight, vL, vR);
+                EncoderMetTeken(ka.GetLin(), ka.GetAng(), vL, vR);
 
                 // omegaDegS op basis van gecorrigeerde snelheden (voor mapper).
                 omegaDegS = ka.GetAng();
