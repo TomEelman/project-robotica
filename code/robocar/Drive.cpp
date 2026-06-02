@@ -369,6 +369,26 @@ void Drive::Execute(const DriveCommand& command)
     float linear  = command.GetLinVelocity();
     float angular = command.GetAngVelocity();
 
+        constexpr float REVERSAL_STILL = 15.0f;   // mm/s, "praktisch stil"
+
+    bool wilVooruit   = linear >  1.0f;
+    bool wilAchteruit = linear < -1.0f;
+    bool reversal = (wilVooruit   && driveMode == DriveMode::Backward) ||
+                    (wilAchteruit && driveMode == DriveMode::Forward);
+
+    if (reversal) reversalLockout = true;
+
+    if (reversalLockout) {
+        float spdL = fabsf(sensorHub.GetSpeedLeft());
+        float spdR = fabsf(sensorHub.GetSpeedRight());
+        if (spdL < REVERSAL_STILL && spdR < REVERSAL_STILL) {
+            reversalLockout = false;   // wielen stil → laat omkering door
+        } else {
+            Stop();                    // nog niet stil → blijf stoppen
+            return;
+        }
+    }
+
     // ── Command rate limiter ────────────────────────────────────────────────
     // Cap the change in requested linear speed to CMD_MAX_LIN_STEP per call.
     // This prevents the navigator from jumping speed (e.g. 278 → 150) in one
