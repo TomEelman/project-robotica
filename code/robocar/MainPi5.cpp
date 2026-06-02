@@ -414,7 +414,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
             EncoderMetTeken(ka.GetLin(), ka.GetAng(), vL, vR);
 
             // omegaDegS op basis van gecorrigeerde snelheden (voor mapper).
-            omegaDegS = (vR - vL) / 219.0f * (180.0f / static_cast<float>(M_PI));
+            omegaDegS = ka.GetAng();
             linSpeed  = 0.5f * (vL + vR);  // bijhouden voor ICP-draai-check
 
 
@@ -456,10 +456,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
             // ICP overslaan tijdens draaien: de roterende puntenwolk geeft
             // willekeurige translaties terug die de positie laten springen.
             constexpr float ICP_LIN_MIN = 20.0f;
-            constexpr float ICP_OMEGA_MAX = 8.0f;  // deg/s
-            
-            if (std::fabs(linSpeed) > ICP_LIN_MIN &&
-    std::fabs(omegaDegS) < ICP_OMEGA_MAX && icp.valid) {
+            if (std::fabs(linSpeed) > ICP_LIN_MIN && icp.valid) {
                 loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
                 // BUG3 FIX: huidigeImuYaw NIET optellen met icp.dtheta
                 pos = Position(loc.GetX(), loc.GetY(), loc.GetTheta()); // BUG4 FIX
@@ -604,7 +601,7 @@ static int RunRijdenEnMappenwf(Pi5UARTHandler& uart, LIDAR& lidar) {
             EncoderMetTeken(ka.GetLin(), ka.GetAng(), vL, vR);
 
             // omegaDegS op basis van gecorrigeerde snelheden (voor mapper).
-            omegaDegS = (vR - vL) / 219.0f * (180.0f / static_cast<float>(M_PI));
+            omegaDegS = ka.GetAng();
             linSpeed  = 0.5f * (vL + vR);  // bijhouden voor ICP-draai-check
 
             bool beweegt = (sens.speedLinks != 0.0f || sens.speedRechts != 0.0f);
@@ -872,7 +869,7 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
                 EncoderMetTeken(ka.GetLin(), ka.GetAng(), vL, vR);
 
                 // omegaDegS op basis van gecorrigeerde snelheden (voor mapper).
-                omegaDegS = (vR - vL) / 219.0f * (180.0f / static_cast<float>(M_PI));
+                omegaDegS = ka.GetAng();
                 linSpeedPico   = 0.5f * (vL + vR);
 
                 bool versData = uart.LeesData();   // true = nieuw Pico-pakket ontvangen
