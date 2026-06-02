@@ -320,8 +320,9 @@ static void EncoderMetTeken(float cmdLin, float cmdAng,
     float cmdVLeft  = cmdLin + omegaRad * HALF_BASE;   // positief = vooruit
     float cmdVRight = cmdLin - omegaRad * HALF_BASE;
 
-    float signLeft  = (cmdVLeft  >= 0.0f) ? 1.0f : -1.0f;
-    float signRight = (cmdVRight >= 0.0f) ? 1.0f : -1.0f;
+    // NIEUW — teken gebaseerd op Pico forward flag (altijd correct)
+    float signLeft  = sens.forwardLeft  ? 1.0f : -1.0f;
+    float signRight = sens.forwardRight ? 1.0f : -1.0f;
 
     vLeft  = signLeft  * std::fabs(vLeft);
     vRight = signRight * std::fabs(vRight);

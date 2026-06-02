@@ -5,11 +5,11 @@
 static constexpr float DEG2RAD = static_cast<float>(M_PI) / 180.0f;
 static constexpr float RAD2DEG = 180.0f / static_cast<float>(M_PI);
 
-// Normaliseer graden naar (-180, 180]
+// NIEUW — veilig
 static float NormalizeDeg(float deg) {
-    while (deg >  180.0f) deg -= 360.0f;
-    while (deg < -180.0f) deg += 360.0f;
-    return deg;
+    deg = fmodf(deg + 180.0f, 360.0f);
+    if (deg < 0.0f) deg += 360.0f;
+    return deg - 180.0f;
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -181,9 +181,9 @@ void Localisation::UpdateIMU(float imuYawDeg, float /*dt*/)
     P[2][2] = 0.01f;
 
     float correctie = NormalizeDeg(theta - thetaVoor);
-    printf("[LOC-IMU] imu=%+7.2f delta=%+6.2f -> theta=%+7.2f%s\n",
-           imuYawDeg, delta, theta,
-           std::fabs(correctie) > 5.0f ? " *** GROTE SPRONG ***" : "");
+    //printf("[LOC-IMU] imu=%+7.2f delta=%+6.2f -> theta=%+7.2f%s\n",
+      //     imuYawDeg, delta, theta,
+        //   std::fabs(correctie) > 5.0f ? " *** GROTE SPRONG ***" : "");
 }
 
 float Localisation::GetX()     const { return x;     }
