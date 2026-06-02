@@ -407,6 +407,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
     while (running) {
         auto tStart = std::chrono::steady_clock::now();
 
+        bool beweegt = (sens.speedLinks != 0.0f || sens.speedRechts != 0.0f);
         bool versData = uart.LeesData();   // true = nieuw Pico-pakket ontvangen
         SensorData sens = uart.GetSensorData();
         if (sens.geldig) {
@@ -421,7 +422,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
             linSpeed  = 0.5f * (vL + vR);  // bijhouden voor ICP-draai-check
 
             // Predict/UpdateIMU ALLEEN op vers pakket — voorkomt stale-data drift.
-            if (versData) {
+            if (versData && beweegt) {
                 loc.Predict(vL, vR, DT);
                 loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
             }
@@ -873,8 +874,9 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
                 omegaDegS      = (vR - vL) / 219.0f * (180.0f / static_cast<float>(M_PI));
                 linSpeedPico   = 0.5f * (vL + vR);
 
+                bool versData = uart.LeesData();
                 beweegt = (sens.speedLinks != 0.0f || sens.speedRechts != 0.0f);
-                if (beweegt) {
+                if (versData && beweegt) {
                     loc.Predict(vL, vR, DT);
                     loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
                 }
