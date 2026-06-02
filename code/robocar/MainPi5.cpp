@@ -310,19 +310,14 @@ static void HandleReturnToHome(Navigator& navigator, Mapper& mapper, Position po
 // Bij transitie (ramp loopt nog) kan het teken 1 tick te vroeg omslaan,
 // maar dat is verwaarloosbaar t.o.v. de permanente drift bij geen fix.
 // ─────────────────────────────────────────────────────────────────
-static void EncoderMetTeken(float cmdLin, float cmdAng,
+static void EncoderMetTeken(bool fwdLeft, bool fwdRight,
                              float& vLeft, float& vRight)
 {
-    constexpr float HALF_BASE = 219.0f / 2.0f;                     // 109.5 mm
-    constexpr float DEG2RAD   = static_cast<float>(M_PI) / 180.0f;
 
-    float omegaRad  = cmdAng * DEG2RAD;
-    float cmdVLeft  = cmdLin + omegaRad * HALF_BASE;   // positief = vooruit
-    float cmdVRight = cmdLin - omegaRad * HALF_BASE;
 
     // NIEUW — teken gebaseerd op Pico forward flag (altijd correct)
-    float signLeft  = sens.forwardLeft  ? 1.0f : -1.0f;
-    float signRight = sens.forwardRight ? 1.0f : -1.0f;
+    float signLeft  = fwdLeft  ? 1.0f : -1.0f;
+    float signRight = fwdRight ? 1.0f : -1.0f;
 
     vLeft  = signLeft  * std::fabs(vLeft);
     vRight = signRight * std::fabs(vRight);
@@ -415,14 +410,16 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
 
             // Teken herstellen voor beide wielen (encoders zijn altijd positief).
             float vL = sens.speedLinks, vR = sens.speedRechts;
-            EncoderMetTeken(ka.GetLin(), ka.GetAng(), vL, vR);
+            EncoderMetTeken(sens.forwardLeft, sens.forwardRight, vL, vR);
 
             // omegaDegS op basis van gecorrigeerde snelheden (voor mapper).
-            omegaDegS = (vR - vL) / 219.0f * (180.0f / static_cast<float>(M_PI));
+            omegaDegS = ka.GetAng();
             linSpeed  = 0.5f * (vL + vR);  // bijhouden voor ICP-draai-check
 
+
+            bool beweegt = (sens.speedLinks != 0.0f || sens.speedRechts != 0.0f);
             // Predict/UpdateIMU ALLEEN op vers pakket — voorkomt stale-data drift.
-            if (versData) {
+            if (versData && beweegt) {
                 loc.Predict(vL, vR, DT);
                 loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
             }
@@ -458,7 +455,10 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
             // ICP overslaan tijdens draaien: de roterende puntenwolk geeft
             // willekeurige translaties terug die de positie laten springen.
             constexpr float ICP_LIN_MIN = 20.0f;
-            if (std::fabs(linSpeed) > ICP_LIN_MIN && icp.valid) {
+            constexpr float ICP_OMEGA_MAX = 8.0f;  // deg/s
+
+            if (std::fabs(linSpeed) > ICP_LIN_MIN &&
+    std::fabs(omegaDegS) < ICP_OMEGA_MAX && icp.valid) {
                 loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
                 // BUG3 FIX: huidigeImuYaw NIET optellen met icp.dtheta
                 pos = Position(loc.GetX(), loc.GetY(), loc.GetTheta()); // BUG4 FIX
@@ -600,10 +600,10 @@ static int RunRijdenEnMappenwf(Pi5UARTHandler& uart, LIDAR& lidar) {
 
             // Teken herstellen voor beide wielen (encoders zijn altijd positief).
             float vL = sens.speedLinks, vR = sens.speedRechts;
-            EncoderMetTeken(ka.GetLin(), ka.GetAng(), vL, vR);
+            EncoderMetTeken(sens.forwardLeft, sens.forwardRight, vL, vR);
 
             // omegaDegS op basis van gecorrigeerde snelheden (voor mapper).
-            omegaDegS = (vR - vL) / 219.0f * (180.0f / static_cast<float>(M_PI));
+            omegaDegS = ka.GetAng();
             linSpeed  = 0.5f * (vL + vR);  // bijhouden voor ICP-draai-check
 
             bool beweegt = (sens.speedLinks != 0.0f || sens.speedRechts != 0.0f);
@@ -868,14 +868,15 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
 
                 // Teken herstellen voor beide wielen (encoders zijn altijd positief).
                 float vL = sens.speedLinks, vR = sens.speedRechts;
-                EncoderMetTeken(ka.GetLin(), ka.GetAng(), vL, vR);
+                EncoderMetTeken(sens.forwardLeft, sens.forwardRight, vL, vR);
 
                 // omegaDegS op basis van gecorrigeerde snelheden (voor mapper).
-                omegaDegS      = (vR - vL) / 219.0f * (180.0f / static_cast<float>(M_PI));
+                omegaDegS = ka.GetAng();
                 linSpeedPico   = 0.5f * (vL + vR);
 
+                bool versData = uart.LeesData();   // true = nieuw Pico-pakket ontvangen
                 beweegt = (sens.speedLinks != 0.0f || sens.speedRechts != 0.0f);
-                if (beweegt) {
+                if (versData && beweegt) {
                     loc.Predict(vL, vR, DT);
                     loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
                 }
