@@ -320,9 +320,8 @@ static void EncoderMetTeken(float cmdLin, float cmdAng,
     float cmdVLeft  = cmdLin + omegaRad * HALF_BASE;   // positief = vooruit
     float cmdVRight = cmdLin - omegaRad * HALF_BASE;
 
-    // NIEUW — teken gebaseerd op Pico forward flag (altijd correct)
-    float signLeft  = sens.forwardLeft  ? 1.0f : -1.0f;
-    float signRight = sens.forwardRight ? 1.0f : -1.0f;
+    float signLeft  = (cmdVLeft  >= 0.0f) ? 1.0f : -1.0f;
+    float signRight = (cmdVRight >= 0.0f) ? 1.0f : -1.0f;
 
     vLeft  = signLeft  * std::fabs(vLeft);
     vRight = signRight * std::fabs(vRight);
@@ -840,7 +839,7 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
         else if (naam == "links")     { rijLin =    0.0f; rijAng = -40.0f; }
         else if (naam == "rechts")    { rijLin =    0.0f; rijAng =  40.0f; }
         else if (naam == "bochtl")    { rijLin =   20.0f; rijAng = -40.0f; }
-        else if (naam == "bochtr")    { rijLin =   20.0f; rijAng =  40.0f; }
+        else if (naam == "bochtr")    { rijLin =   0.0f; rijAng =  40.0f; }
         else if (naam == "stop")      { rijLin =    0.0f; rijAng =   0.0f; }
         else {
             printf("[PICO] Onbekend commando '%s'\n", naam.c_str());
