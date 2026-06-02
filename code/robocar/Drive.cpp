@@ -18,7 +18,7 @@ static constexpr float PID_YAW_KP   = 4.0f;
 static constexpr float PID_YAW_KI   = 0.1f;
 static constexpr float PID_YAW_KD   = 0.3f;
 //Helper
-static constexpr float PID_MAX_INTEGRAL = 150.0f;
+static constexpr float PID_MAX_INTEGRAL = 49.0f;
 static constexpr float PID_MAX_OUTPUT   = 100.0f;
 
 // Minimum PWM below which the motor physically does not move (stall zone).
@@ -195,9 +195,11 @@ float Drive::ComputeYawCorrection()
     float currentYaw = sensorHub.GetCurrentYaw();
     float yawError   = targetYaw - currentYaw;
 
-    // Wrap to [-180, 180] to handle the 0/360 boundary.
-    while (yawError >  180.0f) yawError -= 360.0f;
-    while (yawError < -180.0f) yawError += 360.0f;
+    yawError = fmodf(yawError + 180.0f, 360.0f);
+    if (yawError < 0.0f) {
+        yawError += 360.0f;
+    }
+    yawError -= 180.0f;
 
     // Negate: positive yawError (drifted left) → positive output → steer right.
     return pidYaw.Compute(0.0f, -yawError);
@@ -259,7 +261,8 @@ void Drive::ExecuteTurn(float angular)
     // When both wheels are still at rest, reset the PID history so accumulated
     // integral from the previous linear phase does not pollute the turn startup.
     // Force output to 0 (= no trim, feedforward alone drives the motor).
-    float outLeft, outRight;
+    float outLeft;
+    float outRight;
     if (speedLeftFiltered < 1.0f && speedRightFiltered < 1.0f) {
         outLeft  = lastOutputLeft  = 0.0f;   // neutral trim — feedforward handles startup
         outRight = lastOutputRight = 0.0f;
@@ -272,12 +275,7 @@ void Drive::ExecuteTurn(float angular)
         lastOutputRight = outRight;
     }
 
-    // PIDController::Compute returns values in [-100, 100] with 0 = on-target.
-    // Map to a PWM trim in [-(255-minPwm), +(255-minPwm)].
-    //
-    // BUG that was here: (outLeft - 50) / 50 * 225 assumes PID center = 50.
-    // Actual PID center = 0, so a healthy output of ~5 gave trim = -202,
-    // collapsing magL to negative → clamped to minPwm → motor stuck at 30 PWM.
+    
     float trimL = outLeft  / 100.0f * (255.0f - minPwmLeft);
     float trimR = outRight / 100.0f * (255.0f - minPwmRight);
 
@@ -289,13 +287,12 @@ void Drive::ExecuteTurn(float angular)
     if (magR < minPwmRight) magR = minPwmRight;
     if (magR > 255.0f)      magR = 255.0f;
 
-    if (driveMode == DriveMode::TurnLeft)  { pwmLeft = -magL; pwmRight = +magR; }
-    else                                   { pwmLeft = +magL; pwmRight = -magR; }
-
-    printf("[TURN] dir=%s tgt=%.1f ramp=%.1f coup=%.1f spdL=%.1f spdR=%.1f pwmL=%.0f pwmR=%.0f\n",
-        driveMode == DriveMode::TurnLeft ? "LEFT" : "RIGHT",
-        targetWheelSpd, rampedTurnSpeed, coupledTarget,
-        speedLeftFiltered, speedRightFiltered, pwmLeft, pwmRight);
+    if (driveMode == DriveMode::TurnLeft)  { 
+        pwmLeft = -magL; pwmRight = +magR; 
+    }
+    else { 
+        pwmLeft = +magL; pwmRight = -magR; 
+    }
 }
 
 void Drive::ExecuteLinear(float linear, float angular)
