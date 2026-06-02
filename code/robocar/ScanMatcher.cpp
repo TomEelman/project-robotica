@@ -215,8 +215,8 @@ IcpResult ScanMatcher::Match(const float ranges[360], float robotTheta,
         std::fabs(totalDtheta) > maxRotDeg  ||
         fitness              > 80.0f)
     {
-        printf("[ICP] afgewezen: icp_corr=%.1fmm rot=%.1fdeg fit=%.1f\n",
-               transMag, totalDtheta, fitness);
+        //printf("[ICP] afgewezen: icp_corr=%.1fmm rot=%.1fdeg fit=%.1f\n",
+          //     transMag, totalDtheta, fitness);
         prevPoints = curPoints;
         return result;
     }
@@ -229,9 +229,9 @@ IcpResult ScanMatcher::Match(const float ranges[360], float robotTheta,
     result.fitness = fitness;
     result.valid   = true;
 
-    printf("[ICP] OK: dx=%.1f dy=%.1f dth=%.2f fit=%.1f (enc=%.1f,%.1f icp_corr=%.1fmm)\n",
-           result.dx, result.dy, result.dtheta, fitness,
-           initDx, initDy, transMag);
+    //printf("[ICP] OK: dx=%.1f dy=%.1f dth=%.2f fit=%.1f (enc=%.1f,%.1f icp_corr=%.1fmm)\n",
+      //     result.dx, result.dy, result.dtheta, fitness,
+        //   initDx, initDy, transMag);
 
     // Bewaar getransformeerde scan als nieuwe referentie
     prevPoints = moving;

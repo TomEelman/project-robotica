@@ -846,9 +846,9 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
             continue;
         }
 
-        printf("  → %s  (lin=%.0f ang=%.0f)  |  SPATIE = ander commando  |  q = stoppen\n",
+        /*printf("  → %s  (lin=%.0f ang=%.0f)  |  SPATIE = ander commando  |  q = stoppen\n",
                naam.c_str(), rijLin, rijAng);
-
+*/
         ka.SetCommand(rijLin, rijAng);
 
         // ── Rijfase: sensor/mapping loop + wacht op SPATIE of q ────────────
@@ -942,7 +942,7 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
     for (int i = 0; i < 10; ++i) { uart.StuurStop(); usleep(50000); }
     lidar.Disconnect();
     mapper.SaveDebugMap("kaart.pgm");
-    printf("[PICO] Kaart opgeslagen als kaart.pgm\n");
+    //printf("[PICO] Kaart opgeslagen als kaart.pgm\n");
     return 0;
 }
 
