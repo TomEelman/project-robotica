@@ -93,7 +93,7 @@ bool Pi5UARTHandler::LeesData() {
                     // en de loop-timing niet verstoord wordt.
                 } else if (regelLen > 2) {
                     // Onbekende regels loggen (ERR:, debug prints van Pico, etc.)
-                    fprintf(stderr, "[Pico] %s\n", lineBuffer);
+                    //fprintf(stderr, "[Pico] %s\n", lineBuffer);
                 }
             }
         } else if (linePos < (int)sizeof(lineBuffer) - 1) {

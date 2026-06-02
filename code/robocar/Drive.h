@@ -22,8 +22,8 @@ public:
           float      wheelbaseMeters,
           float      minAngVel   = 13.0f,
           float      maxAngVel   = 35.0f,
-          float      minPwmLeft  = 30.0f,
-          float      minPwmRight = 30.0f);
+          float      minPwmLeft  = 45.0f,
+          float      minPwmRight = 45.0f);
 
     void Execute(const DriveCommand& command);
     void Stop();
