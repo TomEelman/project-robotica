@@ -417,7 +417,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
             EncoderMetTeken(ka.GetLin(), ka.GetAng(), vL, vR);
 
             // omegaDegS op basis van gecorrigeerde snelheden (voor mapper).
-            omegaDegS = (vR - vL) / 219.0f * (180.0f / static_cast<float>(M_PI));
+            omegaDegS = ka.GetAng();
             linSpeed  = 0.5f * (vL + vR);  // bijhouden voor ICP-draai-check
 
             // Predict/UpdateIMU ALLEEN op vers pakket — voorkomt stale-data drift.
@@ -602,7 +602,7 @@ static int RunRijdenEnMappenwf(Pi5UARTHandler& uart, LIDAR& lidar) {
             EncoderMetTeken(ka.GetLin(), ka.GetAng(), vL, vR);
 
             // omegaDegS op basis van gecorrigeerde snelheden (voor mapper).
-            omegaDegS = (vR - vL) / 219.0f * (180.0f / static_cast<float>(M_PI));
+            omegaDegS = ka.GetAng();
             linSpeed  = 0.5f * (vL + vR);  // bijhouden voor ICP-draai-check
 
             bool beweegt = (sens.speedLinks != 0.0f || sens.speedRechts != 0.0f);
@@ -870,7 +870,7 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
                 EncoderMetTeken(ka.GetLin(), ka.GetAng(), vL, vR);
 
                 // omegaDegS op basis van gecorrigeerde snelheden (voor mapper).
-                omegaDegS      = (vR - vL) / 219.0f * (180.0f / static_cast<float>(M_PI));
+                omegaDegS      = ka.GetAng();
                 linSpeedPico   = 0.5f * (vL + vR);
 
                 beweegt = (sens.speedLinks != 0.0f || sens.speedRechts != 0.0f);
