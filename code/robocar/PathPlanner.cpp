@@ -85,25 +85,11 @@ Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
       //  if (!gevonden) { std::cerr << "Planner: start trapped (no free neighbour)\n"; return Path(); }
     }
 
-    // ── Doel-cel herstel ─────────────────────────────────────────
-    // Frontier-doelen liggen vaak vlak tegen (half-gemapte) muren en belanden
-    // zo in de inflatie-marge. Het pad dan afkeuren (leeg teruggeven) liet de
-    // robot stoppen en de exploratie te vroeg opgeven. I.p.v. dat snappen we
-    // het doel — net als de start hierboven — naar de dichtstbijzijnde
-    // beloopbare cel. De robot rijdt zo tot vlak bij de frontier, scant, en
-    // het onbekende gebied (vaak juist de muren) komt alsnog in kaart.
-    if (gridMap.InBounds(gx, gy) && !walkable(gx, gy)) {
-        bool gevonden = false;
-        for (int r = 1; r <= 6 && !gevonden; ++r) {
-            for (int dx = -r; dx <= r && !gevonden; ++dx)
-                for (int dy = -r; dy <= r && !gevonden; ++dy) {
-                    if (std::abs(dx) != r && std::abs(dy) != r) continue; // alleen de rand van de ring
-                    if (walkable(gx + dx, gy + dy)) {
-                        gx += dx; gy += dy; gevonden = true;
-                    }
-                }
-        }
-        if (!gevonden) return Path();  // echt niets beloopbaars in de buurt → geef op
+    // The goal may be a frontier cell bordering unknown space; we
+    // only require it is not inside a wall/inflation.
+    if (gridMap.InBounds(gx, gy) && blockedCell[idx(gx, gy)]) {
+     //   std::cerr << "Planner: goal lies in obstacle/margin\n";
+        return Path();
     }
 
     // ── 5. Wavefront: BFS VANUIT HET DOEL ────────────────────────
