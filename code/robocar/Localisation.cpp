@@ -109,14 +109,14 @@ void Localisation::Predict(float vLeft, float vRight, float dt)
     //   omega≠0 terwijl je rechtdoor rijdt → encoder-asymmetrie / wieldiameter-verschil
     //   dtheta groot maar IMU zegt 0 → EKF trekt theta verkeerde kant op
     //   [STALE] → geen vers Pico-pakket, dezelfde snelheid opnieuw geïntegreerd
-    /*printf("[LOC-ENC] vL=%6.1f vR=%6.1f | v=%6.1f omega=%+5.2f°/s | "
+    printf("[LOC-ENC] vL=%6.1f vR=%6.1f | v=%6.1f omega=%+5.2f°/s | "
            "dx=%+5.1f dy=%+5.1f dtheta=%+5.2f° | "
            "pos=(%.1f,%.1f,%.1f)%s\n",
            vLeft, vRight, v, omegaDeg,
            dx_enc, dy_enc, dtheta_enc,
            x, y, theta,
            (staleCount > 1) ? " [STALE]" : "");
-           */
+           
 
     // ── Jacobiaan + covariantie P ──────────────────────────────────
     float vdt = v * dt;
@@ -143,14 +143,14 @@ void Localisation::Predict(float vLeft, float vRight, float dt)
     if (debugTickCounter >= 10) {
         debugTickCounter = 0;
         float ratio = totalEncDist > 0.1f ? totalLocDist / totalEncDist : 1.0f;
-        /*printf("[LOC-SUM] pos=(%.1f,%.1f) theta=%.1f | "
+        printf("[LOC-SUM] pos=(%.1f,%.1f) theta=%.1f | "
                "totEnc=%.0fmm totLoc=%.0fmm ratio=%.3f | "
                "P=(%.3f,%.3f,%.3f)%s\n",
                x, y, theta,
                totalEncDist, totalLocDist, ratio,
                P[0][0], P[1][1], P[2][2],
                (ratio < 0.9f || ratio > 1.1f) ? " *** RATIO AFWIJKEND ***" : "");
-               */
+               
     }
 }
 
@@ -181,9 +181,9 @@ void Localisation::UpdateIMU(float imuYawDeg, float /*dt*/)
     P[2][2] = 0.01f;
 
     float correctie = NormalizeDeg(theta - thetaVoor);
-    //printf("[LOC-IMU] imu=%+7.2f delta=%+6.2f -> theta=%+7.2f%s\n",
-      //     imuYawDeg, delta, theta,
-        //   std::fabs(correctie) > 5.0f ? " *** GROTE SPRONG ***" : "");
+    printf("[LOC-IMU] imu=%+7.2f delta=%+6.2f -> theta=%+7.2f%s\n",
+           imuYawDeg, delta, theta,
+           std::fabs(correctie) > 5.0f ? " *** GROTE SPRONG ***" : "");
 }
 
 float Localisation::GetX()     const { return x;     }
@@ -219,13 +219,13 @@ void Localisation::ApplyIcpCorrection(float dx, float dy, float dtheta)
 
     // Grote correcties (>50mm of >5°) wijzen op slip of slechte ICP-match
     // die toch als valid doorging — let hier goed op in de logs
-    /*printf("[ICP-CORR] icp=(%.1f,%.1f,%.2f) correctie=(%.1f,%.1f,%.2f) anker=(%.1f,%.1f,%.1f)%s\n",
+    printf("[ICP-CORR] icp=(%.1f,%.1f,%.2f) correctie=(%.1f,%.1f,%.2f) anker=(%.1f,%.1f,%.1f)%s\n",
            dx, dy, dtheta,
            corrX, corrY, corrT,
            x_anchor, y_anchor, theta_anchor,
            (std::fabs(corrX) > 50.0f || std::fabs(corrY) > 50.0f || std::fabs(corrT) > 5.0f)
                ? " *** GROTE CORRECTIE ***" : "");
-               */
+               
 
     // Nieuw anker voor de volgende ICP-match
     x_anchor     = x;
@@ -248,9 +248,9 @@ void Localisation::ApplyIcpCorrection(float dx, float dy, float dtheta)
 // ─────────────────────────────────────────────────────────────────
 void Localisation::SetIcpAnchor()
 {
-    /*printf("[ICP-ANCHOR] mislukt — anker bijgewerkt naar (%.1f,%.1f,%.1f)\n",
+    printf("[ICP-ANCHOR] mislukt — anker bijgewerkt naar (%.1f,%.1f,%.1f)\n",
            x, y, theta);
-           */
+           
 
     x_anchor     = x;
     y_anchor     = y;
@@ -265,5 +265,5 @@ void Localisation::ResetDistanceCounters()
 {
     totalEncDist = 0.0f;
     totalLocDist = 0.0f;
-    //printf("[LOC] afstandstellers gereset\n");
+    printf("[LOC] afstandstellers gereset\n");
 }

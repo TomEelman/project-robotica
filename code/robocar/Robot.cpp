@@ -29,7 +29,11 @@ Robot::Robot()
       sensorHub(ENCODER_LEFT_PULSE,  ENCODER_LEFT_RES,
                 ENCODER_RIGHT_PULSE, ENCODER_RIGHT_RES,
                 IMU_SDA, IMU_SCL),
-      drive(motorLeft, motorRight, sensorHub, WHEELBASE_M),
+      drive(motorLeft, motorRight, sensorHub, WHEELBASE_M, 
+            13.0f,  // minAngleVel
+            35.0f,  // maxAngleVel
+            55.0f,  // minPwmLeft
+            55.0f), // minPwmRight
       localisation(WHEELBASE_M)
 {
 }
