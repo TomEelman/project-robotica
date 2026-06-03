@@ -20,6 +20,7 @@ static float NormalizeDeg(float deg) {
 Localisation::Localisation(float wheelBaseMm)
     : x(0.0f), y(0.0f), theta(0.0f)
     , wheelBase(wheelBaseMm)
+    , x_anchor(0.0f), y_anchor(0.0f), theta_anchor(0.0f)
     , totalEncDist(0.0f), totalLocDist(0.0f)
     , prevX(0.0f), prevY(0.0f)
     , debugTickCounter(0)
@@ -191,6 +192,76 @@ void Localisation::UpdateIMU(float imuYawDeg, float /*dt*/)
 float Localisation::GetX()     const { return x;     }
 float Localisation::GetY()     const { return y;     }
 float Localisation::GetTheta() const { return theta; }
+
+// ─────────────────────────────────────────────────────────────────
+//  ApplyIcpCorrection  —  pas ICP scan-matching correctie toe
+//
+//  BUG1 FIX: theta was cumulatief (theta += dtheta). Odometrie had
+//  theta al bijgewerkt met dezelfde rotatie die ICP rapporteert →
+//  dubbeltelling. Nu anchor-based voor alle drie variabelen.
+//
+//  BUG3 gevolg: MainPi5 moet NA deze aanroep loc.GetTheta() gebruiken
+//  als heading voor Position, NIET huidigeImuYaw += icp.dtheta.
+// ─────────────────────────────────────────────────────────────────
+void Localisation::ApplyIcpCorrection(float dx, float dy, float dtheta)
+{
+    float xVoor     = x;
+    float yVoor     = y;
+    float thetaVoor = theta;
+
+    // Alleen translatie uit ICP toepassen. Heading komt uitsluitend van de
+    // IMU, dus theta wordt hier NIET aangeraakt — de ICP-rotatie is in deze
+    // omgeving slecht bepaald en liet de kaart eerder krombuigen.
+    x = x_anchor + dx;
+    y = y_anchor + dy;
+
+    // Verschil tussen wat odometrie dacht en wat ICP zegt
+    float corrX = x - xVoor;
+    float corrY = y - yVoor;
+    float corrT = NormalizeDeg(theta - thetaVoor);
+
+    // Grote correcties (>50mm of >5°) wijzen op slip of slechte ICP-match
+    // die toch als valid doorging — let hier goed op in de logs
+    printf("[ICP-CORR] icp=(%.1f,%.1f,%.2f) correctie=(%.1f,%.1f,%.2f) anker=(%.1f,%.1f,%.1f)%s\n",
+           dx, dy, dtheta,
+           corrX, corrY, corrT,
+           x_anchor, y_anchor, theta_anchor,
+           (std::fabs(corrX) > 50.0f || std::fabs(corrY) > 50.0f || std::fabs(corrT) > 5.0f)
+               ? " *** GROTE CORRECTIE ***" : "");
+               
+
+    // Nieuw anker voor de volgende ICP-match
+    x_anchor     = x;
+    y_anchor     = y;
+    theta_anchor = theta;
+
+    // Verklein onzekerheid als ICP slaagt
+    P[0][0] *= 0.8f;
+    P[1][1] *= 0.8f;
+    P[2][2] *= 0.8f;
+}
+
+// ─────────────────────────────────────────────────────────────────
+//  SetIcpAnchor  —  synchroniseer anker na mislukte ICP
+//
+//  Aanroepen wanneer ICP mislukt. Zonder dit springt de positie
+//  bij de volgende geslaagde ICP terug naar de positie van de
+//  vorige geslaagde scan, ook al heeft odometrie sindsdien meters
+//  verder gereden.
+// ─────────────────────────────────────────────────────────────────
+void Localisation::SetIcpAnchor()
+{
+    /*
+    printf("[ICP-ANCHOR] mislukt — anker bijgewerkt naar (%.1f,%.1f,%.1f)\n",
+           x, y, theta);
+    */
+           
+
+    x_anchor     = x;
+    y_anchor     = y;
+    theta_anchor = theta;
+    
+}
 
 // ─────────────────────────────────────────────────────────────────
 //  ResetDistanceCounters  —  nulstellen voor gerichte meting

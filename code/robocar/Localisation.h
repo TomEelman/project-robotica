@@ -13,6 +13,17 @@ public:
     // imuYawDeg: gecorrigeerde yaw van de IMU in graden (na offset-aftrek)
     void UpdateIMU(float imuYawDeg, float dt);
 
+    // ── ICP scan-matching integratie ──────────────────────────────
+    // Pas ICP-correctie toe. dx/dy in mm, dtheta in graden.
+    // Alleen aanroepen als IcpResult.valid == true.
+    //
+    // Na aanroep: gebruik loc.GetTheta() als heading voor Position,
+    // NIET huidigeImuYaw += icp.dtheta (dat was Bug 3 — dubbeltelling).
+    void ApplyIcpCorrection(float dx, float dy, float dtheta);
+
+    // Synchroniseer anker na mislukte ICP. Aanroepen als valid == false.
+    void SetIcpAnchor();
+
     // ── State accessors ───────────────────────────────────────────
     float GetX()     const; // mm
     float GetY()     const; // mm
@@ -37,6 +48,14 @@ private:
     float R;        // meetsruis IMU-yaw
 
     float wheelBase; // mm — consistent 219mm, NERGENS 235mm gebruiken
+
+    // ── ICP-ankerpunten (BUG1 FIX) ───────────────────────────────
+    // Positie + heading op het moment van de vorige geslaagde ICP-scan.
+    // ApplyIcpCorrection stelt x/y/theta = anchor + delta, zodat
+    // odometrie-drift volledig vervangen wordt zonder dubbeltelling.
+    float x_anchor;
+    float y_anchor;
+    float theta_anchor; // graden — was er niet, veroorzaakte hoek-dubbeltelling
 
     // ── Debug-tellers ─────────────────────────────────────────────
     float totalEncDist;    // gecumuleerde encoder-afstand (mm)
