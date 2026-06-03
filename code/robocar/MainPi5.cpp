@@ -377,15 +377,8 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
     CommandKeepAlive ka(uart);
     ScanMatcher      scanMatcher;  // ICP scan-to-scan matching
 
-    float linSpeed       = 0.0f;  // gemiddelde lineaire snelheid voor ICP-check
-
-    // Encoder-seeding voor ICP: onthoud EKF-positie bij de vorige scan zodat
-    // we de geschatte verplaatsing als initiële gok aan Match() kunnen meegeven.
-
     float vorigeCmdSign = 0.0f;   // teken van ka.GetLin() vorige tick
     bool  wachtUitrol   = false;  // commando net omgeklapt, wacht tot encoders ~0
-    float lastScanX      = 0.0f, lastScanY = 0.0f;
-    bool  hasLastScanPos = false;
 
     float lastRanges[360] = {};
     bool  heeftRanges     = false;
@@ -418,7 +411,6 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
             EncoderMetTeken(ka.GetLin(), ka.GetAng(), vL, vR);
 
             omegaDegS = ka.GetAng();
-            linSpeed  = 0.5f * (vL + vR);
 
             // ── Uitroll-detectie na richtingswissel ──────────────────────────
             // EncoderMetTeken bepaalt het teken uit het commando. Bij een
