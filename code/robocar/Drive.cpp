@@ -1,6 +1,7 @@
 #include "Drive.h"
 #include <cstdio>
 #include <cmath>
+#include "pico/time.h"
 
 //links klein verschil mer rechts
 //Left PID
@@ -17,7 +18,7 @@ static constexpr float PID_RIGHT_KD = 0.0074f;
 static constexpr float PID_YAW_KP   = 4.0f;
 static constexpr float PID_YAW_KI   = 0.1f;
 static constexpr float PID_YAW_KD   = 0.3f;
-//Helper
+
 static constexpr float PID_MAX_INTEGRAL = 49.0f;
 static constexpr float PID_MAX_OUTPUT   = 100.0f;
 
@@ -25,34 +26,30 @@ static constexpr float PID_MAX_OUTPUT   = 100.0f;
 static constexpr float CLAMP_MIN_PWM = 30.0f;
 
 // EMA filter coefficient for encoder speed readings.
-// 0.5 = equal weight to new and previous sample.
-// Lower → smoother but slower to react; higher → noisier but faster.
 static constexpr float EMA_ALPHA = 0.5f;
 
-// During pure-rotation the feedforward PWM is derived from the target angular
-// velocity using this linear approximation (experimentally determined):
-//   pwm = (angVel_deg_s + 52.2) / 1.34
+// Feedforward for pure-rotation:  pwm = (angVel_deg_s + FF_OFFSET) / FF_SCALE
 static constexpr float FF_OFFSET = 52.2f;
 static constexpr float FF_SCALE  = 1.34f;
 
-static constexpr float TURN_SPEED_GAIN          = 0.3f;
-static constexpr float TURN_COUPLED_MIN_FACTOR  = 0.5f;
-static constexpr float TURN_COUPLED_MAX_FACTOR  = 1.5f;
+static constexpr float TURN_SPEED_GAIN         = 0.3f;
+static constexpr float TURN_COUPLED_MIN_FACTOR = 0.5f;
+static constexpr float TURN_COUPLED_MAX_FACTOR = 1.5f;
 
 // Ramping rates in mm/s per Execute() tick.
-// ACCEL and DECEL are kept equal so the robot brakes just as gradually as
-// it accelerates — symmetric ramps prevent wheel slip in both directions.
-// Tune these if you want sharper braking: raise DECEL toward ~10–15.
 static constexpr float RAMP_ACCEL_STEP = 5.0f;
 static constexpr float RAMP_DECEL_STEP = 5.0f;
 
 // Maximum change in the incoming linear command per Execute() call.
-// Acts as a safety gate before the internal ramp: no matter what the navigator
-// requests, the speed seen by the ramp can only shift by this much each tick.
-// At 278 mm/s top speed and step=20, a full stop takes ~14 ticks (~140 ms at 100 Hz).
-// Raise to allow faster commanded transitions; lower to smooth more aggressively.
 static constexpr float CMD_MAX_LIN_STEP = 20.0f;
 
+// Reversal lockout thresholds.
+// The robot is considered stationary when both encoder speeds are below
+// REVERSAL_STILL_MM_S. REVERSAL_TIMEOUT_MS is a safety cap so the lockout
+// never hangs indefinitely (e.g. if encoder noise keeps the reading above
+// the threshold).
+static constexpr float    REVERSAL_STILL_MM_S  = 15.0f;
+static constexpr uint32_t REVERSAL_TIMEOUT_MS  = 800;
 
 
 Drive::Drive(Motor&     leftMotor,
@@ -88,7 +85,9 @@ Drive::Drive(Motor&     leftMotor,
       minAngVel(minAngVel),
       maxAngVel(maxAngVel),
       minPwmLeft(minPwmLeft),
-      minPwmRight(minPwmRight)
+      minPwmRight(minPwmRight),
+      reversalLockout(false),
+      reversalStartMs(0)
 {
 }
 
@@ -125,11 +124,7 @@ void Drive::UpdateRamp(float linearTarget)
 {
     if (driveMode == DriveMode::TurnLeft || driveMode == DriveMode::TurnRight) {
         // Ramp linear speed down to zero instead of snapping instantly.
-        // This prevents the sudden motor reversal jerk that causes slip at
-        // the entry of a turn.
         // NOTE: do NOT touch rampedTurnSpeed here — ExecuteTurn owns it.
-        //       Zeroing it here (inside the turn branch) caused the ramp to
-        //       reset to 0 every tick, keeping it stuck at RAMP_ACCEL_STEP.
         float absRamp = fabsf(rampedLinear);
         if (absRamp > 0.0f) {
             absRamp -= RAMP_DECEL_STEP;
@@ -141,13 +136,10 @@ void Drive::UpdateRamp(float linearTarget)
     }
 
     // Stopped or linear mode — reset the turn ramp so the NEXT turn always
-    // starts fresh from zero (smooth entry).  This runs every tick while not
-    // turning, so rampedTurnSpeed is guaranteed to be 0 when a new turn begins.
+    // starts fresh from zero (smooth entry).
     rampedTurnSpeed = 0.0f;
 
     if (driveMode == DriveMode::Stopped) {
-        // Ramp down instead of snapping to 0 — matches the deceleration
-        // behaviour of the linear branch so the motor doesn't jolt on stop.
         float absRamp = fabsf(rampedLinear);
         if (absRamp > RAMP_DECEL_STEP) {
             float sign   = (rampedLinear >= 0.0f) ? 1.0f : -1.0f;
@@ -158,7 +150,7 @@ void Drive::UpdateRamp(float linearTarget)
         return;
     }
 
-    // Linear (forward / backward) mode ─────────────────────────────────────
+    // Linear (forward / backward) mode
     float absTgt  = fabsf(linearTarget);
     float absRamp = fabsf(rampedLinear);
     float sign    = (linearTarget >= 0.0f) ? 1.0f : -1.0f;
@@ -168,12 +160,9 @@ void Drive::UpdateRamp(float linearTarget)
     if (absRamp < minPwmLeft) absRamp = minPwmLeft;
 
     if (absRamp < absTgt) {
-        // Accelerating — approach target at ACCEL rate.
         absRamp += RAMP_ACCEL_STEP;
         if (absRamp > absTgt) absRamp = absTgt;
     } else if (absRamp > absTgt) {
-        // Decelerating — reduce at DECEL rate instead of snapping.
-        // Equal rate to acceleration keeps braking as gentle as starting.
         absRamp -= RAMP_DECEL_STEP;
         if (absRamp < absTgt) absRamp = absTgt;
     }
@@ -183,9 +172,6 @@ void Drive::UpdateRamp(float linearTarget)
 
 float Drive::ComputeYawCorrection()
 {
-    // targetYaw is latched in Execute() on the first tick of a new move,
-    // so yawInitialized is already true when we get here during normal driving.
-    // The guard below is a fallback for any edge case where that didn't happen.
     if (!yawInitialized) {
         targetYaw      = sensorHub.GetCurrentYaw();
         yawInitialized = true;
@@ -201,7 +187,6 @@ float Drive::ComputeYawCorrection()
     }
     yawError -= 180.0f;
 
-    // Negate: positive yawError (drifted left) → positive output → steer right.
     return pidYaw.Compute(0.0f, -yawError);
 }
 
@@ -211,13 +196,8 @@ void Drive::ExecuteTurn(float angular)
 
     float wheelbaseMm    = wheelbaseMeters * 1000.0f;
     float angularRad     = fabsf(angular) * (static_cast<float>(M_PI) / 180.0f);
-    float targetWheelSpd = angularRad * wheelbaseMm * 0.5f;   // final (full-speed) setpoint
+    float targetWheelSpd = angularRad * wheelbaseMm * 0.5f;
 
-    // ── Ramp the effective turn speed ────────────────────────────────────────
-    // Instead of jumping straight to targetWheelSpd we nudge rampedTurnSpeed
-    // toward it each tick.  This avoids the sudden torque spike (and resulting
-    // tyre slip / encoder noise) that occurs when a pure rotation starts or
-    // stops abruptly.
     if (rampedTurnSpeed < targetWheelSpd) {
         rampedTurnSpeed += RAMP_ACCEL_STEP;
         if (rampedTurnSpeed > targetWheelSpd) rampedTurnSpeed = targetWheelSpd;
@@ -226,10 +206,6 @@ void Drive::ExecuteTurn(float angular)
         if (rampedTurnSpeed < targetWheelSpd) rampedTurnSpeed = targetWheelSpd;
     }
 
-    // Feed-forward based on the FULL requested angular velocity so the motor
-    // receives enough PWM from the very first tick to overcome static friction.
-    // (Using rampedTurnSpeed here made feedforward too small at startup and kept
-    //  the robot stuck at minPwm even after fixing the ramp reset bug.)
     float feedforward = (fabsf(angular) + FF_OFFSET) / FF_SCALE;
     if (feedforward < minPwmLeft) feedforward = minPwmLeft;
     if (feedforward > 255.0f)     feedforward = 255.0f;
@@ -248,8 +224,6 @@ void Drive::ExecuteTurn(float angular)
     if (freshL) speedLeftFiltered  = EMA_ALPHA * rawL + (1.0f - EMA_ALPHA) * speedLeftFiltered;
     if (freshR) speedRightFiltered = EMA_ALPHA * rawR + (1.0f - EMA_ALPHA) * speedRightFiltered;
 
-    // Coupled target: drive both wheels toward their current average and only
-    // gently pull that average toward the ramped setpoint.
     float avgSpeed      = 0.5f * (speedLeftFiltered + speedRightFiltered);
     float avgError      = rampedTurnSpeed - avgSpeed;
     float coupledTarget = avgSpeed + TURN_SPEED_GAIN * avgError;
@@ -258,13 +232,10 @@ void Drive::ExecuteTurn(float angular)
     if (coupledTarget > TURN_COUPLED_MAX_FACTOR * rampedTurnSpeed)
         coupledTarget = TURN_COUPLED_MAX_FACTOR * rampedTurnSpeed;
 
-    // When both wheels are still at rest, reset the PID history so accumulated
-    // integral from the previous linear phase does not pollute the turn startup.
-    // Force output to 0 (= no trim, feedforward alone drives the motor).
     float outLeft;
     float outRight;
     if (speedLeftFiltered < 1.0f && speedRightFiltered < 1.0f) {
-        outLeft  = lastOutputLeft  = 0.0f;   // neutral trim — feedforward handles startup
+        outLeft  = lastOutputLeft  = 0.0f;
         outRight = lastOutputRight = 0.0f;
         pidLeft .Reset();
         pidRight.Reset();
@@ -275,7 +246,6 @@ void Drive::ExecuteTurn(float angular)
         lastOutputRight = outRight;
     }
 
-    
     float trimL = outLeft  / 100.0f * (255.0f - minPwmLeft);
     float trimR = outRight / 100.0f * (255.0f - minPwmRight);
 
@@ -287,11 +257,10 @@ void Drive::ExecuteTurn(float angular)
     if (magR < minPwmRight) magR = minPwmRight;
     if (magR > 255.0f)      magR = 255.0f;
 
-    if (driveMode == DriveMode::TurnLeft)  { 
-        pwmLeft = -magL; pwmRight = +magR; 
-    }
-    else { 
-        pwmLeft = +magL; pwmRight = -magR; 
+    if (driveMode == DriveMode::TurnLeft)  {
+        pwmLeft = -magL; pwmRight = +magR;
+    } else {
+        pwmLeft = +magL; pwmRight = -magR;
     }
 }
 
@@ -315,8 +284,8 @@ void Drive::ExecuteLinear(float linear, float angular)
     float absTargetL = fabsf(targetLeft);
     float absTargetR = fabsf(targetRight);
 
-    float rawL  = sensorHub.GetSpeedLeft();
-    float rawR  = sensorHub.GetSpeedRight();
+    float rawL   = sensorHub.GetSpeedLeft();
+    float rawR   = sensorHub.GetSpeedRight();
     bool  freshL = sensorHub.HasFreshLeft();
     bool  freshR = sensorHub.HasFreshRight();
     sensorHub.ConsumeFreshFlags();
@@ -329,9 +298,6 @@ void Drive::ExecuteLinear(float linear, float angular)
     if (freshL) speedLeftFiltered  = EMA_ALPHA * rawL + (1.0f - EMA_ALPHA) * speedLeftFiltered;
     if (freshR) speedRightFiltered = EMA_ALPHA * rawR + (1.0f - EMA_ALPHA) * speedRightFiltered;
 
-    // Only recompute PID when the encoder produced a new sample.
-    // Holding the previous output between samples avoids the 0/spike/0 pattern
-    // that occurs when the integrator sees dt = 0 on a stale measurement.
     float outLeft  = freshL ? pidLeft .Compute(speedLeftFiltered,  absTargetL) : lastOutputLeft;
     float outRight = freshR ? pidRight.Compute(speedRightFiltered, absTargetR) : lastOutputRight;
     lastOutputLeft  = outLeft;
@@ -369,18 +335,57 @@ void Drive::Execute(const DriveCommand& command)
     float linear  = command.GetLinVelocity();
     float angular = command.GetAngVelocity();
 
-    
+    // ── Reversal lockout ────────────────────────────────────────────────────
+    // Detect a Forward→Backward or Backward→Forward transition BEFORE the
+    // command rate-limiter runs (so driveMode still reflects the previous
+    // physical direction). When a reversal is detected, hold the motors at
+    // zero and wait until both encoder speeds fall below REVERSAL_STILL_MM_S.
+    // This prevents EncoderMetTeken on the Pi5 from assigning the wrong sign
+    // to the measured wheel speed while the robot is still rolling in the old
+    // direction, which would cause a localisation position jump and map smear.
+    //
+    // Non-blocking: Execute() keeps being called every tick; we just hold Stop
+    // and return early until the encoders confirm the robot has stopped.
+    //
+    // The lockout is based on driveMode (physical state) not on the command,
+    // so keepalive repetitions of the same command do not re-trigger it.
+    float linForModeCheck = linear;
+    {
+        // Apply only the sign part of the rate-limiter to decide if a reversal
+        // is happening — we need the intended direction, not the smoothed one.
+        // (The full rate-limiter runs further below, after the lockout check.)
+        bool newForward  = linForModeCheck >  1.0f;
+        bool newBackward = linForModeCheck < -1.0f;
+        bool reversal = (newForward  && driveMode == DriveMode::Backward) ||
+                        (newBackward && driveMode == DriveMode::Forward);
+
+        if (reversal && !reversalLockout) {
+            reversalLockout  = true;
+            reversalStartMs  = to_ms_since_boot(get_absolute_time());
+        }
+    }
+
+    if (reversalLockout) {
+        float spdL   = fabsf(sensorHub.GetSpeedLeft());
+        float spdR   = fabsf(sensorHub.GetSpeedRight());
+        bool  stil   = (spdL < REVERSAL_STILL_MM_S && spdR < REVERSAL_STILL_MM_S);
+        bool  timeout = (to_ms_since_boot(get_absolute_time()) - reversalStartMs)
+                        > REVERSAL_TIMEOUT_MS;
+
+        if (stil || timeout) {
+            // Wheels are stationary (or safety timeout expired).
+            // Clear the lockout and fall through to execute the new command.
+            reversalLockout = false;
+        } else {
+            // Still coasting — keep motors at zero and return early.
+            // Stop() is called to hold all ramps and PID at zero so the next
+            // direction starts cleanly from a known state.
+            Stop();
+            return;
+        }
+    }
 
     // ── Command rate limiter ────────────────────────────────────────────────
-    // Cap the change in requested linear speed to CMD_MAX_LIN_STEP per call.
-    // This prevents the navigator from jumping speed (e.g. 278 → 150) in one
-    // tick, which would bypass the internal ramp entirely.
-    //
-    // Exception: when the navigator commands linear ≈ 0 (pure turn or stop),
-    // pass 0 through immediately so the drive mode transitions correctly to
-    // TurnLeft/TurnRight (those modes already ramp rampedLinear down gradually).
-    // cmdSmoothedLinear still tracks toward 0 so the next forward command
-    // starts from a consistent point.
     if (fabsf(linear) < 0.001f) {
         float delta = -cmdSmoothedLinear;
         if (delta < -CMD_MAX_LIN_STEP) delta = -CMD_MAX_LIN_STEP;
@@ -403,10 +408,6 @@ void Drive::Execute(const DriveCommand& command)
     UpdateDriveMode(linear, angular);
     UpdateRamp(linear);
 
-    // Latch the target yaw as early as possible — on the very first tick of a
-    // new linear move, before ExecuteLinear runs. This way the yaw PID already
-    // has a reference heading during the ramp phase and can suppress the small
-    // left/right wobble that occurs while the encoders are still at low speed.
     if (!yawInitialized &&
         driveMode != DriveMode::TurnLeft &&
         driveMode != DriveMode::TurnRight &&
