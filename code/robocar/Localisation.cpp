@@ -82,7 +82,6 @@ void Localisation::Predict(float vLeft, float vRight, float dt)
 
     float dx_enc    = v * c * dt;
     float dy_enc    = v * s * dt;
-    float dtheta_enc = omegaDeg * dt;
 
     // Positie alleen bijwerken bij lineaire beweging. Bij een pure turn
     // (linear ≈ 0, vLeft ≈ -vRight) is v ≈ 0 en is de werkelijke
@@ -93,8 +92,8 @@ void Localisation::Predict(float vLeft, float vRight, float dt)
         y += dy_enc;
     }
     // theta NIET bijwerken uit de encoders: heading komt volledig van de IMU
-    // (zie UpdateIMU). Encoder-rotatie (dtheta_enc) is onbetrouwbaar door
-    // wielasymmetrie/slip. We tonen dtheta_enc alleen nog ter info in de log.
+    // (zie UpdateIMU). Encoder-rotatie is onbetrouwbaar door
+    // wielasymmetrie/slip.
 
     // ── Afstandstellers ────────────────────────────────────────────
     float encoderDist = std::fabs(v * dt);
@@ -103,21 +102,6 @@ void Localisation::Predict(float vLeft, float vRight, float dt)
                         : 0.0f;
     totalEncDist += encoderDist;
     totalLocDist += locDist;
-
-    // ── Per-tick debug ─────────────────────────────────────────────
-    // Lees hieruit af:
-    //   omega≠0 terwijl je rechtdoor rijdt → encoder-asymmetrie / wieldiameter-verschil
-    //   dtheta groot maar IMU zegt 0 → EKF trekt theta verkeerde kant op
-    //   [STALE] → geen vers Pico-pakket, dezelfde snelheid opnieuw geïntegreerd
-    /*printf("[LOC-ENC] vL=%6.1f vR=%6.1f | v=%6.1f omega=%+5.2f°/s | "
-           "dx=%+5.1f dy=%+5.1f dtheta=%+5.2f° | "
-           "pos=(%.1f,%.1f,%.1f)%s\n",
-           vLeft, vRight, v, omegaDeg,
-           dx_enc, dy_enc, dtheta_enc,
-           x, y, theta,
-           (staleCount > 1) ? " [STALE]" : "");
-           */
-           
 
     // ── Jacobiaan + covariantie P ──────────────────────────────────
     float vdt = v * dt;
@@ -138,22 +122,6 @@ void Localisation::Predict(float vLeft, float vRight, float dt)
     for (int i = 0; i < 3; i++)
         for (int j = 0; j < 3; j++)
             P[i][j] = Pnew[i][j];
-
-    // ── Samenvattende print elke 10 ticks (~1 seconde) ────────────
-    ++debugTickCounter;
-    if (debugTickCounter >= 10) {
-        debugTickCounter = 0;
-        float ratio = totalEncDist > 0.1f ? totalLocDist / totalEncDist : 1.0f;
-       /* printf("[LOC-SUM] pos=(%.1f,%.1f) theta=%.1f | "
-               "totEnc=%.0fmm totLoc=%.0fmm ratio=%.3f | "
-               "P=(%.3f,%.3f,%.3f)%s\n",
-               x, y, theta,
-               totalEncDist, totalLocDist, ratio,
-               P[0][0], P[1][1], P[2][2],
-               (ratio < 0.9f || ratio > 1.1f) ? " *** RATIO AFWIJKEND ***" : "");
-               */
-               
-    }
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -161,8 +129,6 @@ void Localisation::Predict(float vLeft, float vRight, float dt)
 // ─────────────────────────────────────────────────────────────────
 void Localisation::UpdateIMU(float imuYawDeg, float /*dt*/)
 {
-    float thetaVoor = theta;
-
     // Gebruik delta-yaw i.p.v. absolute yaw om wraparound te voorkomen.
     // Als de IMU van 179° naar -179° springt (of 359°→0°), geeft de
     // absolute overschrijving een knik van 358° in de heading.
@@ -181,12 +147,6 @@ void Localisation::UpdateIMU(float imuYawDeg, float /*dt*/)
 
     // Heading-onzekerheid klein houden: IMU is de heading-waarheid.
     P[2][2] = 0.01f;
-
-    float correctie = NormalizeDeg(theta - thetaVoor);
-    /*printf("[LOC-IMU] imu=%+7.2f delta=%+6.2f -> theta=%+7.2f%s\n",
-           imuYawDeg, delta, theta,
-           std::fabs(correctie) > 5.0f ? " *** GROTE SPRONG ***" : "");
-           */
 }
 
 float Localisation::GetX()     const { return x;     }
