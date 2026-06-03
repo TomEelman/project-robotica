@@ -439,7 +439,7 @@ WallResult Navigator::ComputeWallCommand(const float ranges[360]) {
 
     float lin = wallFrontLikely ? WF_LIN_SLOW : WF_LIN_NORMAL;
     printf("[WALL] FOLLOW_RIGHT wallR=%.0fmm err=%.0fmm corr=%.1f lin=%.0f\n",
-      //     wallRight, wfFilteredError, corrDegS, lin);
+           wallRight, wfFilteredError, corrDegS, lin);
 
     res.cmd   = DriveCommand(lin, corrDegS);
     res.state = WallState::FOLLOW_RIGHT; res.errorMm = wfFilteredError;

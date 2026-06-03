@@ -21,7 +21,7 @@ public:
           SensorHub& sensors,
           float      wheelbaseMeters,
           float      minAngVel   = 13.0f,
-          float      maxAngVel   = 35.0f,
+          float      maxAngVel   = 40.0f,
           float      minPwmLeft  = 60.0f,
           float      minPwmRight = 60.0f);
 
