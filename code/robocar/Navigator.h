@@ -70,6 +70,11 @@ public:
     bool         IsBlocked() const { return blocked; }
     void         ResetBlock()      { blocked = false; }
 
+    // Annuleert een lopende interne recovery (reverse/turn) volledig. Gebruikt
+    // door MainPi5 wanneer die de recovery zelf overneemt (achteruit→wegdraaien),
+    // zodat de Navigator-reverse niet alsnog opduikt na de herplanning.
+    void         CancelRecovery()  { recoveryTicks = 0; blockCounter = 0; blocked = false; }
+
     // ── Wall follower ─────────────────────────────────────────────
     WallResult ComputeWallCommand(const float ranges[360]);
     void       ResetWallFollower();

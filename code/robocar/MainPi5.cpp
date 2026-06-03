@@ -98,55 +98,44 @@ static void HandleReturnToHome(Navigator& navigator, Mapper& mapper, Position po
 // ─────────────────────────────────────────────────────────────────
 // Helper implementaties
 // ─────────────────────────────────────────────────────────────────
+// HandleObstacleAvoidance — recovery wanneer de Navigator op een obstakel
+// vastloopt. Twee fasen:
+//   ACHTERUIT : eerst een stukje terug zodat de robot niet tegen het obstakel
+//               komt (stopt eerder als er iets vlak achter zit).
+//   DRAAIEN   : daarna wegdraaien naar de meest open kant — draaiRichting is bij
+//               het starten gezet (+1 = rechts, -1 = links). Klaar zodra de
+//               doelhoek bereikt is of het front weer vrij is → terug naar
+//               FRONTIER, dat meteen een nieuwe route plant. Het obstakel is
+//               intussen op de kaart gemarkeerd, dus die route loopt er omheen
+//               i.p.v. er weer in (dat veroorzaakte het heen-en-weer pendelen).
 static bool HandleObstacleAvoidance(const ScanAnalysis& scan, Localisation& loc,
     OntwijkFase& ontwijkFase, float& doelHoek, float& draaiRichting,
-    int& vrijrijTicks, int& achteruitTicks, int& vastzitTeller, int& achteruitEscalatie,
-    float& ontsnapX, float& ontsnapY, CommandKeepAlive& ka, float LIN_SPEED, int& scansSindsHerplan) {
+    int& /*vrijrijTicks*/, int& achteruitTicks, int& /*vastzitTeller*/, int& /*achteruitEscalatie*/,
+    float& /*ontsnapX*/, float& /*ontsnapY*/, CommandKeepAlive& ka, float LIN_SPEED, int& scansSindsHerplan) {
 
-    if (ontwijkFase == OntwijkFase::DRAAIEN) {
-        float fout = NormDeg(doelHoek - loc.GetTheta());
-        if (std::fabs(fout) < 8.0f) {
-            ontwijkFase = OntwijkFase::VRIJRIJDEN;
-            vrijrijTicks = (scan.minFront < 600.0f ? 10 : 25) + achteruitEscalatie * 8;
-            scansSindsHerplan = 15;
-            ka.SetCommand(LIN_SPEED, 0.0f);
-        } else if (scan.state >= 3) {
-            draaiRichting = -draaiRichting;
-            doelHoek = NormDeg(loc.GetTheta() - draaiRichting * 90.0f);
-            ka.SetCommand(0.0f, draaiRichting * 40.0f);
-        } else {
-            ka.SetCommand(0.0f, draaiRichting * 40.0f);
-        }
-    } else if (ontwijkFase == OntwijkFase::VRIJRIJDEN) {
-        if (scan.state >= 3) {
-            if (++vastzitTeller >= 2) {
-                ++achteruitEscalatie;
-                achteruitTicks = 18 + std::min(achteruitEscalatie * 8, 40);
-                ontwijkFase = OntwijkFase::ACHTERUIT;
-                ka.SetCommand(-LIN_SPEED * 0.6f, 0.0f);
-            } else {
-                draaiRichting = -draaiRichting;
-                doelHoek = NormDeg(loc.GetTheta() - draaiRichting * 90.0f);
-                ontwijkFase = OntwijkFase::DRAAIEN;
-                ka.SetCommand(0.0f, draaiRichting * 40.0f);
-            }
-        } else if (--vrijrijTicks <= 0) {
-            vastzitTeller = achteruitEscalatie = 0;
-            ontwijkFase = OntwijkFase::NORMAAL;
-            scansSindsHerplan = 15;
-        } else {
-            ka.SetCommand(LIN_SPEED, 0.0f);
-        }
-    } else if (ontwijkFase == OntwijkFase::ACHTERUIT) {
-        if (scan.minRear < 300.0f || --achteruitTicks <= 0) {
-            float bh = 0.0f;
-            doelHoek = NormDeg(loc.GetTheta() + bh);
-            draaiRichting = (bh >= 0.0f ? 1.0f : -1.0f);
+    constexpr float DRAAI_GRADEN   = 55.0f;   // hoek waarmee naar de open kant wordt weggedraaid
+    constexpr float DRAAI_SNELHEID = 45.0f;   // graden/s tijdens draaien
+    constexpr float REAR_VEILIG_MM = 300.0f;  // niet verder achteruit als hier iets zit
+    constexpr float FRONT_VRIJ_MM  = 600.0f;  // front weer vrij → stoppen met draaien
+
+    if (ontwijkFase == OntwijkFase::ACHTERUIT) {
+        if (scan.minRear < REAR_VEILIG_MM || --achteruitTicks <= 0) {
+            // Klaar met achteruit → draai naar de bij het starten gekozen open kant.
+            doelHoek    = NormDeg(loc.GetTheta() + draaiRichting * DRAAI_GRADEN);
             ontwijkFase = OntwijkFase::DRAAIEN;
-            ka.SetCommand(0.0f, draaiRichting * 40.0f);
-            ontsnapX = loc.GetX(); ontsnapY = loc.GetY();
+            ka.SetCommand(0.0f, draaiRichting * DRAAI_SNELHEID);
         } else {
             ka.SetCommand(-LIN_SPEED * 0.6f, 0.0f);
+        }
+    } else if (ontwijkFase == OntwijkFase::DRAAIEN) {
+        float fout = NormDeg(doelHoek - loc.GetTheta());
+        if (std::fabs(fout) < 8.0f || scan.minFront > FRONT_VRIJ_MM) {
+            ontwijkFase       = OntwijkFase::NORMAAL;
+            scansSindsHerplan = 15;           // FRONTIER plant direct een nieuwe route
+            ka.SetCommand(0.0f, 0.0f);
+        } else {
+            // +ang = rechts, -ang = links (zelfde conventie als de wall-follower).
+            ka.SetCommand(0.0f, (fout > 0.0f ? DRAAI_SNELHEID : -DRAAI_SNELHEID));
         }
     }
     return true;
@@ -171,29 +160,9 @@ static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position po
         DriveCommand cmd = navigator.GetNextCommand(pos, minFront);
         ka.SetCommand(cmd.GetLinVelocity(), cmd.GetAngVelocity());
 
-        // Replan als de Navigator klem zat en een herstelactie uitvoerde
-        if (navigator.IsBlocked()) {
-#if DEBUG_PRINT
-            printf("[MAIN] Navigator blocked -> replan\n");
-#endif
-            Position bt = navigator.GetCurrentTarget();
-            VoegToeAanBlacklist(frontierBlacklist, bt.GetX(), bt.GetY());
-            navigator.ResetBlock();
-            heeftPad = false;
-            scansSindsHerplan = HERPLAN_SCANS;
-        }
-
-        if (navigator.IsBlocked()) {
-#if DEBUG_PRINT
-            printf("[MAIN] Navigator blocked -> wacht op stabiele lokalisatie\n");
-#endif
-            Position bt = navigator.GetCurrentTarget();
-            VoegToeAanBlacklist(frontierBlacklist, bt.GetX(), bt.GetY());
-            navigator.ResetBlock();
-            heeftPad = false;
-            scansSindsHerplan = 0;  // forceer herplan pas bij volgende scan-cyclus
-            mislukteTeller = 0;     // reset zodat hij niet meteen naar TERUG_HOME gaat
-        }
+        // navigator.IsBlocked() wordt in de hoofdlus (RunRijdenEnMappen)
+        // afgehandeld: daar wordt het obstakel op de kaart gemarkeerd en de
+        // achteruit→wegdraai-recovery gestart. Hier dus niet meer resetten.
 
     } else {
         if (heeftPad && navigator.IsFinished()) {
@@ -327,6 +296,37 @@ static void EncoderMetTeken(float cmdLin, float cmdAng,
     vRight = signRight * std::fabs(vRight);
 }
 
+// ─────────────────────────────────────────────────────────────────
+// MarkeerObstakel — stempel het obstakel recht vóór de robot als bezet op
+// de kaart. De Wavefront-planner inflateert bezette cellen, dus de volgende
+// route loopt er automatisch omheen i.p.v. er weer in. Zonder dit blijft de
+// planner dezelfde geblokkeerde route kiezen (vooruit → stop → achteruit →
+// zelfde route → ...).
+//
+// Het obstakel ligt op ~minFront recht vooruit: wereldpunt = pos + minFront·
+// (cosθ, sinθ), zelfde projectie als de mapper gebruikt. We markeren een klein
+// blokje (3×3 cellen) een paar keer zodat de log-odds boven CELL_OCCUPIED komt;
+// met de inflatie wordt dat een keep-out van ~20cm. Een vals positief wordt
+// later vanzelf weer vrijgemaakt door de gewone LIDAR-updates.
+// ─────────────────────────────────────────────────────────────────
+static void MarkeerObstakel(Mapper& mapper, const Position& pos, float minFrontMm) {
+    constexpr float MM2M = 0.001f;
+    if (minFrontMm <= 0.0f || minFrontMm > 600.0f) return;  // geen betrouwbaar obstakel vlakbij
+
+    float thetaRad = pos.GetTheta() * static_cast<float>(M_PI) / 180.0f;
+    float obsX_m   = (pos.GetX() + std::cos(thetaRad) * minFrontMm) * MM2M;
+    float obsY_m   = (pos.GetY() + std::sin(thetaRad) * minFrontMm) * MM2M;
+
+    GridMap& map = mapper.GetMap();
+    int cx, cy;
+    map.WorldToCell(obsX_m, obsY_m, cx, cy);
+
+    for (int dy = -1; dy <= 1; ++dy)
+        for (int dx = -1; dx <= 1; ++dx)
+            for (int n = 0; n < 5; ++n)   // 5 × L_OCC komt ruim boven CELL_OCCUPIED
+                map.UpdateCell(cx + dx, cy + dy, true);
+}
+
 static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
     Localisation loc(219.0f);
     Mapper mapper(500, 500, 0.03f);
@@ -350,6 +350,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
 
     constexpr int   VASTZIT_TIMEOUT  = 400;
     constexpr float VASTZIT_BEWEG_MM = 150.0f;
+    constexpr int   ONTWIJK_ACHTERUIT_TICKS = 12;  // ticks achteruit vóór het wegdraaien
 
     int   vastzitTicks = 0;
     float vastzitRefX  = 0.0f, vastzitRefY = 0.0f;
@@ -511,6 +512,24 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
                         mislukteTeller, hoofdModus, heeftPad, ontsnapX, ontsnapY, ka, planner,
                         frontierBlacklist, HERPLAN_SCANS, MIN_DEKKING_PCT,
                         MISLUKT_DREMPEL, ONTSNAP_RADIUS, lastRanges, scan.minFront);
+
+                    // Navigator vastgelopen op een obstakel → markeer het obstakel
+                    // op de kaart (zodat de planner er omheen plant) en start de
+                    // recovery: eerst achteruit, dan wegdraaien naar de meest open
+                    // kant. Daarna plant FRONTIER vanzelf een nieuwe route.
+                    if (navigator.IsBlocked()) {
+                        MarkeerObstakel(mapper, pos, scan.minFront);
+                        Position bt = navigator.GetCurrentTarget();
+                        VoegToeAanBlacklist(frontierBlacklist, bt.GetX(), bt.GetY());
+                        navigator.CancelRecovery();
+
+                        // Kies de kant met de meeste ruimte (+1 = rechts, -1 = links).
+                        draaiRichting     = (scan.spaceRight >= scan.spaceLeft) ? 1.0f : -1.0f;
+                        achteruitTicks    = ONTWIJK_ACHTERUIT_TICKS;
+                        ontwijkFase       = OntwijkFase::ACHTERUIT;
+                        heeftPad          = false;
+                        scansSindsHerplan = HERPLAN_SCANS;
+                    }
                     break;
                 case HoofdModus::TERUG_HOME:
                     HandleReturnToHome(navigator, mapper, pos, beginPunt, heeftPad, ka, planner,
