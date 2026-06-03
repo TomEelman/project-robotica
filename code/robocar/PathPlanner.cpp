@@ -106,12 +106,11 @@ Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
     const int dx4[4] = {-1, 1, 0, 0};
     const int dy4[4] = { 0, 0,-1, 1};
 
-    bool startReached = false;
     while (!q.empty()) {
         int cur = q.front(); q.pop();
         int cx = cur % W, cy = cur / W;
 
-        if (cx == sx && cy == sy) { startReached = true; break; } // wave reached the start
+        if (cx == sx && cy == sy) break;  // wave reached the start
 
         for (int i = 0; i < 4; ++i) {
             int nx = cx + dx4[i], ny = cy + dy4[i];
@@ -122,7 +121,11 @@ Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
         }
     }
 
-  //  if (!startReached) { std::cerr << "Planner: no path (wave did not reach start)\n"; return Path(); }
+
+    // Geen pad: wave heeft de start nooit bereikt → lege Path
+    if (dist[idx(sx, sy)] < 0) {
+        return Path();
+    }
 
     // ── 6. Padreconstructie: volg dalende afstanden ──────────────
     // From the start, step to the neighbour cell with the LOWEST

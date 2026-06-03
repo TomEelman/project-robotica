@@ -71,7 +71,7 @@ void Localisation::Predict(float vLeft, float vRight, float dt)
     // ── Kinematica ─────────────────────────────────────────────────
     float v        = 0.5f * (vLeft + vRight);       // mm/s
     float omega    = (vRight - vLeft) / wheelBase;  // rad/s — consistent 219mm
-    float omegaDeg = omega * RAD2DEG;               // graden/s (voor debug)
+    //float omegaDeg = omega * RAD2DEG;               // graden/s (voor debug)
 
     float thetaRad  = theta * DEG2RAD;
     float c         = std::cos(thetaRad);
