@@ -179,28 +179,30 @@ static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position po
             // relCoveragePct : % van de bounding box dat bekend is (eerlijk getal,
             //                  vervangt de gebroken GetCoverage() die door het
             //                  hele grid deelt en zo veel te laag uitkomt).
-            constexpr float OUTER_WALL_MIN  = 25.0f;  // % buitenste rand = muur
-            constexpr float INTERIOR_MIN    = 80.0f;  // % interieur bekend
+            constexpr float OUTER_WALL_MIN  = 95.0f;  // % buitenste rand = muur
+            constexpr float INTERIOR_MIN    = 85.0f;  // % interieur bekend
             float outerWallPct, interiorPct, relCoveragePct;
             mapper.GetRoomCoverage(outerWallPct, interiorPct, relCoveragePct);
 
             bool kaartKlaar = (outerWallPct  >= OUTER_WALL_MIN &&
                                interiorPct   >= INTERIOR_MIN);
 
-#if DEBUG_PRINT
-            printf("[MAIN] FRONTIER rand=%.0f%% int=%.0f%% rel=%.0f%% mislukt=%d%s\n",
-                   outerWallPct, interiorPct, relCoveragePct, mislukteTeller,
-                   kaartKlaar ? " *** KAART KLAAR ***" : "");
-#endif
+            // Altijd de dekkings-percentages tonen (meting vs. vereiste drempel),
+            // zodat zichtbaar is waarom de kaart wel/niet als klaar wordt gezet.
+            printf("[KAART] muren=%.0f%% (vereist >=%.0f)  interieur=%.0f%% (vereist >=%.0f)  bbox=%.0f%%  mislukt=%d/%d%s\n",
+                   outerWallPct, OUTER_WALL_MIN, interiorPct, INTERIOR_MIN, relCoveragePct,
+                   mislukteTeller, MISLUKT_DREMPEL,
+                   kaartKlaar ? "  >>> KAART KLAAR <<<" : "");
+            fflush(stdout);
 
             if (kaartKlaar || mislukteTeller >= MISLUKT_DREMPEL) {
                 hoofdModus = HoofdModus::TERUG_HOME;
                 heeftPad = false;
-                mislukteTeller = 0;
-#if DEBUG_PRINT
-                printf("[MAIN] Kaart gemapped (rand=%.0f%% int=%.0f%%) -> TERUG_HOME\n",
+                printf("[KAART] -> TERUG_HOME (%s: muren=%.0f%% interieur=%.0f%%)\n",
+                       kaartKlaar ? "kaart klaar" : "te vaak mislukt",
                        outerWallPct, interiorPct);
-#endif
+                fflush(stdout);
+                mislukteTeller = 0;
                 Path pad = planner.PlanPath(pos, Position(0.0f, 0.0f, 0.0f), mapper.GetMap());
                 if (!pad.IsEmpty()) { navigator.SetPath(pad); mapper.SetWaypoints(pad); heeftPad = true; }
             } else {
