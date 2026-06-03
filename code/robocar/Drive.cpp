@@ -335,6 +335,9 @@ void Drive::Execute(const DriveCommand& command)
     float linear  = command.GetLinVelocity();
     float angular = command.GetAngVelocity();
 
+    printf("[EXEC] lin=%.1f ang=%.1f mode=%d lock=%d spdL=%.1f spdR=%.1f pwmL=%.0f pwmR=%.0f\n",
+           linear, angular, (int)driveMode, (int)reversalLockout,
+           sensorHub.GetSpeedLeft(), sensorHub.GetSpeedRight(), pwmLeft, pwmRight);
     // ── Reversal lockout ────────────────────────────────────────────────────
     // Detect a Forward→Backward or Backward→Forward transition BEFORE the
     // command rate-limiter runs (so driveMode still reflects the previous
