@@ -63,8 +63,8 @@ private:
     // Limits how fast the navigator can change the requested speed per tick,
     // preventing abrupt jumps like 278 → 0 from reaching the ramp in one step.
     float cmdSmoothedLinear;
-    bool reversalLockout = false;
 
+    
     float minAngVel;
     float maxAngVel;
     float minPwmLeft;

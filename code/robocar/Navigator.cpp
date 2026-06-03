@@ -293,8 +293,8 @@ DriveCommand Navigator::GetNextCommand(Position current, float minFront, float m
     hasStableCmd = true;
     cmdTicks     = 0;
 
-    //printf("[NAV] cmd lin=%.0f ang=%.1f (dist=%.0fmm err=%.1fdeg)\n",
-      //     newLin, newAng, dist, angleErr);
+    printf("[NAV] cmd lin=%.0f ang=%.1f (dist=%.0fmm err=%.1fdeg)\n",
+          newLin, newAng, dist, angleErr);
 
     return DriveCommand(stableLin, stableAng);
 }
@@ -392,7 +392,7 @@ WallResult Navigator::ComputeWallCommand(const float ranges[360]) {
         wallState = WallState::INNER_CORNER; wfFilteredError = 0.0f; outerCornerTicks = 0;
         res.cmd   = DriveCommand(0.0f, -WF_INNER_CORNER_TURN);
         res.state = WallState::INNER_CORNER; res.errorMm = 0.0f;
-       // printf("[WALL] INNER_CORNER front=%.0fmm -> turn left\n", minFrontNarrow);
+        printf("[WALL] INNER_CORNER front=%.0fmm -> turn left\n", minFrontNarrow);
         return res;
     }
 
@@ -400,7 +400,7 @@ WallResult Navigator::ComputeWallCommand(const float ranges[360]) {
     // (only valid if we were actually following a wall)
     if (!rightWallPresent && frontRightClear && wallState == WallState::FOLLOW_RIGHT) {
         wallState = WallState::OUTER_CORNER; outerCornerTicks = 0; wfFilteredError = 0.0f;
-      //  printf("[WALL] OUTER_CORNER wallR=%.0fmm frontR=%.0fmm -> turn right\n", wallRight, frontRight);
+          printf("[WALL] OUTER_CORNER wallR=%.0fmm frontR=%.0fmm -> turn right\n", wallRight, frontRight);
     }
 
     if (wallState == WallState::OUTER_CORNER) {
@@ -438,7 +438,7 @@ WallResult Navigator::ComputeWallCommand(const float ranges[360]) {
     if (std::fabs(corrDegS) < WF_MIN_CORR) corrDegS = 0.0f; // dead zone against wobble
 
     float lin = wallFrontLikely ? WF_LIN_SLOW : WF_LIN_NORMAL;
-    //printf("[WALL] FOLLOW_RIGHT wallR=%.0fmm err=%.0fmm corr=%.1f lin=%.0f\n",
+    printf("[WALL] FOLLOW_RIGHT wallR=%.0fmm err=%.0fmm corr=%.1f lin=%.0f\n",
       //     wallRight, wfFilteredError, corrDegS, lin);
 
     res.cmd   = DriveCommand(lin, corrDegS);
