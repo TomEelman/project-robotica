@@ -5,6 +5,7 @@
 #include "PathPlanner.h"
 #include "Navigator.h"
 #include "ExplorationPlanner.h"
+#include "ScanMatcher.h"
 #include <csignal>
 #include <chrono>
 #include <cmath>
