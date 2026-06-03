@@ -68,7 +68,6 @@ void Pi5UARTHandler::Close() {
 
 bool Pi5UARTHandler::IsOpen() const { return fd >= 0; }
 
-// â”€â”€ LeesData â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Non-blocking. Leest byte voor byte, bouwt regels op.
 // Herkent DATA: pakketten. Logt alles anders naar stderr.
 bool Pi5UARTHandler::LeesData() {
@@ -93,7 +92,7 @@ bool Pi5UARTHandler::LeesData() {
                     // en de loop-timing niet verstoord wordt.
                 } else if (regelLen > 2) {
                     // Onbekende regels loggen (ERR:, debug prints van Pico, etc.)
-                    //fprintf(stderr, "[Pico] %s\n", lineBuffer);
+                    fprintf(stderr, "[Pico] %s\n", lineBuffer);
                 }
             }
         } else if (linePos < (int)sizeof(lineBuffer) - 1) {
@@ -131,7 +130,7 @@ bool Pi5UARTHandler::ParseDataRegel(const char* regel) {
     return true;
 }
 
-// â”€â”€ StuurCommand â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
 void Pi5UARTHandler::StuurCommand(float lin, float ang) {
     if (!IsOpen()) return;
     char buf[48];
@@ -139,9 +138,6 @@ void Pi5UARTHandler::StuurCommand(float lin, float ang) {
     write(fd, buf, strlen(buf));
 }
 
-// â”€â”€ StuurStop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Stuurt zowel "STOP\n" als "CMD:0.0,0.0\n" voor maximale kans
-// dat de Pico stopt â€” zelfs als Ã©Ã©n pakket verloren gaat.
 void Pi5UARTHandler::StuurStop() {
     if (!IsOpen()) return;
     const char* stop = "STOP\n";

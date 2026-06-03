@@ -248,8 +248,10 @@ void Localisation::ApplyIcpCorrection(float dx, float dy, float dtheta)
 // ─────────────────────────────────────────────────────────────────
 void Localisation::SetIcpAnchor()
 {
+    /*
     printf("[ICP-ANCHOR] mislukt — anker bijgewerkt naar (%.1f,%.1f,%.1f)\n",
            x, y, theta);
+    */
            
 
     x_anchor     = x;
