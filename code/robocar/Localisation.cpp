@@ -144,13 +144,14 @@ void Localisation::Predict(float vLeft, float vRight, float dt)
     if (debugTickCounter >= 10) {
         debugTickCounter = 0;
         float ratio = totalEncDist > 0.1f ? totalLocDist / totalEncDist : 1.0f;
-        printf("[LOC-SUM] pos=(%.1f,%.1f) theta=%.1f | "
+       /* printf("[LOC-SUM] pos=(%.1f,%.1f) theta=%.1f | "
                "totEnc=%.0fmm totLoc=%.0fmm ratio=%.3f | "
                "P=(%.3f,%.3f,%.3f)%s\n",
                x, y, theta,
                totalEncDist, totalLocDist, ratio,
                P[0][0], P[1][1], P[2][2],
                (ratio < 0.9f || ratio > 1.1f) ? " *** RATIO AFWIJKEND ***" : "");
+               */
                
     }
 }
