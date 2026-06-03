@@ -456,58 +456,101 @@ bool GridMap::SavePGMCropped(const std::string& filename, float margin_m) const 
     int imgW = cW * SCALE;
     int imgH = cH * SCALE;
 
-    // ── Echte kamer-afmetingen via PCA op de muur-cellen ──────────
-    //  De kamer staat meestal schuin op het grid. Een as-uitgelijnde
-    //  bounding box meet dan te groot (breedte = muur·cosα + zijmuur·sinα).
-    //  PCA vindt de hoofdrichtingen van de muren, zodat we de lengte
-    //  LANGS elke muur meten (cel-telling langs de muur × celgrootte).
-    if (wallPts.empty()) {                       // geen muren → val terug op bbox
+    // ── Echte kamer-afmetingen via kleinste omhullende rechthoek ──
+    //  De kamer staat schuin én is niet rechthoekig (inham/schiereiland).
+    //  PCA faalt dan: bij een symmetrische puntenwolk kiest het de
+    //  diagonaal. Daarom: convex hull (pakt alleen de buitenmuren – de
+    //  concave inham valt er vanzelf binnen) + de minimum-area rechthoek,
+    //  die 'vastklikt' op de echte muur-richting. De zijden van die
+    //  rechthoek zijn de werkelijke breedte en hoogte.
+    using Pt = std::pair<int,int>;
+
+    // Losse ruis-cellen (geen enkele bezette buur) weggooien, zodat de
+    // convex hull niet door één uitschieter wordt opgeblazen.
+    {
+        std::vector<Pt> kept;
+        kept.reserve(wallPts.size());
+        for (const auto& p : wallPts) {
+            bool hasNb = false;
+            for (int dy = -1; dy <= 1 && !hasNb; ++dy)
+                for (int dx = -1; dx <= 1; ++dx) {
+                    if ((dx || dy) && IsOccupied(p.first + dx, p.second + dy)) { hasNb = true; break; }
+                }
+            if (hasNb) kept.push_back(p);
+        }
+        if (!kept.empty()) wallPts.swap(kept);
+    }
+
+    if (wallPts.empty())                          // geen muren → val terug op bbox
         wallPts = { {minX, minY}, {maxX, minY}, {minX, maxY}, {maxX, maxY} };
+
+    // Convex hull (monotone chain).
+    std::sort(wallPts.begin(), wallPts.end());
+    wallPts.erase(std::unique(wallPts.begin(), wallPts.end()), wallPts.end());
+    auto cross = [](const Pt& o, const Pt& a, const Pt& b) {
+        return static_cast<double>(a.first - o.first) * (b.second - o.second)
+             - static_cast<double>(a.second - o.second) * (b.first - o.first);
+    };
+    int np = static_cast<int>(wallPts.size());
+    std::vector<Pt> hull(2 * np);
+    int k = 0;
+    for (int i = 0; i < np; ++i) {                // onderrand
+        while (k >= 2 && cross(hull[k-2], hull[k-1], wallPts[i]) <= 0) --k;
+        hull[k++] = wallPts[i];
     }
-
-    double mx = 0, my = 0;
-    for (auto& p : wallPts) { mx += p.first; my += p.second; }
-    mx /= wallPts.size();  my /= wallPts.size();
-
-    double cxx = 0, cxy = 0, cyy = 0;            // 2×2 covariantiematrix
-    for (auto& p : wallPts) {
-        double dx = p.first - mx, dy = p.second - my;
-        cxx += dx * dx;  cxy += dx * dy;  cyy += dy * dy;
+    for (int i = np - 2, t = k + 1; i >= 0; --i) { // bovenrand
+        while (k >= t && cross(hull[k-2], hull[k-1], wallPts[i]) <= 0) --k;
+        hull[k++] = wallPts[i];
     }
+    hull.resize(std::max(1, k - 1));
 
-    double theta = 0.5 * std::atan2(2.0 * cxy, cxx - cyy);   // hoofdas-hoek
-    double a1x = std::cos(theta), a1y = std::sin(theta);     // as 1
-    double a2x = -a1y,            a2y = a1x;                 // as 2 (loodrecht)
-
-    // Uiterste projecties op beide assen → lengte langs elke muurrichting.
-    double min1 = 1e9, max1 = -1e9, min2 = 1e9, max2 = -1e9;
-    for (auto& p : wallPts) {
-        double dx = p.first - mx, dy = p.second - my;
-        double p1 = dx * a1x + dy * a1y, p2 = dx * a2x + dy * a2y;
-        min1 = std::min(min1, p1);  max1 = std::max(max1, p1);
-        min2 = std::min(min2, p2);  max2 = std::max(max2, p2);
+    // Minimum-area rechthoek: probeer elke hull-zijde als oriëntatie.
+    double bestArea = 1e30, ux = 1, uy = 0;
+    double bMinU = 0, bMaxU = 0, bMinV = 0, bMaxV = 0;
+    int H = static_cast<int>(hull.size());
+    for (int i = 0; i < H; ++i) {
+        double ex = hull[(i+1) % H].first  - hull[i].first;
+        double ey = hull[(i+1) % H].second - hull[i].second;
+        double len = std::hypot(ex, ey);
+        if (len < 1e-9) continue;
+        double dux = ex / len, duy = ey / len;     // langs deze zijde
+        double dvx = -duy,     dvy = dux;          // loodrecht erop
+        double mnU = 1e30, mxU = -1e30, mnV = 1e30, mxV = -1e30;
+        for (const auto& p : hull) {
+            double du = p.first * dux + p.second * duy;
+            double dv = p.first * dvx + p.second * dvy;
+            mnU = std::min(mnU, du);  mxU = std::max(mxU, du);
+            mnV = std::min(mnV, dv);  mxV = std::max(mxV, dv);
+        }
+        double area = (mxU - mnU) * (mxV - mnV);
+        if (area < bestArea) {
+            bestArea = area;  ux = dux;  uy = duy;
+            bMinU = mnU;  bMaxU = mxU;  bMinV = mnV;  bMaxV = mxV;
+        }
     }
+    double vx = -uy, vy = ux;                      // tweede as van de rechthoek
 
-    // As 1 of as 2 als "horizontaal" (breedte) bestempelen.
-    bool a1Horiz = std::abs(a1x) >= std::abs(a1y);
-    double ahx = a1Horiz ? a1x : a2x, ahy = a1Horiz ? a1y : a2y;   // horizontale as
-    double avx = a1Horiz ? a2x : a1x, avy = a1Horiz ? a2y : a1y;   // verticale as
-    double minH = a1Horiz ? min1 : min2, maxH = a1Horiz ? max1 : max2;
-    double minV = a1Horiz ? min2 : min1, maxV = a1Horiz ? max2 : max1;
+    // Welke as is 'horizontaal' (breedte) en welke 'verticaal' (hoogte)?
+    bool uHoriz = std::abs(ux) >= std::abs(uy);
+    double ahx = uHoriz ? ux : vx, ahy = uHoriz ? uy : vy;   // horizontale as
+    double avx = uHoriz ? vx : ux, avy = uHoriz ? vy : uy;   // verticale as
+    double minH = uHoriz ? bMinU : bMinV, maxH = uHoriz ? bMaxU : bMaxV;
+    double minV = uHoriz ? bMinV : bMinU, maxV = uHoriz ? bMaxV : bMaxU;
 
     float realW_m = static_cast<float>((maxH - minH) * resolution);   // breedte
     float realH_m = static_cast<float>((maxV - minV) * resolution);   // hoogte
 
-    // Anker-punten (in celcoördinaten) om elk label naast de juiste muur te zetten.
+    // Anker-punten (celcoördinaten): een (h,v)-coord terug naar de cel.
+    //   cel = h·(horizontale as) + v·(verticale as)
+    auto toCellX = [&](double h, double v) { return h * ahx + v * avx; };
+    auto toCellY = [&](double h, double v) { return h * ahy + v * avy; };
     double midH = (minH + maxH) / 2.0, midV = (minV + maxV) / 2.0;
-    // Breedte-label: midden van de horizontale muur, aan de bovenkant (grootste cel-y).
-    double vTop = (my + midH * ahy + maxV * avy) > (my + midH * ahy + minV * avy) ? maxV : minV;
-    double hLabelX = mx + midH * ahx + vTop * avx;
-    double hLabelY = my + midH * ahy + vTop * avy;
-    // Hoogte-label: midden van de verticale muur, aan de linkerkant (kleinste cel-x).
-    double hLeft = (mx + minH * ahx + midV * avx) < (mx + maxH * ahx + midV * avx) ? minH : maxH;
-    double vLabelX = mx + hLeft * ahx + midV * avx;
-    double vLabelY = my + hLeft * ahy + midV * avy;
+    // Breedte-label: midden bovenmuur (grootste cel-y).
+    double vTop = toCellY(midH, maxV) > toCellY(midH, minV) ? maxV : minV;
+    double hLabelX = toCellX(midH, vTop), hLabelY = toCellY(midH, vTop);
+    // Hoogte-label: midden linkermuur (kleinste cel-x).
+    double hLeft = toCellX(minH, midV) < toCellX(maxH, midV) ? minH : maxH;
+    double vLabelX = toCellX(hLeft, midV), vLabelY = toCellY(hLeft, midV);
 
     // ── Stap 4: geen onderbalk meer; maten staan op de kaart ──────
     int totalH = imgH;
