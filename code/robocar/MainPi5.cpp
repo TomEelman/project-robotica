@@ -5,7 +5,6 @@
 #include "PathPlanner.h"
 #include "Navigator.h"
 #include "ExplorationPlanner.h"
-#include "ScanMatcher.h"
 #include <csignal>
 #include <chrono>
 #include <cmath>
@@ -357,7 +356,6 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
     float imuOffset  = 0.0f;
     bool  imuGenulld = false;
 
-    float huidigeImuYaw = 0.0f;
     float omegaDegS     = 0.0f;
 
     std::vector<BlacklistItem> frontierBlacklist;
@@ -382,6 +380,9 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
 
     // Encoder-seeding voor ICP: onthoud EKF-positie bij de vorige scan zodat
     // we de geschatte verplaatsing als initiële gok aan Match() kunnen meegeven.
+
+    float vorigeCmdSign = 0.0f;   // teken van ka.GetLin() vorige tick
+    bool  wachtUitrol   = false;  // commando net omgeklapt, wacht tot encoders ~0
     float lastScanX      = 0.0f, lastScanY = 0.0f;
     bool  hasLastScanPos = false;
 
@@ -412,21 +413,44 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
         if (sens.geldig) {
             if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
 
-            // Teken herstellen voor beide wielen (encoders zijn altijd positief).
             float vL = sens.speedLinks, vR = sens.speedRechts;
             EncoderMetTeken(ka.GetLin(), ka.GetAng(), vL, vR);
 
-            // omegaDegS op basis van gecorrigeerde snelheden (voor mapper).
             omegaDegS = ka.GetAng();
-            linSpeed  = 0.5f * (vL + vR);  // bijhouden voor ICP-draai-check
+            linSpeed  = 0.5f * (vL + vR);
 
-            // Predict/UpdateIMU ALLEEN op vers pakket — voorkomt stale-data drift.
-            if (versData) {
-                loc.Predict(vL, vR, DT);
-                loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
+            // ── Uitroll-detectie na richtingswissel ──────────────────────────
+            // EncoderMetTeken bepaalt het teken uit het commando. Bij een
+            // FWD<->BWD wissel klapt dat teken direct om, maar de robot rolt nog
+            // enkele ticks in de OUDE richting uit. Predict zou die uitroll dan
+            // met het verkeerde teken integreren → positie schuift de verkeerde
+            // kant op (~2x de uitrolafstand). Daarom: zodra het commando-teken
+            // omklapt, sla Predict over tot de encoders (magnitude) onder een
+            // drempel zakken — dan is de uitroll voorbij en klopt het teken weer.
+            float cmdLinNu  = ka.GetLin();
+            float cmdSignNu = (cmdLinNu > 1.0f) ? 1.0f : (cmdLinNu < -1.0f) ? -1.0f : 0.0f;
+
+            bool tekenFlip = (vorigeCmdSign > 0.0f && cmdSignNu < 0.0f) ||
+                             (vorigeCmdSign < 0.0f && cmdSignNu > 0.0f);
+            if (tekenFlip) wachtUitrol = true;
+            vorigeCmdSign = cmdSignNu;
+
+            // Uitroll voorbij? Encoders (magnitude) onder de drempel → klaar.
+            constexpr float UITROL_KLAAR_MM_S = 15.0f;
+            if (wachtUitrol &&
+                std::fabs(sens.speedLinks)  < UITROL_KLAAR_MM_S &&
+                std::fabs(sens.speedRechts) < UITROL_KLAAR_MM_S) {
+                wachtUitrol = false;
             }
 
-            huidigeImuYaw = sens.yawGraden - imuOffset;
+            // Predict ALLEEN op vers pakket én niet tijdens de uitroll.
+            if (versData && !wachtUitrol) {
+                loc.Predict(vL, vR, DT);
+                loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
+            } else if (versData && wachtUitrol) {
+                // Heading blijft wel kloppen (IMU), positie bevriezen tijdens uitroll.
+                loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
+            }
 
             if (!beginPuntVergrendeld) {
                 beginPunt = Position(loc.GetX(), loc.GetY(), loc.GetTheta());
@@ -443,36 +467,6 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
                 lastRanges[a] = lidar.GetDistance(a).distance;
                 angles[a]     = static_cast<float>(a);
             }
-
-            // ICP scan matching: corrigeer positie voor we in kaart schrijven.
-            // Geef de encoder-verplaatsing mee als initiële gok zodat ICP
-            // al dicht bij het goede lokale minimum begint.
-            float encDx = 0.0f, encDy = 0.0f;
-            if (hasLastScanPos) {
-                encDx = loc.GetX() - lastScanX;
-                encDy = loc.GetY() - lastScanY;
-            }
-            IcpResult icp = scanMatcher.Match(lastRanges, huidigeImuYaw,
-                                              encDx, encDy);
-            // ICP overslaan tijdens draaien: de roterende puntenwolk geeft
-            // willekeurige translaties terug die de positie laten springen.
-            /*
-            constexpr float ICP_LIN_MIN = 20.0f;
-            if (std::fabs(linSpeed) > ICP_LIN_MIN && icp.valid) {
-                loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
-                // BUG3 FIX: huidigeImuYaw NIET optellen met icp.dtheta
-                pos = Position(loc.GetX(), loc.GetY(), loc.GetTheta()); // BUG4 FIX
-            } else {
-                loc.SetIcpAnchor();
-            }
-                */
-
-            loc.SetIcpAnchor(); 
-
-            // Bewaar huidige EKF-positie voor encoder-seeding van de volgende ICP-ronde.
-            lastScanX      = loc.GetX();
-            lastScanY      = loc.GetY();
-            hasLastScanPos = true;
 
             mapper.UpdateMotionCorrected(lastRanges, angles, 360, pos, omegaDegS, scanDuurSec);
             heeftRanges = true;
@@ -543,7 +537,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
 
 // ─────────────────────────────────────────────────────────────────
 // RunRijdenEnMappenwf — autonoom rijden + mappen via wall following.
-// Zelfde mapping/lokalisatie-pijplijn (ICP + motion-corrected mapping)
+// Zelfde mapping/lokalisatie-pijplijn (motion-corrected mapping)
 // als RunRijdenEnMappen, maar de navigatie houdt de rechter muur aan
 // via Navigator::ComputeWallCommand i.p.v. frontier/Wavefront.
 // ─────────────────────────────────────────────────────────────────
@@ -558,21 +552,12 @@ static int RunRijdenEnMappenwf(Pi5UARTHandler& uart, LIDAR& lidar) {
     int   scanCount     = 0;
     float imuOffset     = 0.0f;
     bool  imuGenulld    = false;
-    float huidigeImuYaw = 0.0f;
     float omegaDegS     = 0.0f;
 
     Navigator   navigator;
     navigator.ResetWallFollower();
 
     CommandKeepAlive ka(uart);
-    ScanMatcher      scanMatcher;  // ICP scan-to-scan matching
-
-    float linSpeed       = 0.0f;  // gemiddelde lineaire snelheid voor ICP-check
-
-    // Encoder-seeding voor ICP: onthoud EKF-positie bij de vorige scan zodat
-    // we de geschatte verplaatsing als initiele gok aan Match() kunnen meegeven.
-    float lastScanX      = 0.0f, lastScanY = 0.0f;
-    bool  hasLastScanPos = false;
 
     float lastRanges[360] = {};
     bool  heeftRanges     = false;
@@ -607,7 +592,6 @@ static int RunRijdenEnMappenwf(Pi5UARTHandler& uart, LIDAR& lidar) {
 
             // omegaDegS op basis van gecorrigeerde snelheden (voor mapper).
             omegaDegS = ka.GetAng();
-            linSpeed  = 0.5f * (vL + vR);  // bijhouden voor ICP-draai-check
 
             bool beweegt = (sens.speedLinks != 0.0f || sens.speedRechts != 0.0f);
 
@@ -618,8 +602,6 @@ static int RunRijdenEnMappenwf(Pi5UARTHandler& uart, LIDAR& lidar) {
                 loc.Predict(vL, vR, DT);
                 loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
             }
-
-            huidigeImuYaw = sens.yawGraden - imuOffset;
 
             if (!versData && beweegt) {
 #if DEBUG_PRINT
@@ -636,34 +618,6 @@ static int RunRijdenEnMappenwf(Pi5UARTHandler& uart, LIDAR& lidar) {
                 lastRanges[a] = lidar.GetDistance(a).distance;
                 angles[a]     = static_cast<float>(a);
             }
-
-            // ICP scan matching: corrigeer positie voor we in kaart schrijven.
-            // Geef de encoder-verplaatsing mee als initiele gok zodat ICP
-            // al dicht bij het goede lokale minimum begint.
-            float encDx = 0.0f, encDy = 0.0f;
-            if (hasLastScanPos) {
-                encDx = loc.GetX() - lastScanX;
-                encDy = loc.GetY() - lastScanY;
-            }
-            IcpResult icp = scanMatcher.Match(lastRanges, huidigeImuYaw,
-                                              encDx, encDy);
-            /*
-                                              constexpr float ICP_LIN_MIN = 20.0f;
-            if (std::fabs(linSpeed) > ICP_LIN_MIN && icp.valid) {
-                loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
-                // BUG3 FIX: huidigeImuYaw niet optellen met icp.dtheta
-                pos = Position(loc.GetX(), loc.GetY(), loc.GetTheta()); // BUG4 FIX
-            } else {
-                loc.SetIcpAnchor();
-            }
-
-                */
-
-            loc.SetIcpAnchor(); 
-
-            lastScanX      = loc.GetX();
-            lastScanY      = loc.GetY();
-            hasLastScanPos = true;
 
             mapper.UpdateMotionCorrected(lastRanges, angles, 360, pos, omegaDegS, scanDuurSec);
             heeftRanges = true;
@@ -785,21 +739,14 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
 
     Localisation loc(219.0f);
     Mapper       mapper(260, 160, 0.03f);
-    ScanMatcher  scanMatcher;
 
     float imuOffset     = 0.0f;
     bool  imuGenulld    = false;
-    float huidigeImuYaw = 0.0f;
     float omegaDegS     = 0.0f;
     int   scanCount     = 0;
 
     float lastRanges[360] = {};
     bool  heeftRanges     = false;
-
-    // Encoder-seeding voor ICP: onthoud de EKF-positie bij de vorige scan,
-    // zodat we de odometrie-verplaatsing als initiële gok aan Match() geven.
-    float lastScanX      = 0.0f, lastScanY = 0.0f;
-    bool  hasLastScanPos = false;
 
     CommandKeepAlive ka(uart);
 
@@ -870,7 +817,6 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
             uart.LeesData();
             SensorData sens = uart.GetSensorData();
             bool  beweegt      = false;
-            float linSpeedPico = 0.0f;  // voor ICP-draai-check
             if (sens.geldig) {
                 if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
 
@@ -880,14 +826,12 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
 
                 // omegaDegS op basis van gecorrigeerde snelheden (voor mapper).
                 omegaDegS      = ka.GetAng();
-                linSpeedPico   = 0.5f * (vL + vR);
 
                 beweegt = (sens.speedLinks != 0.0f || sens.speedRechts != 0.0f);
                 if (beweegt) {
                     loc.Predict(vL, vR, DT);
                     loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
                 }
-                huidigeImuYaw = sens.yawGraden - imuOffset;
             }
 
             // LIDAR + mapping (alleen tijdens beweging)
@@ -899,26 +843,6 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
                 }
                 if (beweegt) {
                     Position pos(loc.GetX(), loc.GetY(), loc.GetTheta()); // Bug4: EKF-theta
-                    float encDx = 0.0f, encDy = 0.0f;
-                    if (hasLastScanPos) {
-                        encDx = loc.GetX() - lastScanX;
-                        encDy = loc.GetY() - lastScanY;
-                    }
-                    IcpResult icp = scanMatcher.Match(lastRanges, huidigeImuYaw, encDx, encDy);
-                    /*
-                    constexpr float ICP_LIN_MIN = 20.0f;
-                    if (std::fabs(linSpeedPico) > ICP_LIN_MIN && icp.valid) {
-                        loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
-                        // Bug3: huidigeImuYaw NIET optellen met icp.dtheta
-                        pos = Position(loc.GetX(), loc.GetY(), loc.GetTheta()); // Bug4
-                    } else {
-                        loc.SetIcpAnchor();
-                    }
-
-                        */
-
-            loc.SetIcpAnchor(); 
-                    lastScanX = loc.GetX(); lastScanY = loc.GetY(); hasLastScanPos = true;
                     mapper.UpdateMotionCorrected(lastRanges, angles, 360, pos, omegaDegS, scanDuurSec);
                     ++scanCount;
 #if DEBUG_PRINT
