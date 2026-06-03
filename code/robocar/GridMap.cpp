@@ -372,14 +372,14 @@ bool GridMap::SavePGM(const std::string& filename) const {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  SavePGMCropped  –  bijgesneden kaart met schaalbalken
+//  SavePGMCropped  –  bijgesneden kaart met afmetingen
 //
 //  Werking:
 //    1. Zoek de bounding box van alle bekende cellen (vrij + bezet)
 //    2. Voeg een marge toe rondom dit gebied
-//    3. Schrijf een PPM (kleur) zodat de schaalbalken rood kunnen zijn
-//    4. Schaalbalken: horizontaal (breedte) + vertikaal (hoogte) in meter
-//       getekend als rode lijn met witte achtergrond onder de kaart
+//    3. Schrijf een PPM (kleur) zodat pad/waypoints gekleurd kunnen zijn
+//    4. Toon onder de kaart de afmetingen van de kamer:
+//       "<breedte> x <hoogte>" in meter als tekst
 // ═══════════════════════════════════════════════════════════════════
 
 // ── 3×5 pixel-font voor cijfers 0-9 (bit 2 = links) ──────────────
@@ -415,11 +415,11 @@ static void DrawDigit(std::vector<uint8_t>& img, int imgW, int imgH,
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  SavePGMCropped  –  bijgesneden kaart met schaalbalken
+//  SavePGMCropped  –  bijgesneden kaart met afmetingen
 //  Snijdt automatisch bij op het verkende gebied + marge.
 //  Elke cel wordt SCALE×SCALE pixels (scherper beeld).
-//  Onder de kaart: rode maatlijn van 1 meter.
-//  Schrijft als PPM (kleur) zodat de balk rood kan zijn.
+//  Onder de kaart: de afmetingen van de kamer ("breedte x hoogte" in m).
+//  Schrijft als PPM (kleur) zodat pad/waypoints gekleurd kunnen zijn.
 // ═══════════════════════════════════════════════════════════════════
 
 bool GridMap::SavePGMCropped(const std::string& filename, float margin_m) const {
@@ -455,9 +455,8 @@ bool GridMap::SavePGMCropped(const std::string& filename, float margin_m) const 
     float realW_m = static_cast<float>(cW) * resolution;
     float realH_m = static_cast<float>(cH) * resolution;
 
-    // ── Stap 4: schaalblok onderaan ───────────────────────────────
+    // ── Stap 4: tekstblok onderaan (afmetingen kamer) ─────────────
     int scaleBarH   = 60;
-    int pixPerMeter = static_cast<int>(1.0f / resolution) * SCALE;
     int totalH      = imgH + scaleBarH;
 
     // ── Stap 5: pixel-buffer vullen ───────────────────────────────
@@ -535,7 +534,7 @@ bool GridMap::SavePGMCropped(const std::string& filename, float margin_m) const 
         }
     }
 
-    // ── Stap 8: schaalbalken tekenen ─────────────────────────────
+    // ── Stap 8: afmetingen van de kamer tekenen ──────────────────
     auto fill = [&](int rx, int ry, int rw, int rh,
                     uint8_t r, uint8_t g, uint8_t b) {
         for (int dy = 0; dy < rh; ++dy)
@@ -549,26 +548,51 @@ bool GridMap::SavePGMCropped(const std::string& filename, float margin_m) const 
             }
     };
 
-    // Horizontale maatlijn (rood) – 1 meter
-    int barY  = imgH + scaleBarH / 2;
-    int barX0 = 20;
-    int barX1 = barX0 + pixPerMeter;
-    if (barX1 > imgW - 20) barX1 = imgW - 20;
+    // Afmetingen van de kamer als tekst: "<breedte> x <hoogte>" in meter.
+    constexpr int TS = 2;            // tekst-vergroting (elk font-pixel = TS×TS)
 
-    fill(barX0, barY - 1, barX1 - barX0, 3, 200, 40, 40);  // lijn
-    fill(barX0 - 1, barY - 8, 3, 17, 200, 40, 40);          // eindstreep links
-    fill(barX1 - 1, barY - 8, 3, 17, 200, 40, 40);          // eindstreep rechts
+    // Eén vergroot cijfer tekenen via de fill-lambda (klipt op totalH,
+    // dus ook zichtbaar in de onderbalk – anders dan DrawDigit).
+    auto drawDigitBig = [&](int digit, int px, int py) {
+        if (digit < 0 || digit > 9) return;
+        const uint8_t* rows = kDigitFont[digit];
+        for (int dy = 0; dy < 5; ++dy)
+            for (int dx = 0; dx < 3; ++dx)
+                if (rows[dy] & (1 << (2 - dx)))
+                    fill(px + dx * TS, py + dy * TS, TS, TS, 40, 40, 40);
+    };
 
-    // Pijlpunten
-    for (int i = 0; i < 8; ++i) {
-        int half = (4 - i / 2);
-        fill(barX0 + i, barY - half, 1, half * 2 + 1, 200, 40, 40);
-        fill(barX1 - i - 1, barY - half, 1, half * 2 + 1, 200, 40, 40);
+    // Een afstand in meter tekenen met 2 decimalen; geeft de nieuwe x terug.
+    auto drawMeters = [&](float meters, int px, int py) -> int {
+        int whole = static_cast<int>(meters);
+        int frac  = static_cast<int>(meters * 100.0f + 0.5f) % 100;
+
+        // Gehele deel (minstens één cijfer), hoogste cijfer eerst.
+        int digits[8], n = 0;
+        if (whole == 0) digits[n++] = 0;
+        else for (int w = whole; w > 0; w /= 10) digits[n++] = w % 10;
+        for (int i = n - 1; i >= 0; --i) { drawDigitBig(digits[i], px, py); px += 4 * TS; }
+
+        fill(px, py + 4 * TS, TS, TS, 40, 40, 40);          // decimaalpunt
+        px += 2 * TS;
+        drawDigitBig(frac / 10, px, py); px += 4 * TS;       // 1e decimaal
+        drawDigitBig(frac % 10, px, py); px += 4 * TS;       // 2e decimaal
+        return px;
+    };
+
+    int txtY = imgH + scaleBarH / 2 - (5 * TS) / 2;          // verticaal centreren
+    int txtX = 20;
+    txtX = drawMeters(realW_m, txtX, txtY);                  // breedte
+
+    // 'x' scheidingsteken (twee diagonalen)
+    txtX += 4;
+    for (int i = 0; i < 5; ++i) {
+        fill(txtX + i * TS,       txtY + i * TS, TS, TS, 40, 40, 40);
+        fill(txtX + (4 - i) * TS, txtY + i * TS, TS, TS, 40, 40, 40);
     }
+    txtX += 5 * TS + 4;
 
-    // Label kader "1m"
-    fill(barX1 + 8,  barY - 6, 30, 14, 200, 40, 40);   // rood kader
-    fill(barX1 + 9,  barY - 5, 28, 12, 235, 235, 235); // wit binnenin
+    txtX = drawMeters(realH_m, txtX, txtY);                  // hoogte (in meter)
 
     // ── Stap 8: schrijf PPM bestand ───────────────────────────────
     std::ofstream f2(filename, std::ios::binary);
@@ -576,7 +600,7 @@ bool GridMap::SavePGMCropped(const std::string& filename, float margin_m) const 
 
     f2 << "P6\n";
     f2 << "# breedte=" << realW_m << "m  hoogte=" << realH_m << "m\n";
-    f2 << "# schaal: 1px=" << resolution * 100.0f << "cm  |  rode balk=1m\n";
+    f2 << "# schaal: 1px=" << resolution * 100.0f << "cm  |  afmeting onderaan in meter\n";
     f2 << imgW << " " << totalH << "\n255\n";
     f2.write(reinterpret_cast<const char*>(img.data()),
              static_cast<std::streamsize>(img.size()));
