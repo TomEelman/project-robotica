@@ -109,13 +109,14 @@ void Localisation::Predict(float vLeft, float vRight, float dt)
     //   omega≠0 terwijl je rechtdoor rijdt → encoder-asymmetrie / wieldiameter-verschil
     //   dtheta groot maar IMU zegt 0 → EKF trekt theta verkeerde kant op
     //   [STALE] → geen vers Pico-pakket, dezelfde snelheid opnieuw geïntegreerd
-    printf("[LOC-ENC] vL=%6.1f vR=%6.1f | v=%6.1f omega=%+5.2f°/s | "
+    /*printf("[LOC-ENC] vL=%6.1f vR=%6.1f | v=%6.1f omega=%+5.2f°/s | "
            "dx=%+5.1f dy=%+5.1f dtheta=%+5.2f° | "
            "pos=(%.1f,%.1f,%.1f)%s\n",
            vLeft, vRight, v, omegaDeg,
            dx_enc, dy_enc, dtheta_enc,
            x, y, theta,
            (staleCount > 1) ? " [STALE]" : "");
+           */
            
 
     // ── Jacobiaan + covariantie P ──────────────────────────────────
@@ -181,9 +182,10 @@ void Localisation::UpdateIMU(float imuYawDeg, float /*dt*/)
     P[2][2] = 0.01f;
 
     float correctie = NormalizeDeg(theta - thetaVoor);
-    printf("[LOC-IMU] imu=%+7.2f delta=%+6.2f -> theta=%+7.2f%s\n",
+    /*printf("[LOC-IMU] imu=%+7.2f delta=%+6.2f -> theta=%+7.2f%s\n",
            imuYawDeg, delta, theta,
            std::fabs(correctie) > 5.0f ? " *** GROTE SPRONG ***" : "");
+           */
 }
 
 float Localisation::GetX()     const { return x;     }
