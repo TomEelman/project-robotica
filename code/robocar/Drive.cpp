@@ -37,8 +37,8 @@ static constexpr float TURN_COUPLED_MIN_FACTOR = 0.5f;
 static constexpr float TURN_COUPLED_MAX_FACTOR = 1.5f;
 
 // Ramping rates in mm/s per Execute() tick.
-static constexpr float RAMP_ACCEL_STEP = 5.0f;
-static constexpr float RAMP_DECEL_STEP = 5.0f;
+static constexpr float RAMP_ACCEL_STEP = 1.0f;
+static constexpr float RAMP_DECEL_STEP = 1.0f;
 
 // Maximum change in the incoming linear command per Execute() call.
 static constexpr float CMD_MAX_LIN_STEP = 20.0f;
