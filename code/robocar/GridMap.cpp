@@ -540,17 +540,14 @@ bool GridMap::SavePGMCropped(const std::string& filename, float margin_m) const 
     float realW_m = static_cast<float>((maxH - minH) * resolution);   // breedte
     float realH_m = static_cast<float>((maxV - minV) * resolution);   // hoogte
 
-    // Anker-punten (celcoördinaten): een (h,v)-coord terug naar de cel.
+    // Vier hoeken van de min-area rechthoek (celcoördinaten) – voor de maatlijnen.
     //   cel = h·(horizontale as) + v·(verticale as)
     auto toCellX = [&](double h, double v) { return h * ahx + v * avx; };
     auto toCellY = [&](double h, double v) { return h * ahy + v * avy; };
-    double midH = (minH + maxH) / 2.0, midV = (minV + maxV) / 2.0;
-    // Breedte-label: midden bovenmuur (grootste cel-y).
-    double vTop = toCellY(midH, maxV) > toCellY(midH, minV) ? maxV : minV;
-    double hLabelX = toCellX(midH, vTop), hLabelY = toCellY(midH, vTop);
-    // Hoogte-label: midden linkermuur (kleinste cel-x).
-    double hLeft = toCellX(minH, midV) < toCellX(maxH, midV) ? minH : maxH;
-    double vLabelX = toCellX(hLeft, midV), vLabelY = toCellY(hLeft, midV);
+    double rectCellX[4] = { toCellX(minH, minV), toCellX(maxH, minV),
+                            toCellX(maxH, maxV), toCellX(minH, maxV) };
+    double rectCellY[4] = { toCellY(minH, minV), toCellY(maxH, minV),
+                            toCellY(maxH, maxV), toCellY(minH, maxV) };
 
     // ── Stap 4: geen onderbalk meer; maten staan op de kaart ──────
     int totalH = imgH;
@@ -688,9 +685,32 @@ bool GridMap::SavePGMCropped(const std::string& filename, float margin_m) const 
     auto colPx = [&](double cx) { return static_cast<int>((cx - x0) * SCALE); };
     auto rowPx = [&](double cy) { return static_cast<int>((y1 - 1 - cy) * SCALE); };
 
-    // Breedte-label gecentreerd op de bovenmuur, hoogte-label op de linkermuur.
-    drawMeters(realW_m, colPx(hLabelX) - textW(realW_m) / 2, rowPx(hLabelY) - textH / 2);
-    drawMeters(realH_m, colPx(vLabelX) - textW(realH_m) / 2, rowPx(vLabelY) - textH / 2);
+    // Pixel-omhullende van de rechthoek (voor de maatlijnen net buiten de muren).
+    int pxL = imgW, pxR = 0, pyT = totalH, pyB = 0;
+    for (int i = 0; i < 4; ++i) {
+        int cxp = colPx(rectCellX[i]), cyp = rowPx(rectCellY[i]);
+        pxL = std::min(pxL, cxp);  pxR = std::max(pxR, cxp);
+        pyT = std::min(pyT, cyp);  pyB = std::max(pyB, cyp);
+    }
+
+    const uint8_t LR = 90, LG = 90, LB = 90;    // grijze maatlijnen
+
+    // Breedte-maatlijn: net boven de kamer, met eindstreepjes en getal erboven.
+    int yDim = std::max(1, pyT - 12);
+    fill(pxL, yDim, pxR - pxL + 1, 1, LR, LG, LB);          // maatlijn
+    fill(pxL, yDim - 4, 1, 9, LR, LG, LB);                  // eindstreep links
+    fill(pxR, yDim - 4, 1, 9, LR, LG, LB);                  // eindstreep rechts
+    drawMeters(realW_m, (pxL + pxR) / 2 - textW(realW_m) / 2,
+               std::max(0, yDim - textH - 4));
+
+    // Hoogte-maatlijn: net links van de kamer, met eindstreepjes en getal ernaast.
+    int xDim = std::max(1, pxL - 12);
+    fill(xDim, pyT, 1, pyB - pyT + 1, LR, LG, LB);          // maatlijn
+    fill(xDim - 4, pyT, 9, 1, LR, LG, LB);                  // eindstreep boven
+    fill(xDim - 4, pyB, 9, 1, LR, LG, LB);                  // eindstreep onder
+    int hx = xDim - textW(realH_m) - 4;
+    if (hx < 0) hx = xDim + 6;                              // te weinig marge links → rechts v/d lijn
+    drawMeters(realH_m, hx, (pyT + pyB) / 2 - textH / 2);
 
     // ── Stap 8: schrijf PPM bestand ───────────────────────────────
     std::ofstream f2(filename, std::ios::binary);
