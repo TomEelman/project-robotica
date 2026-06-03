@@ -210,6 +210,10 @@ void Drive::ExecuteTurn(float angular)
     if (feedforward < minPwmLeft) feedforward = minPwmLeft;
     if (feedforward > 255.0f)     feedforward = 255.0f;
 
+    if (speedLeftFiltered < 5.0f && speedRightFiltered < 5.0f) {
+    if (feedforward < 120.0f) feedforward = 120.0f;
+}
+
     float rawL   = sensorHub.GetSpeedLeft();
     float rawR   = sensorHub.GetSpeedRight();
     bool  freshL = sensorHub.HasFreshLeft();
