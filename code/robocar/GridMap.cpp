@@ -423,18 +423,22 @@ static void DrawDigit(std::vector<uint8_t>& img, int imgW, int imgH,
 // ═══════════════════════════════════════════════════════════════════
 
 bool GridMap::SavePGMCropped(const std::string& filename, float margin_m) const {
-    // ── Stap 1: bounding box van bekende cellen ───────────────────
+    // ── Stap 1: bounding box + muur-cellen verzamelen ─────────────
+    //  minX..maxY  = alle bekende cellen (voor bijsnijden v/d afbeelding)
+    //  wallPts     = alle muur-cellen (bezet) → echte kamer-afmeting via PCA
     int minX = width,  maxX = -1;
     int minY = height, maxY = -1;
+    std::vector<std::pair<int,int>> wallPts;
 
     for (int y = 0; y < height; ++y)
-        for (int x = 0; x < width; ++x)
-            if (!IsUnknown(x, y)) {
-                if (x < minX) minX = x;
-                if (x > maxX) maxX = x;
-                if (y < minY) minY = y;
-                if (y > maxY) maxY = y;
-            }
+        for (int x = 0; x < width; ++x) {
+            if (IsUnknown(x, y)) continue;
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+            if (IsOccupied(x, y)) wallPts.emplace_back(x, y);   // muur
+        }
 
     if (maxX < 0) return SavePGM(filename);   // niets gescand
 
@@ -452,12 +456,61 @@ bool GridMap::SavePGMCropped(const std::string& filename, float margin_m) const 
     int imgW = cW * SCALE;
     int imgH = cH * SCALE;
 
-    float realW_m = static_cast<float>(cW) * resolution;
-    float realH_m = static_cast<float>(cH) * resolution;
+    // ── Echte kamer-afmetingen via PCA op de muur-cellen ──────────
+    //  De kamer staat meestal schuin op het grid. Een as-uitgelijnde
+    //  bounding box meet dan te groot (breedte = muur·cosα + zijmuur·sinα).
+    //  PCA vindt de hoofdrichtingen van de muren, zodat we de lengte
+    //  LANGS elke muur meten (cel-telling langs de muur × celgrootte).
+    if (wallPts.empty()) {                       // geen muren → val terug op bbox
+        wallPts = { {minX, minY}, {maxX, minY}, {minX, maxY}, {maxX, maxY} };
+    }
 
-    // ── Stap 4: tekstblok onderaan (afmetingen kamer) ─────────────
-    int scaleBarH   = 60;
-    int totalH      = imgH + scaleBarH;
+    double mx = 0, my = 0;
+    for (auto& p : wallPts) { mx += p.first; my += p.second; }
+    mx /= wallPts.size();  my /= wallPts.size();
+
+    double cxx = 0, cxy = 0, cyy = 0;            // 2×2 covariantiematrix
+    for (auto& p : wallPts) {
+        double dx = p.first - mx, dy = p.second - my;
+        cxx += dx * dx;  cxy += dx * dy;  cyy += dy * dy;
+    }
+
+    double theta = 0.5 * std::atan2(2.0 * cxy, cxx - cyy);   // hoofdas-hoek
+    double a1x = std::cos(theta), a1y = std::sin(theta);     // as 1
+    double a2x = -a1y,            a2y = a1x;                 // as 2 (loodrecht)
+
+    // Uiterste projecties op beide assen → lengte langs elke muurrichting.
+    double min1 = 1e9, max1 = -1e9, min2 = 1e9, max2 = -1e9;
+    for (auto& p : wallPts) {
+        double dx = p.first - mx, dy = p.second - my;
+        double p1 = dx * a1x + dy * a1y, p2 = dx * a2x + dy * a2y;
+        min1 = std::min(min1, p1);  max1 = std::max(max1, p1);
+        min2 = std::min(min2, p2);  max2 = std::max(max2, p2);
+    }
+
+    // As 1 of as 2 als "horizontaal" (breedte) bestempelen.
+    bool a1Horiz = std::abs(a1x) >= std::abs(a1y);
+    double ahx = a1Horiz ? a1x : a2x, ahy = a1Horiz ? a1y : a2y;   // horizontale as
+    double avx = a1Horiz ? a2x : a1x, avy = a1Horiz ? a2y : a1y;   // verticale as
+    double minH = a1Horiz ? min1 : min2, maxH = a1Horiz ? max1 : max2;
+    double minV = a1Horiz ? min2 : min1, maxV = a1Horiz ? max2 : max1;
+
+    float realW_m = static_cast<float>((maxH - minH) * resolution);   // breedte
+    float realH_m = static_cast<float>((maxV - minV) * resolution);   // hoogte
+
+    // Anker-punten (in celcoördinaten) om elk label naast de juiste muur te zetten.
+    double midH = (minH + maxH) / 2.0, midV = (minV + maxV) / 2.0;
+    // Breedte-label: midden van de horizontale muur, aan de bovenkant (grootste cel-y).
+    double vTop = (my + midH * ahy + maxV * avy) > (my + midH * ahy + minV * avy) ? maxV : minV;
+    double hLabelX = mx + midH * ahx + vTop * avx;
+    double hLabelY = my + midH * ahy + vTop * avy;
+    // Hoogte-label: midden van de verticale muur, aan de linkerkant (kleinste cel-x).
+    double hLeft = (mx + minH * ahx + midV * avx) < (mx + maxH * ahx + midV * avx) ? minH : maxH;
+    double vLabelX = mx + hLeft * ahx + midV * avx;
+    double vLabelY = my + hLeft * ahy + midV * avy;
+
+    // ── Stap 4: geen onderbalk meer; maten staan op de kaart ──────
+    int totalH = imgH;
 
     // ── Stap 5: pixel-buffer vullen ───────────────────────────────
     std::vector<uint8_t> img(static_cast<size_t>(imgW * totalH * 3), 235);
@@ -548,51 +601,53 @@ bool GridMap::SavePGMCropped(const std::string& filename, float margin_m) const 
             }
     };
 
-    // Afmetingen van de kamer als tekst: "<breedte> x <hoogte>" in meter.
-    constexpr int TS = 2;            // tekst-vergroting (elk font-pixel = TS×TS)
+    // Afmetingen naast de muren tekenen (technische-plattegrond-stijl).
+    constexpr int TS = 2;                       // tekst-vergroting (font-pixel = TS×TS)
+    const uint8_t TR = 20, TG = 20, TB = 160;   // tekstkleur (donkerblauw)
 
-    // Eén vergroot cijfer tekenen via de fill-lambda (klipt op totalH,
-    // dus ook zichtbaar in de onderbalk – anders dan DrawDigit).
+    // Eén vergroot cijfer tekenen via de fill-lambda.
     auto drawDigitBig = [&](int digit, int px, int py) {
         if (digit < 0 || digit > 9) return;
         const uint8_t* rows = kDigitFont[digit];
         for (int dy = 0; dy < 5; ++dy)
             for (int dx = 0; dx < 3; ++dx)
                 if (rows[dy] & (1 << (2 - dx)))
-                    fill(px + dx * TS, py + dy * TS, TS, TS, 40, 40, 40);
+                    fill(px + dx * TS, py + dy * TS, TS, TS, TR, TG, TB);
     };
 
-    // Een afstand in meter tekenen met 2 decimalen; geeft de nieuwe x terug.
-    auto drawMeters = [&](float meters, int px, int py) -> int {
+    // Aantal cijfers in het gehele deel (voor centreren) + tekstbreedte in px.
+    auto wholeDigits = [](float m) {
+        int whole = static_cast<int>(m);
+        if (whole == 0) return 1;
+        int n = 0;
+        for (int w = whole; w > 0; w /= 10) ++n;
+        return n;
+    };
+    auto textW = [&](float m) { return (wholeDigits(m) * 4 + 2 + 8) * TS; };
+    const int textH = 5 * TS;
+
+    // Eén maat tekenen met witte achtergrond (leesbaar over muren/vrij gebied).
+    auto drawMeters = [&](float meters, int px, int py) {
+        fill(px - 2, py - 2, textW(meters) + 3, textH + 4, 255, 255, 255);  // wit kader
         int whole = static_cast<int>(meters);
         int frac  = static_cast<int>(meters * 100.0f + 0.5f) % 100;
-
-        // Gehele deel (minstens één cijfer), hoogste cijfer eerst.
         int digits[8], n = 0;
         if (whole == 0) digits[n++] = 0;
-        else for (int w = whole; w > 0; w /= 10) digits[n++] = w % 10;
+        else for (int v = whole; v > 0; v /= 10) digits[n++] = v % 10;
         for (int i = n - 1; i >= 0; --i) { drawDigitBig(digits[i], px, py); px += 4 * TS; }
-
-        fill(px, py + 4 * TS, TS, TS, 40, 40, 40);          // decimaalpunt
+        fill(px, py + 4 * TS, TS, TS, TR, TG, TB);          // decimaalpunt
         px += 2 * TS;
         drawDigitBig(frac / 10, px, py); px += 4 * TS;       // 1e decimaal
-        drawDigitBig(frac % 10, px, py); px += 4 * TS;       // 2e decimaal
-        return px;
+        drawDigitBig(frac % 10, px, py);                     // 2e decimaal
     };
 
-    int txtY = imgH + scaleBarH / 2 - (5 * TS) / 2;          // verticaal centreren
-    int txtX = 20;
-    txtX = drawMeters(realW_m, txtX, txtY);                  // breedte
+    // Celcoördinaat (float) → pixel in de afbeelding (y wordt gespiegeld).
+    auto colPx = [&](double cx) { return static_cast<int>((cx - x0) * SCALE); };
+    auto rowPx = [&](double cy) { return static_cast<int>((y1 - 1 - cy) * SCALE); };
 
-    // 'x' scheidingsteken (twee diagonalen)
-    txtX += 4;
-    for (int i = 0; i < 5; ++i) {
-        fill(txtX + i * TS,       txtY + i * TS, TS, TS, 40, 40, 40);
-        fill(txtX + (4 - i) * TS, txtY + i * TS, TS, TS, 40, 40, 40);
-    }
-    txtX += 5 * TS + 4;
-
-    txtX = drawMeters(realH_m, txtX, txtY);                  // hoogte (in meter)
+    // Breedte-label gecentreerd op de bovenmuur, hoogte-label op de linkermuur.
+    drawMeters(realW_m, colPx(hLabelX) - textW(realW_m) / 2, rowPx(hLabelY) - textH / 2);
+    drawMeters(realH_m, colPx(vLabelX) - textW(realH_m) / 2, rowPx(vLabelY) - textH / 2);
 
     // ── Stap 8: schrijf PPM bestand ───────────────────────────────
     std::ofstream f2(filename, std::ios::binary);
@@ -600,7 +655,7 @@ bool GridMap::SavePGMCropped(const std::string& filename, float margin_m) const 
 
     f2 << "P6\n";
     f2 << "# breedte=" << realW_m << "m  hoogte=" << realH_m << "m\n";
-    f2 << "# schaal: 1px=" << resolution * 100.0f << "cm  |  afmeting onderaan in meter\n";
+    f2 << "# schaal: 1px=" << resolution * 100.0f << "cm  |  maten op kaart in meter\n";
     f2 << imgW << " " << totalH << "\n255\n";
     f2.write(reinterpret_cast<const char*>(img.data()),
              static_cast<std::streamsize>(img.size()));
