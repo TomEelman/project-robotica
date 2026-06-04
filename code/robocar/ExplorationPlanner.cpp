@@ -3,193 +3,240 @@
 #include <cmath>
 #include <algorithm>
 #include <queue>
-#include <vector>
 #include <climits>
 
-// ─────────────────────────────────────────────────────────────────
-//  Interne BFS — geeft padlengte in cellen van (sx,sy) naar (gx,gy)
-//  door alleen FREE cellen. Geeft INT_MAX terug als onbereikbaar.
-//  BFS (geen A*) want we hoeven alleen de lengte, geen volledig pad.
-// ─────────────────────────────────────────────────────────────────
-static int BFSAfstand(const GridMap& map, int sx, int sy, int gx, int gy) {
+ExplorationPlanner::ExplorationPlanner() : currentTarget(0.0f, 0.0f, 0.0f) {}
+
+static int BFSDistance(const GridMap& map, int sx, int sy, int gx, int gy) {
     const int W = map.GetWidth();
     const int H = map.GetHeight();
-    if (!map.InBounds(sx,sy) || !map.InBounds(gx,gy)) return INT_MAX;
-    if (map.IsOccupied(sx,sy) || map.IsOccupied(gx,gy)) return INT_MAX;
 
-    // Gebruik een platte visited-vector voor snelheid
-    std::vector<int> dist(W * H, -1);
+    // safety check: if start or goal is outside the map boundaries, return max distance
+    if (!map.InBounds(sx, sy) || !map.InBounds(gx, gy)) return INT_MAX;
+    
+    // safety check: if start or goal is trapped inside a wall, return max distance
+    if (map.IsOccupied(sx, sy) || map.IsOccupied(gx, gy)) return INT_MAX;
+    
+    // vector representing the grid initialized with -1 (unvisited)
+    std::vector<int> distance(W * H, -1);
+
+    // queue to manage which cells to explore next (First In, First Out)
     std::queue<int> q;
 
-    auto idx = [&](int x, int y){ return y * W + x; };
-    dist[idx(sx,sy)] = 0;
-    q.push(idx(sx,sy));
+    // get flat index for start coordinates, set its distance to 0, and add to queue
+    int startIndex = (sy * W) + sx;
+    distance[startIndex] = 0;
+    q.push(startIndex);
 
+    // coordinate shift arrays to easily look Left, Right, Up, and Down
     const int dx[4] = {-1,1, 0,0};
     const int dy[4] = { 0,0,-1,1};
 
+    // keep exploring until we run out of reachable cells
     while (!q.empty()) {
-        int cur = q.front(); q.pop();
-        int cx = cur % W, cy = cur / W;
-        int d  = dist[cur];
+        // grab the next cell in line and pop it from the queue
+        int cur = q.front(); 
+        q.pop();
 
+        // decode the flat 1D index back into 2D (X, Y) coordinates
+        int cx = cur % W;
+        int cy = cur / W;
+
+        // get the current step count for this cell
+        int d  = distance[cur];
+
+        // SUCCESS: if we reached the goal cell, return the total step distance!
         if (cx == gx && cy == gy) return d;
 
+        // look at all 4 neighboring cells (Left, Right, Up, Down)
         for (int i = 0; i < 4; ++i) {
-            int nx = cx+dx[i], ny = cy+dy[i];
-            if (!map.InBounds(nx,ny))      continue;
-            if (map.IsOccupied(nx,ny))     continue;
-            // Onbekende cellen toestaan als doorgang maar niet als doel —
-            // de robot kent het pad en kan er overheen teruglopen
-            int ni = idx(nx,ny);
-            if (dist[ni] >= 0)             continue;
-            dist[ni] = d + 1;
-            q.push(ni);
-        }
+            int neighborX = cx + dx[i];
+            int neighborY = cy + dy[i];
+            
+            // if neighbor is outside the map boundaries, skip it
+            if (!map.InBounds(neighborX, neighborY)) continue;
+            
+            // if neighbor is a solid wall block, skip it
+            if (map.IsOccupied(neighborX, neighborY)) continue;
+
+            // get the neighbor's flat vector index
+            int neighborIndex = (neighborY * W) + neighborX;
+            
+            // if we have already calculated a distance for this cell, skip it
+            if (distance[neighborIndex] >= 0) continue;
+            
+            // save neighbor's distance as current distance + 1 step, then queue it up
+            distance[neighborIndex] = d + 1;
+            q.push(neighborIndex);
+        }    
+
     }
-    return INT_MAX;  // onbereikbaar
+
+    return INT_MAX;  // unreachable
 }
 
-// ─────────────────────────────────────────────────────────────────
-//  Blacklist hulpfuncties
-// ─────────────────────────────────────────────────────────────────
-void VoegToeAanBlacklist(std::vector<BlacklistItem>& blacklist,
-                          float x_mm, float y_mm, int ttl)
+void AddToBlackList(std::vector<BlacklistItem>& blacklist, float x_mm, float y_mm, int ttl)
 {
-    // Updaten als het doel al in de lijst staat
-    for (auto& item : blacklist) {
-        float dx = item.x_mm - x_mm, dy = item.y_mm - y_mm;
-        if (dx*dx + dy*dy < 200.0f*200.0f) {   // binnen 200mm = zelfde frontier
-            item.ttl = std::max(item.ttl, ttl);
+    // loops through the existing blacklist to check if this location is already known
+    for (size_t i = 0; i < blacklist.size(); ++i) {
+        float dx = blacklist[i].x_mm - x_mm;
+        float dy = blacklist[i].y_mm - y_mm;
+        
+        // calculates squared distance to see how close this point is to an existing item
+        float d2 = (dx * dx) + (dy * dy);
+        
+        // if the point is within 200mm, we treat it as the exact same target area
+        if (d2 < 200.0f * 200.0f) {   
+            // update the item's expiration timer
+            blacklist[i].ttl = std::max(blacklist[i].ttl, ttl);
+            
+            // exit early since we updated the existing spot and don't need a new entry
             return;
         }
     }
+    
+    // if the loop finishes without finding a close match, add this as a brand-new entry to the blacklist
     blacklist.push_back({x_mm, y_mm, ttl});
 }
 
 void TickBlacklist(std::vector<BlacklistItem>& blacklist) {
-    for (auto& item : blacklist) --item.ttl;
-    blacklist.erase(
-        std::remove_if(blacklist.begin(), blacklist.end(),
-                       [](const BlacklistItem& b){ return b.ttl <= 0; }),
-        blacklist.end());
+    // Step 1: loop through the blacklist and decrease the time to live for every item
+    for (size_t i = 0; i < blacklist.size(); ++i) {
+        --blacklist[i].ttl;
+    }
+
+    // Step 2: loop backwards to safely remove any expired items (ttl <= 0)
+    for (int i = static_cast<int>(blacklist.size()) - 1; i >= 0; --i) {
+        if (blacklist[i].ttl <= 0) {
+            // erases this specific item from the vector list
+            blacklist.erase(blacklist.begin() + i);
+        }
+    }
 }
 
-static bool InBlacklist(const std::vector<BlacklistItem>& blacklist,
-                         float x_mm, float y_mm)
-{
-    for (const auto& item : blacklist) {
-        float dx = item.x_mm - x_mm, dy = item.y_mm - y_mm;
-        if (dx*dx + dy*dy < 200.0f*200.0f) return true;
+static bool inBlacklist(const std::vector<BlacklistItem>& blacklist, float x_mm, float y_mm) {
+    // loops through the entire blacklist to check if our coordinates match an excluded zone
+    for (size_t i = 0; i < blacklist.size(); ++i) {
+        float dx = blacklist[i].x_mm - x_mm;
+        float dy = blacklist[i].y_mm - y_mm;
+        
+        // calculates squared distance to find how close the target is to this blacklist item
+        float d2 = (dx * dx) + (dy * dy);
+        
+        // if the target is within the 200mm radius threshold of a blacklisted spot
+        if (d2 < 200.0f * 200.0f) {
+            // match found and return true immediately to flag that this spot is blocked
+            return true;
+        }
     }
+    
+    // if the loop finishes checking every item and finds nothing nearby, the spot is safe
     return false;
 }
 
-// ─────────────────────────────────────────────────────────────────
-//  KiesFrontierDoel
-//
-//  Score per frontier-cel:
-//    bereikbaarheid  (50%) — kortere BFS-afstand = hogere score
-//                            onbereikbare cellen worden overgeslagen
-//    LIDAR-ruimte    (30%) — meer ruimte in die richting = hogere score
-//    nabijheid       (20%) — dichterbij = iets hoger (voorkomt
-//                            verre doelen die toch onbereikbaar zijn)
-//
-//  Sampling: niet elk van de 40.000 cellen hoeft beoordeeld. We
-//  bemonsteren frontiers op een rooster van SAMPLE_STAP cellen.
-//  Bij 260×160 grid en SAMPLE_STAP=3: ~2800 kandidaten ipv 41600.
-// ─────────────────────────────────────────────────────────────────
-Position KiesFrontierDoel(const Mapper& mapper,
-                           const Position& huidig,
-                           const float lidarRanges[360],
-                           const std::vector<BlacklistItem>& blacklist)
-{
+Position ChooseFrontierGoal(const Mapper& mapper, const Position& currentPos, const float lidarRanges[360], 
+    const std::vector<BlacklistItem>& blacklist) {
+    //  mm to meter conversion
     constexpr float MM2M       = 0.001f;
-    constexpr int   SAMPLE_STAP = 3;     // scan elke 3e cel — genoeg precisie, veel sneller
-    constexpr float MAX_BFS     = 400.0f; // cellen; frontiers verder dan dit negeren
+    // skip every 3 cells to scan the map much faster with plenty of precision
+    constexpr int   SAMPLE_STAP = 3;     
+    // ignore any frontier cells further than 400 grid blocks away
+    constexpr float MAX_BFS     = 400.0f; 
 
-    const GridMap& map      = mapper.GetMap();
-    const float huidigX_m  = huidig.GetX() * MM2M;
-    const float huidigY_m  = huidig.GetY() * MM2M;
+    const GridMap& map = mapper.GetMap();
+    const float currentX_m  = currentPos.GetX() * MM2M;
+    const float currentY_m  = currentPos.GetY() * MM2M;
     const int W = map.GetWidth();
     const int H = map.GetHeight();
 
-    int rx, ry;
-    map.WorldToCell(huidigX_m, huidigY_m, rx, ry);
+    int rx;
+    int ry;
+    map.WorldToCell(currentX_m, currentY_m, rx, ry);
 
-    const int ddx4[4] = {-1,1,0,0};
-    const int ddy4[4] = { 0,0,-1,1};
+    // layout coordinate shifts to quickly look at 4 neighboring directions (Left, Right, Up, Down)
+    const int ddx4[4] = {-1, 1,  0, 0};
+    const int ddy4[4] = { 0, 0, -1, 1};
 
+    // trackers to keep record of the highest scoring goal found so far
     float bestScore = -1.0f;
-    float bestWx_m  = huidigX_m;
-    float bestWy_m  = huidigY_m;
+    float bestWx_m  = currentX_m;
+    float bestWy_m  = currentY_m;
 
+    // Step 1: Loop through the grid map row by row, jumping by the sample step size
     for (int cy = 0; cy < H; cy += SAMPLE_STAP) {
         for (int cx = 0; cx < W; cx += SAMPLE_STAP) {
-            // Moet vrije cel zijn met minstens één onbekende buur (= frontier)
+            
+            // if this specific grid cell is blocked by a wall or obstacle, skip it
             if (!map.IsFree(cx, cy)) continue;
 
-            bool heeftOnbekendeBuur = false;
+            // check if this free cell qualifies as a "frontier" by bordering unmapped space
+            bool hasUnknownNeighbor = false;
+
             for (int d = 0; d < 4; ++d) {
-                if (map.InBounds(cx+ddx4[d], cy+ddy4[d]) &&
-                    map.IsUnknown(cx+ddx4[d], cy+ddy4[d])) {
-                    heeftOnbekendeBuur = true; break;
+                int neighborX = cx + ddx4[d];
+                int neighborY = cy + ddy4[d];
+
+                if (map.InBounds(neighborX, neighborY) && map.IsUnknown(neighborX, neighborY)) {
+                    hasUnknownNeighbor = true; 
+                    break;
                 }
             }
-            if (!heeftOnbekendeBuur) continue;
 
-            float wx_m, wy_m;
+            // if all surrounding neighbors are already fully mapped, skip this cell
+            if (!hasUnknownNeighbor) continue;
+
+            // translate cell coordinates back to real-world meters
+            float wx_m;
+            float wy_m;
+
             map.CellToWorld(cx, cy, wx_m, wy_m);
 
-            // Sla over als in blacklist
-            if (InBlacklist(blacklist, wx_m / MM2M, wy_m / MM2M)) continue;
+            // check if this area falls within our blacklist
+            if (inBlacklist(blacklist, wx_m / MM2M, wy_m / MM2M)) continue;
 
-            // ── BFS-afstand (in cellen) ───────────────────────────
-            int bfsAfstand = BFSAfstand(map, rx, ry, cx, cy);
-            if (bfsAfstand == INT_MAX) continue;         // onbereikbaar → overslaan
-            if (bfsAfstand > (int)MAX_BFS) continue;     // te ver weg
+            // Step 2: Use pathfinding to see how many actual steps it takes to walk here
+            int bfsDistance = BFSDistance(map, rx, ry, cx, cy);
+            if (bfsDistance == INT_MAX) continue;         // unreachable path -> skip
+            if (bfsDistance > (int)MAX_BFS) continue;     // too far away -> skip
 
-            // ── LIDAR-ruimte in die richting ──────────────────────
-            float ddxF    = wx_m - huidigX_m;
-            float ddyF    = wy_m - huidigY_m;
-            float hoek_rad = std::atan2(ddyF, ddxF)
-                             - (huidig.GetTheta() * static_cast<float>(M_PI) / 180.0f);
-            int   lidarIdx  = ((int)(hoek_rad * 180.0f / static_cast<float>(M_PI)) + 360) % 360;
-            float vrijRuimte = lidarRanges[lidarIdx];
-            if (vrijRuimte <= 0.0f || vrijRuimte > 8000.0f) vrijRuimte = 8000.0f;
+            // Step 3: Lidar check Calculate the angle relative to the robot's current heading
+            float ddxF    = wx_m - currentX_m;
+            float ddyF    = wy_m - currentY_m;
+            float angle_rad = std::atan2(ddyF, ddxF) - (currentPos.GetTheta() * static_cast<float>(M_PI) / 180.0f);
+            int   lidarIdx  = ((int)(angle_rad * 180.0f / static_cast<float>(M_PI)) + 360) % 360;
+            
+            // extract how much physical clear space the lidar sensor spots in that direction
+            float freeRoom = lidarRanges[lidarIdx];
+            if (freeRoom <= 0.0f || freeRoom > 8000.0f) freeRoom = 8000.0f;
 
-            // ── Euclidische afstand (meter) ───────────────────────
+            // do not pick a target that is too close (under 30cm) to the robot
             float dist_m = std::sqrt(ddxF*ddxF + ddyF*ddyF);
             if (dist_m < 0.3f) continue;
 
-            // ── Information gain: hoeveel onbekende cellen rondom frontier ──
-            // Radius 10 cellen (~30cm bij 3cm/cel). Een frontier aan de rand
-            // van een grote open ruimte scoort hier veel hoger dan een frontier
-            // in een smal al-gescande gang. Dit voorkomt dat de robot rondjes
-            // rijdt langs zijn eigen al-verkende rand.
+            // Step 4: Information gain calculation Count unknown cells in a 21x21 square box around the target
             constexpr int GAIN_R = 10;
-            int unknownCount = 0, totalCount = 0;
-            for (int gy = cy - GAIN_R; gy <= cy + GAIN_R; gy += 2)
+            int unknownCount = 0; 
+            int totalCount = 0;
+
+            for (int gy = cy - GAIN_R; gy <= cy + GAIN_R; gy += 2) {
                 for (int gx = cx - GAIN_R; gx <= cx + GAIN_R; gx += 2) {
                     if (!map.InBounds(gx, gy)) continue;
                     ++totalCount;
                     if (map.IsUnknown(gx, gy)) ++unknownCount;
                 }
-            float scoreGain = totalCount > 0
-                            ? static_cast<float>(unknownCount) / static_cast<float>(totalCount)
-                            : 0.0f;
+            }
+            
+            // calculate the percentage of unexplored space this target would open up
+            float scoreGain = totalCount > 0 ? static_cast<float>(unknownCount) / static_cast<float>(totalCount) : 0.0f;
 
-            // ── Score: bereikbaarheid 40%, gain 30%, LIDAR 30% ──────
-            // Nabijheidsterm verwijderd: die domineerde te sterk en zorgde
-            // ervoor dat de robot altijd de dichtstbijzijnde frontier koos
-            // i.p.v. de meest veelbelovende open ruimte.
-            float scoreReach = 1.0f - std::min((float)bfsAfstand, MAX_BFS) / MAX_BFS;
-            float scoreLidar = std::min(vrijRuimte, 2000.0f) / 2000.0f;
+            // Step 5: Normalize component scores between 0.0 and 1.0
+            float scoreReach = 1.0f - std::min((float)bfsDistance, MAX_BFS) / MAX_BFS; // closer pathways score higher
+            float scoreLidar = std::min(freeRoom, 2000.0f) / 2000.0f; // more open space scores higher
 
-            float score = 0.4f * scoreReach
-                        + 0.3f * scoreGain
-                        + 0.3f * scoreLidar;
+            // Step 6: Combine scores using a weighted formula (40% Reachability, 30% Information Gain, 30% Open Space)
+            float score = 0.4f * scoreReach + 0.3f * scoreGain + 0.3f * scoreLidar;
 
+            // if this spot achieves the highest overall rating, crown it as our new target
             if (score > bestScore) {
                 bestScore = score;
                 bestWx_m  = wx_m;
@@ -198,79 +245,6 @@ Position KiesFrontierDoel(const Mapper& mapper,
         }
     }
 
-    // Geen scorende frontier gevonden → geef robotpositie terug (= geen doel)
+    // return the winning world coordinate destination converted back into millimeters
     return Position(bestWx_m / MM2M, bestWy_m / MM2M, 0.0f);
 }
-
-
-// ─────────────────────────────────────────────────────────────────
-//  TelFrontiers
-// ─────────────────────────────────────────────────────────────────
-int TelFrontiers(const Mapper& mapper) {
-    const int W  = mapper.GetMap().GetWidth();
-    const int H  = mapper.GetMap().GetHeight();
-    const int dx[4] = {-1,1,0,0};
-    const int dy[4] = { 0,0,-1,1};
-    int count = 0;
-    for (int cy = 0; cy < H; ++cy)
-        for (int cx = 0; cx < W; ++cx) {
-            if (!mapper.GetMap().IsFree(cx, cy)) continue;
-            for (int d = 0; d < 4; ++d)
-                if (mapper.GetMap().InBounds(cx+dx[d], cy+dy[d]) &&
-                    mapper.GetMap().IsUnknown(cx+dx[d], cy+dy[d])) {
-                    ++count; break;
-                }
-        }
-    return count;
-}
-
-
-// ─────────────────────────────────────────────────────────────────
-//  ExplorationPlanner (ongewijzigd)
-// ─────────────────────────────────────────────────────────────────
-ExplorationPlanner::ExplorationPlanner()
-    : currentTarget(0.0f, 0.0f, 0.0f)
-    , state(SEARCHING)
-{}
-
-Position ExplorationPlanner::ComputeNextTarget(const GridMap& map, Position currentPos) {
-    state = SEARCHING;
-
-    int W = map.GetWidth(), H = map.GetHeight();
-    int rx, ry;
-    map.WorldToCell(currentPos.GetX(), currentPos.GetY(), rx, ry);
-    bool robotInGrid = map.InBounds(rx, ry);
-
-    int bestX = -1, bestY = -1, bestDistSq = -1;
-    const int dx[4] = {-1,1,0,0};
-    const int dy[4] = { 0,0,-1,1};
-
-    for (int x = 0; x < W; ++x) {
-        for (int y = 0; y < H; ++y) {
-            if (!map.IsFree(x, y)) continue;
-            bool isFrontier = false;
-            for (int i = 0; i < 4; ++i)
-                if (map.IsUnknown(x+dx[i], y+dy[i])) { isFrontier = true; break; }
-            if (!isFrontier) continue;
-
-            int ddx = robotInGrid ? (x - rx) : x;
-            int ddy = robotInGrid ? (y - ry) : y;
-            int distSq = ddx*ddx + ddy*ddy;
-            if (bestDistSq < 0 || distSq < bestDistSq) {
-                bestDistSq = distSq; bestX = x; bestY = y;
-            }
-        }
-    }
-
-    if (bestX < 0) { state = IDLE; return currentTarget; }
-
-    float wx, wy;
-    map.CellToWorld(bestX, bestY, wx, wy);
-    currentTarget = Position(wx, wy, 0.0f);
-    state = MOVING;
-    return currentTarget;
-}
-
-Position         ExplorationPlanner::GetCurrentTarget() const { return currentTarget; }
-ExplorationState ExplorationPlanner::GetState()         const { return state; }
-bool             ExplorationPlanner::HasTarget()        const { return state == MOVING; }

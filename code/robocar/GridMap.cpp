@@ -8,46 +8,785 @@ GridMap::GridMap(int w, int h, float res)
     : width(w)
     , height(h)
     , resolution(res)
-    , originX(-static_cast<float>(w) * res * 0.5f)   // midden van het grid = (0,0) in de wereld
+    , originX(-static_cast<float>(w) * res * 0.5f)
     , originY(-static_cast<float>(h) * res * 0.5f)
     , logOdds(h, std::vector<int8_t>(w, CELL_UNKNOWN))
     , binaryGrid(h, std::vector<int>(w, 0))
     , binaryDirty(false)
-{
+{}
+
+void GridMap::RaycastUpdate(int x0, int y0, int x1, int y1) {
+    // fast thread local cache array to hold the cells along the line path
+    static thread_local std::vector<std::pair<int,int>> cells;
+    bresenhamLine(x0, y0, x1, y1, cells);
+
+    // Step 1: Loop through all cells EXCEPT the final one to mark them as empty space
+    for (size_t i = 0; i + 1 < cells.size(); ++i) {
+        auto [cx, cy] = cells[i];
+        if (!InBounds(cx, cy)) continue;
+
+        // subtract points because the laser passed through here safely without hitting anything
+        int8_t& cell = logOdds[cy][cx];
+        cell = static_cast<int8_t>(cell + L_FREE);
+        clampLogOdds(cell);
+    }
+
+    // Step 2: The very last cell in the vector represents the solid obstacle hit
+    if (!cells.empty()) {
+        auto [cx, cy] = cells.back();
+        if (InBounds(cx, cy)) {
+            // add points because the laser actively collided with a wall here
+            int8_t& cell = logOdds[cy][cx];
+            cell = static_cast<int8_t>(cell + L_OCC);
+            clampLogOdds(cell);
+        }
+    }
+
+    binaryDirty = true;
 }
 
-void GridMap::ClampLogOdds(int8_t& val) const {
-    if (val < L_MIN) val = L_MIN;
-    if (val > L_MAX) val = L_MAX;
+void GridMap::IntegrateScan(float robotX, float robotY, float robotTheta,
+                             const float angles[], const float ranges[], int count, float maxRange) {
+    // conversion factors localization delivers data in mm, but map operations require meters
+    constexpr float MM2M    = 0.001f;
+    constexpr float DEG2RAD = 3.14159265f / 180.0f;
+
+    float robotX_m = robotX * MM2M;
+    float robotY_m = robotY * MM2M;
+
+    // convert the robot's physical position to starting grid cell coordinates
+    int rx;
+    int ry;
+    WorldToCell(robotX_m, robotY_m, rx, ry);
+    
+    // save this position to our trail array to show where the robot drove
+    robotPath.emplace_back(robotX_m, robotY_m);
+
+    // loop through every single laser beam returned in this sweep
+    for (int i = 0; i < count; ++i) {
+        float dist_mm = ranges[i];
+
+        // skip reading points that are out of bounds
+        if (dist_mm <= 0.0f || dist_mm > maxRange) continue;
+
+        float dist_m = dist_mm * MM2M;
+
+        // World angle = robot angle orientation + relative angle of this specific laser stream
+        float globalAngle = robotTheta * DEG2RAD + angles[i] * DEG2RAD;
+
+        // use trigonometry to find the exact target endpoint coordinates in meters
+        float wx = robotX_m + dist_m * std::cos(globalAngle);
+        float wy = robotY_m + dist_m * std::sin(globalAngle);
+
+        // convert the calculated target endpoint into cell index coordinates
+        int ex; 
+        int ey;
+        WorldToCell(wx, wy, ex, ey);
+
+        // fire the raycast updates between start position and endpoint targets
+        RaycastUpdate(rx, ry, ex, ey);
+    }
 }
 
-bool GridMap::InBounds(int cx, int cy) const {
-    return cx >= 0 && cx < width && cy >= 0 && cy < height;
+void GridMap::IntegrateScanMotionCorrected(
+    float robotX, float robotY, float robotThetaDeg, float omegaDegS, float scanDuration,
+    const float angles[], const float ranges[], int count, float maxRange) {
+
+    // conversion factors: localization values are in mm, but map operations require meters
+    constexpr float MM2M    = 0.001f;
+    constexpr float DEG2RAD = 3.14159265f / 180.0f;
+
+    // convert the robot's physical position to starting grid cell coordinates
+    float robotX_m = robotX * MM2M;
+    float robotY_m = robotY * MM2M;
+
+    // convert the robot's physical position to starting grid cell coordinates
+    int rx;
+    int ry;
+    WorldToCell(robotX_m, robotY_m, rx, ry);
+    
+    // save this position to our trail array to show where the robot drove
+    robotPath.emplace_back(robotX_m, robotY_m);
+
+    // find the exact midpoint time of the scan to use as our stationary anchor reference
+    float halfDuration = scanDuration * 0.5f;
+
+    // loop through every single laser beam returned in this sweep
+    for (int i = 0; i < count; ++i) {
+        float dist_mm = ranges[i];
+
+        // skip reading points that are out of bounds
+        if (dist_mm <= 0.0f || dist_mm > maxRange) continue;
+
+        // calculate the timestamp of this specific beam (0 = start of scan, scanDuration = end)
+        float t_i = (static_cast<float>(i) / static_cast<float>(count)) * scanDuration;
+
+        // calculate exactly how many degrees the robot had turned when this beam fired
+        // (t_i - halfDuur) gives the time offset relative to the middle of the scan
+        float thetaCorrected = robotThetaDeg - omegaDegS * (t_i - halfDuration);
+
+        // World angle = untwisted robot orientation + relative angle of this specific laser stream
+        float globalAngle = thetaCorrected * DEG2RAD + angles[i] * DEG2RAD;
+
+        // use trigonometry to find the exact target endpoint coordinates in meters
+        float dist_m = dist_mm * MM2M;
+        float wx = robotX_m + dist_m * std::cos(globalAngle);
+        float wy = robotY_m + dist_m * std::sin(globalAngle);
+
+        // convert the calculated target endpoint into cell index coordinates
+        int ex; 
+        int ey;
+        WorldToCell(wx, wy, ex, ey);
+
+        // fire the raycast updates between start position and endpoint targets
+        RaycastUpdate(rx, ry, ex, ey);
+    }
+}
+
+bool GridMap::IsOccupied(int cx, int cy) const {
+    // if cell is completely outside the grid it's not a valid wall
+    if (!InBounds(cx, cy)) return false;
+    
+    // returns true if the probability score has crossed above our wall certainty threshold
+    return logOdds[cy][cx] >= CELL_OCCUPIED;
+}
+
+bool GridMap::IsFree(int cx, int cy) const {
+    // if cell is outside the grid it's not clear to drive through
+    if (!InBounds(cx, cy)) return false;
+    
+    // returns true if the score is low enough to prove the cell is empty path space
+    return logOdds[cy][cx] <= CELL_FREE;
+}
+
+bool GridMap::IsUnknown(int cx, int cy) const {
+    // if cell is outside the map boundaries treat it as unmapped/unknown
+    if (!InBounds(cx, cy)) return true;
+    
+    // grab the raw cell probability score
+    int8_t v = logOdds[cy][cx];
+    
+    // returns true if the score is stuck in the gray area between "definitely free" and "definitely wall"
+    return (v > CELL_FREE && v < CELL_OCCUPIED);
+}
+
+void GridMap::GetRoomCoverage(float& outerWallPct, float& interiorPct, float& relCoveragePct) const {
+    // border thickness (5 cells deep) to capture peripheral walls
+    constexpr int BAND = 5; 
+
+    // Step 1: Find the bounding limits of the explored region
+    int minX = width,  maxX = -1;
+    int minY = height, maxY = -1;
+
+    // loop through the entire map to find the edges of where we have actually scanned
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            if (!IsUnknown(x, y)) {
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+            }
+        }
+    }
+
+    // if nothing has been mapped yet return clean zeroes and exit
+    if (maxX < 0) {
+        outerWallPct = interiorPct = relCoveragePct = 0.0f;
+        return;
+    }
+
+    // calculate the width and height of our active bounding box canvas
+    int bboxW = maxX - minX + 1;
+    int bboxH = maxY - minY + 1;
+
+    // PHASE 2: Calculate overall relative coverage inside the active canvas area
+    int bboxTotal = bboxW * bboxH;
+    int bboxKnown = 0;
+
+    // look through only the bounding box region to count how many cells are explored
+    for (int y = minY; y <= maxY; ++y) {
+        for (int x = minX; x <= maxX; ++x) {
+            if (!IsUnknown(x, y)) ++bboxKnown;
+        }
+    }
+    
+    // relative coverage percentage
+    relCoveragePct = 100.0f * static_cast<float>(bboxKnown) / static_cast<float>(bboxTotal);
+
+    // Step 3: Segregate the outer ring (walls) from the inner space (interior room floor)
+    int outerTotal = 0;
+    int outerOccupied = 0;
+    int innerTotal = 0;
+    int innerKnown   = 0;
+
+    // loop through the bounding box cells again to separate them into bands
+    for (int y = minY; y <= maxY; ++y) {
+        for (int x = minX; x <= maxX; ++x) {
+            // checks if this cell sits within 5 blocks of any outer bounding boundary
+            bool inBand = (x < minX + BAND || x > maxX - BAND ||
+                           y < minY + BAND || y > maxY - BAND);
+
+            // if it sits on the outer edges, evaluate it as a wall candidate
+            if (inBand) {
+                ++outerTotal;
+                if (IsOccupied(x, y)) ++outerOccupied; // count confirmed walls
+            } 
+            // if it's completely inside, evaluate it as explored interior floor space
+            else {
+                ++innerTotal;
+                if (!IsUnknown(x, y)) ++innerKnown;   // count mapped floor space
+            }
+        }
+    }
+
+    // calculate final percentage ratios safely protecting against zero division bugs
+    if (outerTotal > 0) {
+        outerWallPct = 100.0f * static_cast<float>(outerOccupied) / static_cast<float>(outerTotal);
+    } else {
+        outerWallPct = 0.0f;
+    }
+
+    // if the bounding box was too small to even have an interior, consider the floor 100% complete
+    if (innerTotal > 0) {
+        interiorPct = 100.0f * static_cast<float>(innerKnown) / static_cast<float>(innerTotal);
+    } else {
+        interiorPct = 100.0f;
+    }
 }
 
 void GridMap::WorldToCell(float wx, float wy, int& cx, int& cy) const {
+    // subtract the origin anchor offset, divide by cell scale size, and drop decimals to get the X column index
     cx = static_cast<int>((wx - originX) / resolution);
+    
+    // subtract the origin anchor offset, divide by cell scale size, and drop decimals to get the Y row index
     cy = static_cast<int>((wy - originY) / resolution);
 }
 
 void GridMap::CellToWorld(int cx, int cy, float& wx, float& wy) const {
+    // adding 0.5f targets the exact physical center of the cell rather than its bottom-left edge
     wx = originX + (static_cast<float>(cx) + 0.5f) * resolution;
     wy = originY + (static_cast<float>(cy) + 0.5f) * resolution;
 }
 
-bool GridMap::UpdateCell(int cx, int cy, bool occupied) {
-    if (!InBounds(cx, cy)) return false;
+bool GridMap::InBounds(int cx, int cy) const {
+    // returns true only if BOTH coordinates fall securely between 0 and the map's width/height limits
+    return cx >= 0 && cx < width && cy >= 0 && cy < height;
+}
 
-    int8_t& cell = logOdds[cy][cx];
-    cell = static_cast<int8_t>(cell + (occupied ? L_OCC : L_FREE));
-    ClampLogOdds(cell);
+void GridMap::Clear() {
+    // loop through the master log-odds 2D array and fill every row with 0 (unexplored/unknown territory)
+    for (auto& row : logOdds) {
+        std::fill(row.begin(), row.end(), CELL_UNKNOWN);
+    }
+    
+    // clear out the history of where the robot has previously driven
+    robotPath.clear();
+    
+    // erase the destination path list targets from memory
+    waypointList.clear();
+    
     binaryDirty = true;
+}
+
+void GridMap::SetWaypoints(const std::vector<std::pair<float,float>>& wps_m) {
+    // overwrite the active waypoint coordinates list with a new set of metric targets
+    waypointList = wps_m;
+}
+
+bool GridMap::SavePGM(const std::string& filename) const {
+    // open the file in binary write mode
+    std::ofstream f(filename, std::ios::binary);
+
+    // check if file was created
+    if (!f) {
+        return false;
+    }
+
+    // write the standard PGM header metadata: 
+    // "P5" sets it as a binary greyscale image, followed by width, height, and max pixel brightness (255)
+    f << "P5\n" << width << " " << height << "\n255\n";
+
+    // loop backwards through the rows (top-to-bottom) because image files treat (0,0) as the top-left corner,
+    // whereas standard Cartesian mapping coordinates treat (0,0) as the bottom-left corner
+    for (int y = height - 1; y >= 0; --y) {
+        for (int x = 0; x < width; ++x) {
+            // pull the raw 8-bit probability score for this specific cell
+            int8_t v = logOdds[y][x];
+            uint8_t px;
+
+            // Wall : black
+            if (v >= CELL_OCCUPIED) {
+                px = 0;
+            }
+            // Pathway : white
+            else if (v <= CELL_FREE) {
+                px = 255;
+            } 
+            // Unexplored : gray
+            else {
+                px = 127;
+            }
+            
+            // drop the calculated grayscale byte directly into the image file stream
+            f.put(static_cast<char>(px));
+        }
+    }
     return true;
 }
 
-void GridMap::BresenhamLine(int x0, int y0, int x1, int y1,
-                             std::vector<std::pair<int,int>>& cells) const
-{
+bool GridMap::SavePGMCropped(const std::string& filename, float margin_m) const {
+    // Step 1: Scan the grid to calculate the bounding limits of all explored territory
+    int minX = width,  maxX = -1;
+    int minY = height, maxY = -1;
+    std::vector<std::pair<int,int>> wallPts;
+
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            // skip cells the robot hasn't seen yet
+            if (IsUnknown(x, y)) continue;
+            
+            // expand the bounding box to encapsulate this known cell
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+            
+            // if this cell is actively flagged as a solid wall, collect its coordinates
+            if (IsOccupied(x, y)) {
+                wallPts.emplace_back(x, y);
+            }
+        }
+    }
+
+    // if the map is completely blank, save a standard uncropped layout instead
+    if (maxX < 0) {
+        return SavePGM(filename);
+    }
+
+    // Step 2: Convert the real-world meter margin request into an equivalent count of grid cells
+    int mg = static_cast<int>(margin_m / resolution) + 1;
+
+    // pad out our window limits while guaranteeing they do not cross past the true array borders
+    int x0 = std::max(0,      minX - mg);
+    int y0 = std::max(0,      minY - mg);
+    int x1 = std::min(width,  maxX + mg + 1);
+    int y1 = std::min(height, maxY + mg + 1);
+    
+    // calculate the width and height dimensions of our cropped grid canvas box
+    int cW = x1 - x0;
+    int cH = y1 - y0;
+
+    // Step 3: assign every single grid cell to span across 3x3 high-fidelity image pixels
+    constexpr int SCALE = 3;
+    int imgW = cW * SCALE;
+    int imgH = cH * SCALE;
+
+    using Pt = std::pair<int,int>;
+    {
+        std::vector<Pt> kept;
+        kept.reserve(wallPts.size());
+        
+        // Loop through the entire list of wall points using a traditional index loop
+        for (size_t i = 0; i < wallPts.size(); ++i) {
+            Pt currentPoint = wallPts[i];
+            int currentX = currentPoint.first;
+            int currentY = currentPoint.second;
+            
+            bool hasNeighbor = false;
+            
+            // Check a 3x3 window around the current wall cell
+            for (int dy = -1; dy <= 1; ++dy) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    
+                    // Skip checking the center cell itself (where dx == 0 and dy == 0)
+                    if (dx == 0 && dy == 0) {
+                        continue;
+                    }
+                    
+                    // If we already found a neighbor in a previous iteration, stop checking further
+                    if (hasNeighbor) {
+                        continue;
+                    }
+                    
+                    // Look up the neighboring cell coordinates
+                    int neighborX = currentX + dx;
+                    int neighborY = currentY + dy;
+                    
+                    // If a valid touching wall cell is found, mark our flag
+                    if (IsOccupied(neighborX, neighborY)) {
+                        hasNeighbor = true;
+                    }
+                }
+            }
+            
+            // If the wall pixel has at least one touching neighbor, it's valid structural data
+            if (hasNeighbor) {
+                kept.push_back(currentPoint);
+            }
+        }
+        
+        // If our filtered list isn't empty, overwrite the original array with our cleaned dataset
+        if (!kept.empty()) {
+            wallPts.swap(kept);
+        }
+    }
+
+    // if no walls were discovered fallback to using the corners of our grid bounding box
+    if (wallPts.empty()){
+        wallPts = { {minX, minY}, {maxX, minY}, {minX, maxY}, {maxX, maxY} };
+    }
+
+    // CONVEX HULL GENERATION (Andrew's Monotone Chain Math)
+    std::sort(wallPts.begin(), wallPts.end());
+    wallPts.erase(std::unique(wallPts.begin(), wallPts.end()), wallPts.end());
+    
+    auto cross = [](const Pt& o, const Pt& a, const Pt& b) {
+        return static_cast<double>(a.first - o.first) * (b.second - o.second)
+             - static_cast<double>(a.second - o.second) * (b.first - o.first);
+    };
+
+    int np = static_cast<int>(wallPts.size());
+    std::vector<Pt> hull(2 * np);
+    int k = 0;
+
+    // assemble the bottom segment of our enclosing convex hull skin
+    for (int i = 0; i < np; ++i) {                
+        while (k >= 2 && cross(hull[k-2], hull[k-1], wallPts[i]) <= 0) {
+            --k;
+        }
+        hull[k++] = wallPts[i];
+    }
+    // assemble the top segment of our enclosing convex hull skin
+    for (int i = np - 2, t = k + 1; i >= 0; --i) { 
+        while (k >= t && cross(hull[k-2], hull[k-1], wallPts[i]) <= 0) {
+            --k;
+        }
+        hull[k++] = wallPts[i];
+    }
+    hull.resize(std::max(1, k - 1));
+
+    // test every edge of the hull to find the orientation that fits tightest
+    double bestArea = 1e30, ux = 1, uy = 0;
+    double bMinU = 0, bMaxU = 0, bMinV = 0, bMaxV = 0;
+    int H = static_cast<int>(hull.size());
+    
+    for (int i = 0; i < H; ++i) {
+        double ex = hull[(i+1) % H].first  - hull[i].first;
+        double ey = hull[(i+1) % H].second - hull[i].second;
+        double len = std::hypot(ex, ey);
+        if (len < 1e-9) continue;
+        
+        double dux = ex / len, duy = ey / len;     // primary testing axis orientation alignment
+        double dvx = -duy,     dvy = dux;          // secondary axis orientation (perfectly perpendicular)
+        double mnU = 1e30, mxU = -1e30, mnV = 1e30, mxV = -1e30;
+
+        // project all hull coordinate points onto the testing layout axes
+        for (size_t j = 0; j < hull.size(); ++j) {
+            std::pair<int, int> hullPoint = hull[j];
+            int hullX = hullPoint.first;
+            int hullY = hullPoint.second;
+            
+            // calculate the projected coordinate position along the primary layout axis (U-axis)
+            double projectedU = (hullX * dux) + (hullY * duy);
+            
+            // calculate the projected coordinate position along the perpendicular layout axis (V-axis)
+            double projectedV = (hullX * dvx) + (hullY * dvy);
+            
+            // update the minimum and maximum boundaries found along the U-axis track so far
+            mnU = std::min(mnU, projectedU);
+            mxU = std::max(mxU, projectedU);
+            
+            // update the minimum and maximum boundaries found along the V-axis track so far
+            mnV = std::min(mnV, projectedV);
+            mxV = std::max(mxV, projectedV);
+        }
+        
+        double area = (mxU - mnU) * (mxV - mnV);
+        // if this orientation wraps tighter than any previously calculated box, save it
+        if (area < bestArea) {
+            bestArea = area;  
+            ux = dux;  
+            uy = duy;
+            bMinU = mnU;  bMaxU = mxU;  
+            bMinV = mnV;  bMaxV = mxV;
+        }
+    }
+    // set up secondary alignment axis components
+    double vx = -uy, vy = ux;                      
+
+    // Evaluate which structural axis aligns closest with our horizontal viewing plain
+    bool uHoriz = std::abs(ux) >= std::abs(uy);
+
+    // assign spatial direction components to our true width and height vectors based on that alignment
+    float realW_m;
+    float realH_m;
+    double ahx, ahy, avx, avy, minH, maxH, minV, maxV;
+
+    if (uHoriz) {
+        ahx = ux;   ahy = uy;   
+        avx = vx;   avy = vy;   
+        minH = bMinU; maxH = bMaxU;
+        minV = bMinV; maxV = bMaxV;
+    } else {
+        ahx = vx;   ahy = vy;   
+        avx = ux;   avy = uy;   
+        minH = bMinV; maxH = bMaxV;
+        minV = bMinU; maxV = bMaxU;
+    }
+
+    // calculate true physical width and height metric dimensions of the room structure
+    realW_m = static_cast<float>((maxH - minH) * resolution);   
+    realH_m = static_cast<float>((maxV - minV) * resolution);
+
+    // compute cell location coordinate vertex points for all 4 corners of our fitted tracking box
+    auto toCellX = [&](double h, double v) { return h * ahx + v * avx; };
+    auto toCellY = [&](double h, double v) { return h * ahy + v * avy; };
+    double rectCellX[4] = { toCellX(minH, minV), toCellX(maxH, minV), toCellX(maxH, maxV), toCellX(minH, maxV) };
+    double rectCellY[4] = { toCellY(minH, minV), toCellY(maxH, minV), toCellY(maxH, maxV), toCellY(minH, maxV) };
+
+    int totalH = imgH;
+
+    // STEP 5: Initialize image buffer array with a soft gray backdrop (235 RGB value)
+    std::vector<uint8_t> img(static_cast<size_t>(imgW * totalH * 3), 235);
+
+    // Rasterize grid map data - transforming each cell block into a 3x3 color block cluster
+    for (int y = y1 - 1; y >= y0; --y) {
+        int cellRow = (y1 - 1 - y);
+        for (int x = x0; x < x1; ++x) {
+            int cellCol = x - x0;
+            uint8_t px;
+            
+            // COLOR CODING DETERMINATION
+            if (!InBounds(x, y)) {
+                px = 200; // dark gray canvas edges
+            } else if (logOdds[y][x] >= CELL_OCCUPIED) {
+                px = 0;   // pure black solid structural walls
+            } else if (logOdds[y][x] <= CELL_FREE) {
+                px = 255; // pure white safe clear path driving zones
+            } else {
+                px = 160; // medium gray unexplored territory
+            }
+
+            // populate the 3x3 pixel area in the image buffer for this grid cell
+            for (int sy = 0; sy < SCALE; ++sy) {
+                for (int sx = 0; sx < SCALE; ++sx) {
+                    int idx = ((cellRow * SCALE + sy) * imgW + cellCol * SCALE + sx) * 3;
+                    img[static_cast<size_t>(idx)]     = px; // Red channel
+                    img[static_cast<size_t>(idx + 1)] = px; // Green channel
+                    img[static_cast<size_t>(idx + 2)] = px; // Blue channel
+                }
+            }
+        }
+    }
+
+    // Step 6: Overlay the historical track of the robot using a bright red color
+    for (size_t i = 0; i < robotPath.size(); ++i) {
+        std::pair<float, float> pathPoint = robotPath[i];
+        float worldX = pathPoint.first;
+        float worldY = pathPoint.second;
+
+        int cx, cy;
+        WorldToCell(worldX, worldY, cx, cy);
+
+        // skip rendering points that fall outside our cropped frame view window
+        if (cx < x0) { continue; }
+        if (cx >= x1) { continue; }
+        if (cy < y0) { continue; }
+        if (cy >= y1) { continue; }
+
+        // calculate the exact pixel offsets where this 3x3 block starts on the upscaled image buffer
+        int col = (cx - x0) * SCALE;
+        int row = (y1 - 1 - cy) * SCALE;
+
+        // paint the SCALE x SCALE pixel area red
+        for (int sy = 0; sy < SCALE; ++sy) {
+            for (int sx = 0; sx < SCALE; ++sx) {
+                
+                // compute the flat index in our 1D RGB vector array (multiply by 3 for R, G, B channels)
+                size_t idx = static_cast<size_t>((row + sy) * imgW + col + sx) * 3;
+                
+                // safety tracker: verify the index doesn't step past our allocated vector memory
+                if (idx + 2 >= img.size()) {
+                    continue;
+                }
+
+                // apply the bright crimson red color palette values
+                img[idx]     = 220; // Red channel
+                img[idx + 1] = 50;  // Green channel
+                img[idx + 2] = 50;  // Blue channel
+            }
+        }
+    }
+
+    // Step 7: Render target objectives with numbered white texts packed into high-visibility green labels
+    for (size_t i = 0; i < waypointList.size(); ++i) {
+        auto [wx, wy] = waypointList[i];
+        int cx, cy;
+        WorldToCell(wx, wy, cx, cy);
+        if (cx < x0 || cx >= x1 || cy < y0 || cy >= y1) continue;
+
+        int col = (cx - x0) * SCALE;
+        int row = (y1 - 1 - cy) * SCALE;
+
+        int num    = static_cast<int>(i) + 1;
+
+        // calculate spacing bounds - handle width extension if label digits surpass 9
+        int boxW;
+        if (num >= 10) {
+            boxW = 9;  // 9 pixels wide for 2 digit markers
+        } else {
+            boxW = 7;  // 7 pixels wide for single digit markers
+        }
+
+        int bx = col - boxW / 2;
+        int by = row - 3;
+
+        // Groene achtergrond
+        for (int dy = 0; dy < 7; ++dy) {
+            for (int dx = 0; dx < boxW; ++dx) {
+                int px = bx + dx, py = by + dy;
+                if (px < 0 || px >= imgW || py < 0 || py >= imgH) continue;
+                size_t idx = static_cast<size_t>(py * imgW + px) * 3;
+                img[idx] = 30; img[idx+1] = 160; img[idx+2] = 30;
+            }
+        }
+
+        // Write white numbers into center alignment slots inside the green labels
+        if (num < 10) {
+            drawDigit(img, imgW, imgH, bx + 2, by + 1, num, 255, 255, 255);
+        } else {
+            drawDigit(img, imgW, imgH, bx + 1, by + 1, num / 10, 255, 255, 255);
+            drawDigit(img, imgW, imgH, bx + 5, by + 1, num % 10, 255, 255, 255);
+        }
+    }
+
+    // STEP 8: Render technical schematic dimension annotation layouts onto the map borders
+    auto fill = [&](int rx, int ry, int rw, int rh, uint8_t r, uint8_t g, uint8_t b) {
+        for (int dy = 0; dy < rh; ++dy) {
+            for (int dx = 0; dx < rw; ++dx) {
+                int px2 = rx + dx, py = ry + dy;
+                if (px2 < 0 || px2 >= imgW || py < 0 || py >= totalH) continue;
+                int idx = (py * imgW + px2) * 3;
+                img[static_cast<size_t>(idx)]     = r;
+                img[static_cast<size_t>(idx + 1)] = g;
+                img[static_cast<size_t>(idx + 2)] = b;
+            }
+        }
+    };
+
+    constexpr int TS = 2;                       // text magnification multiplier factor
+    const uint8_t TR = 20, TG = 20, TB = 160;   // font text coloring (blueprint dark navy blue)
+
+    // Helper lambda to print an enlarged individual number character to the image array
+    auto drawDigitBig = [&](int digit, int px, int py) {
+        if (digit < 0 || digit > 9) return;
+        const uint8_t* rows = kDigitFont[digit];
+        for (int dy = 0; dy < 5; ++dy) {
+            for (int dx = 0; dx < 3; ++dx) {
+                if (rows[dy] & (1 << (2 - dx))) {
+                    fill(px + dx * TS, py + dy * TS, TS, TS, TR, TG, TB);
+                }
+            }
+        }
+    };
+
+    // Calculate number of characters ahead of decimal symbol to correctly handle text center balancing
+    auto wholeDigits = [](float m) {
+        int whole = static_cast<int>(m);
+        if (whole == 0) return 1;
+        int n = 0;
+        for (int w = whole; w > 0; w /= 10) ++n;
+        return n;
+    };
+    
+    auto textW = [&](float m) { return (wholeDigits(m) * 4 + 2 + 8) * TS; };
+    const int textH = 5 * TS;
+
+    // Helper lambda to print string metrics formatted as clear "0.00m" meters values inside a safe white mask block
+    auto drawMeters = [&](float meters, int px, int py) {
+        fill(px - 2, py - 2, textW(meters) + 3, textH + 4, 255, 255, 255);  
+        int whole = static_cast<int>(meters);
+        int frac  = static_cast<int>(meters * 100.0f + 0.5f) % 100;
+        int digits[8], n = 0;
+        
+        if (whole == 0) {
+            digits[n++] = 0;
+        } else {
+            for (int v = whole; v > 0; v /= 10) digits[n++] = v % 10;
+        }
+        
+        for (int i = n - 1; i >= 0; --i) { 
+            drawDigitBig(digits[i], px, py); 
+            px += 4 * TS; 
+        }
+        fill(px, py + 4 * TS, TS, TS, TR, TG, TB); // render sub-unit decimal separator point symbol
+        px += 2 * TS;
+        drawDigitBig(frac / 10, px, py); px += 4 * TS;       
+        drawDigitBig(frac % 10, px, py);                     
+    };
+
+    // Convert cell float values to absolute pixel index coordinates (flipping tracking on Y axis)
+    auto colPx = [&](double cx) { return static_cast<int>((cx - x0) * SCALE); };
+    auto rowPx = [&](double cy) { return static_cast<int>((y1 - 1 - cy) * SCALE); };
+
+    // Find the extreme external pixel borders of our box layout to clear space for dimension arrows
+    int pxL = imgW, pxR = 0, pyT = totalH, pyB = 0;
+    for (int i = 0; i < 4; ++i) {
+        int cxp = colPx(rectCellX[i]), cyp = rowPx(rectCellY[i]);
+        pxL = std::min(pxL, cxp);  pxR = std::max(pxR, cxp);
+        pyT = std::min(pyT, cyp);  pyB = std::max(pyB, cyp);
+    }
+
+    const uint8_t LR = 90, LG = 90, LB = 90;
+
+    // RENDER WIDTH MEASUREMENT LINES: place directly above the structural room outline bounds
+    int yDim = std::max(1, pyT - 12);
+    fill(pxL, yDim, pxR - pxL + 1, 1, LR, LG, LB);          // master spanning track line
+    fill(pxL, yDim - 4, 1, 9, LR, LG, LB);                  // left terminal boundary tick
+    fill(pxR, yDim - 4, 1, 9, LR, LG, LB);                  // right terminal boundary tick
+    drawMeters(realW_m, (pxL + pxR) / 2 - textW(realW_m) / 2, std::max(0, yDim - textH - 4));
+
+    // RENDER HEIGHT MEASUREMENT LINES: place directly to the left side of the structural room bounds
+    int xDim = std::max(1, pxL - 12);
+    fill(xDim, pyT, 1, pyB - pyT + 1, LR, LG, LB);          // master spanning track line
+    fill(xDim - 4, pyT, 9, 1, LR, LG, LB);                  // top terminal boundary tick
+    fill(xDim - 4, pyB, 9, 1, LR, LG, LB);                  // bottom terminal boundary tick
+    
+    int hx = xDim - textW(realH_m) - 4;
+    if (hx < 0) {
+        hx = xDim + 6; // adjust layout tracking position slightly inward if left margin clearance is too tight
+    }
+    drawMeters(realH_m, hx, (pyT + pyB) / 2 - textH / 2);
+
+    // Step 9: Write compiled file data stream to local storage using full color PPM (P6) specifications
+    std::ofstream f2(filename, std::ios::binary);
+    if (!f2) {
+        return false;
+    }
+
+    f2 << "P6\n";
+    f2 << "# breedte=" << realW_m << "m  hoogte=" << realH_m << "m\n";
+    f2 << "# schaal: 1px=" << resolution * 100.0f << "cm  |  maten op kaart in meter\n";
+    f2 << imgW << " " << totalH << "\n255\n";
+    f2.write(reinterpret_cast<const char*>(img.data()), static_cast<std::streamsize>(img.size()));
+    
+    return true;
+}
+
+void GridMap::ClampLogOdds(int8_t& val) const {
+    // if the value drops below the minimum threshold, cap it at the floor limit
+    if (val < L_MIN) { 
+        val = L_MIN; 
+    }
+    
+    // if the value climbs past the maximum threshold, cap it at the ceiling limit
+    if (val > L_MAX) { 
+        val = L_MAX; 
+    }
+}
+
+void GridMap::bresenhamLine(int x0, int y0, int x1, int y1, std::vector<std::pair<int,int>>& cells) const {
     cells.clear();
 
     int dx =  std::abs(x1 - x0);
@@ -65,324 +804,6 @@ void GridMap::BresenhamLine(int x0, int y0, int x1, int y1,
     }
 }
 
-void GridMap::RaycastUpdate(int x0, int y0, int x1, int y1) {
-    static thread_local std::vector<std::pair<int,int>> cells;
-    BresenhamLine(x0, y0, x1, y1, cells);
-
-    // Alle cellen behalve de laatste: vrij markeren
-    for (size_t i = 0; i + 1 < cells.size(); ++i) {
-        auto [cx, cy] = cells[i];
-        if (!InBounds(cx, cy)) continue;
-        int8_t& cell = logOdds[cy][cx];
-        cell = static_cast<int8_t>(cell + L_FREE);
-        ClampLogOdds(cell);
-    }
-
-    // Laatste cel: bezet markeren
-    if (!cells.empty()) {
-        auto [cx, cy] = cells.back();
-        if (InBounds(cx, cy)) {
-            int8_t& cell = logOdds[cy][cx];
-            cell = static_cast<int8_t>(cell + L_OCC);
-            ClampLogOdds(cell);
-        }
-    }
-
-    binaryDirty = true;
-}
-
-void GridMap::IntegrateScan(float robotX, float robotY, float robotTheta,
-                             const float angles[], const float ranges[], int count,
-                             float maxRange)
-{
-    // ── Eenheden ──────────────────────────────────────────────────
-    // robotX, robotY  : mm  (van Localisation)
-    // ranges[]        : mm  (van LIDAR)
-    // resolution      : meter/cel
-    // originX/Y       : meter
-    // → alles omzetten naar METER voor WorldToCell en eindpunt berekening
-    constexpr float MM2M    = 0.001f;
-    constexpr float DEG2RAD = 3.14159265f / 180.0f;
-
-    float robotX_m = robotX * MM2M;
-    float robotY_m = robotY * MM2M;
-
-    int rx, ry;
-    WorldToCell(robotX_m, robotY_m, rx, ry);
-    robotPath.emplace_back(robotX_m, robotY_m);
-
-    for (int i = 0; i < count; ++i) {
-        float dist_mm = ranges[i];
-
-        if (dist_mm <= 0.0f || dist_mm > maxRange) continue;
-
-        float dist_m = dist_mm * MM2M;
-
-        // Wereldhoek = robotrichting (graden → rad) + LIDARhoek (graden → rad)
-        float globalAngle = robotTheta * DEG2RAD + angles[i] * DEG2RAD;
-
-        // Eindpunt in meter
-        float wx = robotX_m + dist_m * std::cos(globalAngle);
-        float wy = robotY_m + dist_m * std::sin(globalAngle);
-
-        int ex, ey;
-        WorldToCell(wx, wy, ex, ey);
-
-        RaycastUpdate(rx, ry, ex, ey);
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════
-//  IntegrateScanMotionCorrected
-//
-//  Een LIDAR-scan duurt scanDuurSec seconden (typisch 0.10-0.20s).
-//  In die tijd draait de robot met omegaDegS graden per seconde.
-//  Punt bij index 0 werd gemeten aan het BEGIN van de scan,
-//  punt bij index (count-1) aan het EINDE.
-//
-//  Per straal berekenen we de robothoek op het moment van meten:
-//    t_i = (i / count) * scanDuurSec          [seconden na scanstart]
-//    theta_i = robotThetaDeg + omegaDegS * (t_i - scanDuurSec/2)
-//
-//  We gebruiken de positie van het MIDDEN van de scan als anker
-//  (dat is al ingebakken in robotX/Y/robotThetaDeg die je meegeeft).
-//  De positietranslatie tijdens de scan negeren we (bij 278mm/s en
-//  0.15s scanduur = 42mm = < 1 cel — verwaarloosbaar).
-// ═══════════════════════════════════════════════════════════════════
-
-void GridMap::IntegrateScanMotionCorrected(
-    float robotX, float robotY, float robotThetaDeg,
-    float omegaDegS, float scanDuurSec,
-    const float angles[], const float ranges[], int count,
-    float maxRange)
-{
-    constexpr float MM2M    = 0.001f;
-    constexpr float DEG2RAD = 3.14159265f / 180.0f;
-
-    float robotX_m = robotX * MM2M;
-    float robotY_m = robotY * MM2M;
-
-    int rx, ry;
-    WorldToCell(robotX_m, robotY_m, rx, ry);
-    robotPath.emplace_back(robotX_m, robotY_m);
-
-    float halfDuur = scanDuurSec * 0.5f;
-
-    for (int i = 0; i < count; ++i) {
-        float dist_mm = ranges[i];
-        if (dist_mm <= 0.0f || dist_mm > maxRange) continue;
-
-        // Tijdstip van deze straal binnen de scan (0 = begin, scanDuurSec = einde)
-        float t_i = (static_cast<float>(i) / static_cast<float>(count)) * scanDuurSec;
-
-        // Gecorrigeerde robothoek op dit moment
-        // (t_i - halfDuur): offset t.o.v. het midden van de scan
-       // float thetaCorrected = robotThetaDeg + omegaDegS * (t_i - halfDuur);
-        float thetaCorrected = robotThetaDeg - omegaDegS * (t_i - halfDuur);
-        // Wereldhoek van deze straal
-        float globalAngle = thetaCorrected * DEG2RAD + angles[i] * DEG2RAD;
-
-        float dist_m = dist_mm * MM2M;
-        float wx = robotX_m + dist_m * std::cos(globalAngle);
-        float wy = robotY_m + dist_m * std::sin(globalAngle);
-
-        int ex, ey;
-        WorldToCell(wx, wy, ex, ey);
-
-        RaycastUpdate(rx, ry, ex, ey);
-    }
-}
-
-bool GridMap::IsOccupied(int cx, int cy) const {
-    if (!InBounds(cx, cy)) return false;
-    return logOdds[cy][cx] >= CELL_OCCUPIED;
-}
-
-bool GridMap::IsFree(int cx, int cy) const {
-    if (!InBounds(cx, cy)) return false;
-    return logOdds[cy][cx] <= CELL_FREE;
-}
-
-bool GridMap::IsUnknown(int cx, int cy) const {
-    if (!InBounds(cx, cy)) return true;
-    int8_t v = logOdds[cy][cx];
-    return (v > CELL_FREE && v < CELL_OCCUPIED);
-}
-
-bool GridMap::IsPathValid(Path path) const {
-    constexpr float MM2M = 0.001f;
-    while (!path.IsEmpty()) {
-        Position p = path.GetCurrentWaypoint();
-        int cx, cy;
-        WorldToCell(p.GetX() * MM2M, p.GetY() * MM2M, cx, cy);
-
-        if (!InBounds(cx, cy))   return false;
-        if (IsOccupied(cx, cy))  return false;
-
-        path.Advance();
-    }
-    return true;
-}
-
-float GridMap::GetCoveragePercent() const {
-    int known = 0;
-    int total = width * height;
-    for (int y = 0; y < height; ++y)
-        for (int x = 0; x < width; ++x)
-            if (!IsUnknown(x, y)) ++known;
-    return total > 0 ? 100.0f * static_cast<float>(known) / static_cast<float>(total) : 0.0f;
-}
-
-// ─────────────────────────────────────────────────────────────────
-//  GetRoomCoverage
-//
-//  Geeft drie waarden terug die samen beschrijven of de ruimte
-//  volledig in kaart is gebracht:
-//
-//  outerWallPct   — % van de buitenste rand (BAND_WIDTH cellen dik)
-//                   van het gescande gebied dat als bezet (muur)
-//                   is geclassificeerd. Hoog = muren rondom gevonden.
-//
-//  interiorPct    — % van de cellen BINNEN die buitenste rand dat
-//                   bekend is (vrij of bezet). Hoog = interieur gemapt.
-//
-//  relCoveragePct — % van de gehele bounding box dat bekend is.
-//                   Correctere vervanging voor GetCoveragePercent()
-//                   (die deelt door het totale grid en geeft zo een
-//                   veel te laag getal voor kleine kamers).
-//
-//  BAND_WIDTH = 5 cellen ≈ 15 cm bij 3 cm/cel — dik genoeg om
-//  muren te vangen, klein genoeg om het interieur niet te claimen.
-// ─────────────────────────────────────────────────────────────────
-void GridMap::GetRoomCoverage(float& outerWallPct,
-                               float& interiorPct,
-                               float& relCoveragePct) const
-{
-    constexpr int BAND = 5;   // dikte buitenste rand in cellen
-
-    // ── Bounding box van alle bekende cellen ─────────────────────
-    int minX = width,  maxX = -1;
-    int minY = height, maxY = -1;
-    for (int y = 0; y < height; ++y)
-        for (int x = 0; x < width; ++x)
-            if (!IsUnknown(x, y)) {
-                if (x < minX) minX = x;
-                if (x > maxX) maxX = x;
-                if (y < minY) minY = y;
-                if (y > maxY) maxY = y;
-            }
-
-    if (maxX < 0) {
-        // Nog niets gescand
-        outerWallPct = interiorPct = relCoveragePct = 0.0f;
-        return;
-    }
-
-    int bboxW = maxX - minX + 1;
-    int bboxH = maxY - minY + 1;
-
-    // ── Relatieve coverage over bounding box ─────────────────────
-    int bboxTotal = bboxW * bboxH;
-    int bboxKnown = 0;
-    for (int y = minY; y <= maxY; ++y)
-        for (int x = minX; x <= maxX; ++x)
-            if (!IsUnknown(x, y)) ++bboxKnown;
-    relCoveragePct = 100.0f * static_cast<float>(bboxKnown)
-                             / static_cast<float>(bboxTotal);
-
-    // ── Buitenste rand: ring van BAND cellen aan de binnenkant ───
-    // Een cel behoort tot de buitenste rand als hij binnen BAND
-    // cellen van een bbox-rand valt.
-    int outerTotal = 0, outerOccupied = 0;
-    int innerTotal = 0, innerKnown   = 0;
-
-    for (int y = minY; y <= maxY; ++y) {
-        for (int x = minX; x <= maxX; ++x) {
-            bool inBand = (x < minX + BAND || x > maxX - BAND ||
-                           y < minY + BAND || y > maxY - BAND);
-
-            if (inBand) {
-                ++outerTotal;
-                if (IsOccupied(x, y)) ++outerOccupied;
-            } else {
-                ++innerTotal;
-                if (!IsUnknown(x, y)) ++innerKnown;
-            }
-        }
-    }
-
-    outerWallPct = (outerTotal > 0)
-        ? 100.0f * static_cast<float>(outerOccupied)
-                 / static_cast<float>(outerTotal)
-        : 0.0f;
-
-    interiorPct = (innerTotal > 0)
-        ? 100.0f * static_cast<float>(innerKnown)
-                 / static_cast<float>(innerTotal)
-        : 100.0f;   // te klein voor interieur → beschouw als volledig
-}
-
-const std::vector<std::vector<int8_t>>& GridMap::GetLogOddsGrid() const {
-    return logOdds;
-}
-
-void GridMap::RebuildBinaryGrid() const {
-    for (int y = 0; y < height; ++y)
-        for (int x = 0; x < width; ++x)
-            binaryGrid[y][x] = (logOdds[y][x] >= CELL_OCCUPIED) ? 1 : 0;
-    binaryDirty = false;
-}
-
-const std::vector<std::vector<int>>& GridMap::GetGrid() const {
-    if (binaryDirty) RebuildBinaryGrid();
-    return binaryGrid;
-}
-
-void GridMap::SetWaypoints(const std::vector<std::pair<float,float>>& wps_m) {
-    waypointList = wps_m;
-}
-
-void GridMap::Clear() {
-    for (auto& row : logOdds)
-        std::fill(row.begin(), row.end(), CELL_UNKNOWN);
-    robotPath.clear();
-    waypointList.clear();
-    binaryDirty = true;
-}
-
-//  SavePGM  –  volledige kaart, wit=vrij, zwart=bezet, grijs=onbekend
-
-bool GridMap::SavePGM(const std::string& filename) const {
-    std::ofstream f(filename, std::ios::binary);
-    if (!f) return false;
-
-    f << "P5\n" << width << " " << height << "\n255\n";
-
-    for (int y = height - 1; y >= 0; --y) {
-        for (int x = 0; x < width; ++x) {
-            int8_t v = logOdds[y][x];
-            uint8_t px;
-            if      (v >= CELL_OCCUPIED) px = 0;
-            else if (v <= CELL_FREE)     px = 255;
-            else                          px = 127;
-            f.put(static_cast<char>(px));
-        }
-    }
-    return true;
-}
-
-// ═══════════════════════════════════════════════════════════════════
-//  SavePGMCropped  –  bijgesneden kaart met afmetingen
-//
-//  Werking:
-//    1. Zoek de bounding box van alle bekende cellen (vrij + bezet)
-//    2. Voeg een marge toe rondom dit gebied
-//    3. Schrijf een PPM (kleur) zodat pad/waypoints gekleurd kunnen zijn
-//    4. Toon onder de kaart de afmetingen van de kamer:
-//       "<breedte> x <hoogte>" in meter als tekst
-// ═══════════════════════════════════════════════════════════════════
-
-// ── 3×5 pixel-font voor cijfers 0-9 (bit 2 = links) ──────────────
 static const uint8_t kDigitFont[10][5] = {
     {0b111, 0b101, 0b101, 0b101, 0b111}, // 0
     {0b010, 0b110, 0b010, 0b010, 0b111}, // 1
@@ -396,7 +817,7 @@ static const uint8_t kDigitFont[10][5] = {
     {0b111, 0b101, 0b111, 0b001, 0b111}, // 9
 };
 
-static void DrawDigit(std::vector<uint8_t>& img, int imgW, int imgH,
+static void drawDigit(std::vector<uint8_t>& img, int imgW, int imgH,
                       int px, int py, int digit,
                       uint8_t r, uint8_t g, uint8_t b)
 {
@@ -412,315 +833,4 @@ static void DrawDigit(std::vector<uint8_t>& img, int imgW, int imgH,
             img[idx] = r; img[idx+1] = g; img[idx+2] = b;
         }
     }
-}
-
-// ═══════════════════════════════════════════════════════════════════
-//  SavePGMCropped  –  bijgesneden kaart met afmetingen
-//  Snijdt automatisch bij op het verkende gebied + marge.
-//  Elke cel wordt SCALE×SCALE pixels (scherper beeld).
-//  Onder de kaart: de afmetingen van de kamer ("breedte x hoogte" in m).
-//  Schrijft als PPM (kleur) zodat pad/waypoints gekleurd kunnen zijn.
-// ═══════════════════════════════════════════════════════════════════
-
-bool GridMap::SavePGMCropped(const std::string& filename, float margin_m) const {
-    // ── Stap 1: bounding box + muur-cellen verzamelen ─────────────
-    //  minX..maxY  = alle bekende cellen (voor bijsnijden v/d afbeelding)
-    //  wallPts     = alle muur-cellen (bezet) → echte kamer-afmeting via PCA
-    int minX = width,  maxX = -1;
-    int minY = height, maxY = -1;
-    std::vector<std::pair<int,int>> wallPts;
-
-    for (int y = 0; y < height; ++y)
-        for (int x = 0; x < width; ++x) {
-            if (IsUnknown(x, y)) continue;
-            if (x < minX) minX = x;
-            if (x > maxX) maxX = x;
-            if (y < minY) minY = y;
-            if (y > maxY) maxY = y;
-            if (IsOccupied(x, y)) wallPts.emplace_back(x, y);   // muur
-        }
-
-    if (maxX < 0) return SavePGM(filename);   // niets gescand
-
-    // ── Stap 2: marge toevoegen ───────────────────────────────────
-    int mg = static_cast<int>(margin_m / resolution) + 1;
-    int x0 = std::max(0,      minX - mg);
-    int y0 = std::max(0,      minY - mg);
-    int x1 = std::min(width,  maxX + mg + 1);
-    int y1 = std::min(height, maxY + mg + 1);
-    int cW = x1 - x0;
-    int cH = y1 - y0;
-
-    // ── Stap 3: upscaling – elke cel = SCALE×SCALE pixels ────────
-    constexpr int SCALE = 3;
-    int imgW = cW * SCALE;
-    int imgH = cH * SCALE;
-
-    // ── Echte kamer-afmetingen via kleinste omhullende rechthoek ──
-    //  De kamer staat schuin én is niet rechthoekig (inham/schiereiland).
-    //  PCA faalt dan: bij een symmetrische puntenwolk kiest het de
-    //  diagonaal. Daarom: convex hull (pakt alleen de buitenmuren – de
-    //  concave inham valt er vanzelf binnen) + de minimum-area rechthoek,
-    //  die 'vastklikt' op de echte muur-richting. De zijden van die
-    //  rechthoek zijn de werkelijke breedte en hoogte.
-    using Pt = std::pair<int,int>;
-
-    // Losse ruis-cellen (geen enkele bezette buur) weggooien, zodat de
-    // convex hull niet door één uitschieter wordt opgeblazen.
-    {
-        std::vector<Pt> kept;
-        kept.reserve(wallPts.size());
-        for (const auto& p : wallPts) {
-            bool hasNb = false;
-            for (int dy = -1; dy <= 1 && !hasNb; ++dy)
-                for (int dx = -1; dx <= 1; ++dx) {
-                    if ((dx || dy) && IsOccupied(p.first + dx, p.second + dy)) { hasNb = true; break; }
-                }
-            if (hasNb) kept.push_back(p);
-        }
-        if (!kept.empty()) wallPts.swap(kept);
-    }
-
-    if (wallPts.empty())                          // geen muren → val terug op bbox
-        wallPts = { {minX, minY}, {maxX, minY}, {minX, maxY}, {maxX, maxY} };
-
-    // Convex hull (monotone chain).
-    std::sort(wallPts.begin(), wallPts.end());
-    wallPts.erase(std::unique(wallPts.begin(), wallPts.end()), wallPts.end());
-    auto cross = [](const Pt& o, const Pt& a, const Pt& b) {
-        return static_cast<double>(a.first - o.first) * (b.second - o.second)
-             - static_cast<double>(a.second - o.second) * (b.first - o.first);
-    };
-    int np = static_cast<int>(wallPts.size());
-    std::vector<Pt> hull(2 * np);
-    int k = 0;
-    for (int i = 0; i < np; ++i) {                // onderrand
-        while (k >= 2 && cross(hull[k-2], hull[k-1], wallPts[i]) <= 0) --k;
-        hull[k++] = wallPts[i];
-    }
-    for (int i = np - 2, t = k + 1; i >= 0; --i) { // bovenrand
-        while (k >= t && cross(hull[k-2], hull[k-1], wallPts[i]) <= 0) --k;
-        hull[k++] = wallPts[i];
-    }
-    hull.resize(std::max(1, k - 1));
-
-    // Minimum-area rechthoek: probeer elke hull-zijde als oriëntatie.
-    double bestArea = 1e30, ux = 1, uy = 0;
-    double bMinU = 0, bMaxU = 0, bMinV = 0, bMaxV = 0;
-    int H = static_cast<int>(hull.size());
-    for (int i = 0; i < H; ++i) {
-        double ex = hull[(i+1) % H].first  - hull[i].first;
-        double ey = hull[(i+1) % H].second - hull[i].second;
-        double len = std::hypot(ex, ey);
-        if (len < 1e-9) continue;
-        double dux = ex / len, duy = ey / len;     // langs deze zijde
-        double dvx = -duy,     dvy = dux;          // loodrecht erop
-        double mnU = 1e30, mxU = -1e30, mnV = 1e30, mxV = -1e30;
-        for (const auto& p : hull) {
-            double du = p.first * dux + p.second * duy;
-            double dv = p.first * dvx + p.second * dvy;
-            mnU = std::min(mnU, du);  mxU = std::max(mxU, du);
-            mnV = std::min(mnV, dv);  mxV = std::max(mxV, dv);
-        }
-        double area = (mxU - mnU) * (mxV - mnV);
-        if (area < bestArea) {
-            bestArea = area;  ux = dux;  uy = duy;
-            bMinU = mnU;  bMaxU = mxU;  bMinV = mnV;  bMaxV = mxV;
-        }
-    }
-    double vx = -uy, vy = ux;                      // tweede as van de rechthoek
-
-    // Welke as is 'horizontaal' (breedte) en welke 'verticaal' (hoogte)?
-    bool uHoriz = std::abs(ux) >= std::abs(uy);
-    double ahx = uHoriz ? ux : vx, ahy = uHoriz ? uy : vy;   // horizontale as
-    double avx = uHoriz ? vx : ux, avy = uHoriz ? vy : uy;   // verticale as
-    double minH = uHoriz ? bMinU : bMinV, maxH = uHoriz ? bMaxU : bMaxV;
-    double minV = uHoriz ? bMinV : bMinU, maxV = uHoriz ? bMaxV : bMaxU;
-
-    float realW_m = static_cast<float>((maxH - minH) * resolution);   // breedte
-    float realH_m = static_cast<float>((maxV - minV) * resolution);   // hoogte
-
-    // Vier hoeken van de min-area rechthoek (celcoördinaten) – voor de maatlijnen.
-    //   cel = h·(horizontale as) + v·(verticale as)
-    auto toCellX = [&](double h, double v) { return h * ahx + v * avx; };
-    auto toCellY = [&](double h, double v) { return h * ahy + v * avy; };
-    double rectCellX[4] = { toCellX(minH, minV), toCellX(maxH, minV),
-                            toCellX(maxH, maxV), toCellX(minH, maxV) };
-    double rectCellY[4] = { toCellY(minH, minV), toCellY(maxH, minV),
-                            toCellY(maxH, maxV), toCellY(minH, maxV) };
-
-    // ── Stap 4: geen onderbalk meer; maten staan op de kaart ──────
-    int totalH = imgH;
-
-    // ── Stap 5: pixel-buffer vullen ───────────────────────────────
-    std::vector<uint8_t> img(static_cast<size_t>(imgW * totalH * 3), 235);
-
-    // Kaartpixels – elke cel → SCALE×SCALE pixels
-    for (int y = y1 - 1; y >= y0; --y) {
-        int cellRow = (y1 - 1 - y);
-        for (int x = x0; x < x1; ++x) {
-            int cellCol = x - x0;
-            uint8_t px;
-            if      (!InBounds(x, y))                px = 200;
-            else if (logOdds[y][x] >= CELL_OCCUPIED) px = 0;
-            else if (logOdds[y][x] <= CELL_FREE)     px = 255;
-            else                                      px = 160;
-
-            for (int sy = 0; sy < SCALE; ++sy)
-                for (int sx = 0; sx < SCALE; ++sx) {
-                    int idx = ((cellRow * SCALE + sy) * imgW + cellCol * SCALE + sx) * 3;
-                    img[static_cast<size_t>(idx)]     = px;
-                    img[static_cast<size_t>(idx + 1)] = px;
-                    img[static_cast<size_t>(idx + 2)] = px;
-                }
-        }
-    }
-
-    // ── Stap 6: robotpad in rood tekenen ─────────────────────────
-    for (auto& [wx, wy] : robotPath) {
-        int cx, cy;
-        WorldToCell(wx, wy, cx, cy);
-        if (cx < x0 || cx >= x1 || cy < y0 || cy >= y1) continue;
-        int col = (cx - x0) * SCALE;
-        int row = (y1 - 1 - cy) * SCALE;
-        for (int sy = 0; sy < SCALE; ++sy)
-            for (int sx = 0; sx < SCALE; ++sx) {
-                size_t idx = static_cast<size_t>((row + sy) * imgW + col + sx) * 3;
-                if (idx + 2 >= img.size()) continue;
-                img[idx]     = 220;
-                img[idx + 1] = 50;
-                img[idx + 2] = 50;
-            }
-    }
-
-    // ── Stap 7: waypoints genummerd in groen tekenen ─────────────
-    for (size_t i = 0; i < waypointList.size(); ++i) {
-        auto [wx, wy] = waypointList[i];
-        int cx, cy;
-        WorldToCell(wx, wy, cx, cy);
-        if (cx < x0 || cx >= x1 || cy < y0 || cy >= y1) continue;
-        int col = (cx - x0) * SCALE;
-        int row = (y1 - 1 - cy) * SCALE;
-
-        int num    = static_cast<int>(i) + 1;
-        bool twoD  = (num >= 10);
-        int boxW   = twoD ? 9 : 7;   // 9px voor twee cijfers, 7px voor één
-
-        int bx = col - boxW / 2;
-        int by = row - 3;
-
-        // Groene achtergrond
-        for (int dy = 0; dy < 7; ++dy)
-            for (int dx = 0; dx < boxW; ++dx) {
-                int px = bx + dx, py = by + dy;
-                if (px < 0 || px >= imgW || py < 0 || py >= imgH) continue;
-                size_t idx = static_cast<size_t>(py * imgW + px) * 3;
-                img[idx] = 30; img[idx+1] = 160; img[idx+2] = 30;
-            }
-
-        // Wit cijfer (of twee cijfers)
-        if (!twoD) {
-            DrawDigit(img, imgW, imgH, bx + 2, by + 1, num, 255, 255, 255);
-        } else {
-            DrawDigit(img, imgW, imgH, bx + 1, by + 1, num / 10, 255, 255, 255);
-            DrawDigit(img, imgW, imgH, bx + 5, by + 1, num % 10, 255, 255, 255);
-        }
-    }
-
-    // ── Stap 8: afmetingen van de kamer tekenen ──────────────────
-    auto fill = [&](int rx, int ry, int rw, int rh,
-                    uint8_t r, uint8_t g, uint8_t b) {
-        for (int dy = 0; dy < rh; ++dy)
-            for (int dx = 0; dx < rw; ++dx) {
-                int px2 = rx + dx, py = ry + dy;
-                if (px2 < 0 || px2 >= imgW || py < 0 || py >= totalH) continue;
-                int idx = (py * imgW + px2) * 3;
-                img[static_cast<size_t>(idx)]     = r;
-                img[static_cast<size_t>(idx + 1)] = g;
-                img[static_cast<size_t>(idx + 2)] = b;
-            }
-    };
-
-    // Afmetingen naast de muren tekenen (technische-plattegrond-stijl).
-    constexpr int TS = 2;                       // tekst-vergroting (font-pixel = TS×TS)
-    const uint8_t TR = 20, TG = 20, TB = 160;   // tekstkleur (donkerblauw)
-
-    // Eén vergroot cijfer tekenen via de fill-lambda.
-    auto drawDigitBig = [&](int digit, int px, int py) {
-        if (digit < 0 || digit > 9) return;
-        const uint8_t* rows = kDigitFont[digit];
-        for (int dy = 0; dy < 5; ++dy)
-            for (int dx = 0; dx < 3; ++dx)
-                if (rows[dy] & (1 << (2 - dx)))
-                    fill(px + dx * TS, py + dy * TS, TS, TS, TR, TG, TB);
-    };
-
-    // Aantal cijfers in het gehele deel (voor centreren) + tekstbreedte in px.
-    auto wholeDigits = [](float m) {
-        int whole = static_cast<int>(m);
-        if (whole == 0) return 1;
-        int n = 0;
-        for (int w = whole; w > 0; w /= 10) ++n;
-        return n;
-    };
-    auto textW = [&](float m) { return (wholeDigits(m) * 4 + 2 + 8) * TS; };
-    const int textH = 5 * TS;
-
-    // Eén maat tekenen met witte achtergrond (leesbaar over muren/vrij gebied).
-    auto drawMeters = [&](float meters, int px, int py) {
-        fill(px - 2, py - 2, textW(meters) + 3, textH + 4, 255, 255, 255);  // wit kader
-        int whole = static_cast<int>(meters);
-        int frac  = static_cast<int>(meters * 100.0f + 0.5f) % 100;
-        int digits[8], n = 0;
-        if (whole == 0) digits[n++] = 0;
-        else for (int v = whole; v > 0; v /= 10) digits[n++] = v % 10;
-        for (int i = n - 1; i >= 0; --i) { drawDigitBig(digits[i], px, py); px += 4 * TS; }
-        fill(px, py + 4 * TS, TS, TS, TR, TG, TB);          // decimaalpunt
-        px += 2 * TS;
-        drawDigitBig(frac / 10, px, py); px += 4 * TS;       // 1e decimaal
-        drawDigitBig(frac % 10, px, py);                     // 2e decimaal
-    };
-
-    // Celcoördinaat (float) → pixel in de afbeelding (y wordt gespiegeld).
-    auto colPx = [&](double cx) { return static_cast<int>((cx - x0) * SCALE); };
-    auto rowPx = [&](double cy) { return static_cast<int>((y1 - 1 - cy) * SCALE); };
-
-    // Pixel-omhullende van de rechthoek (voor de maatlijnen net buiten de muren).
-    int pxL = imgW, pxR = 0, pyT = totalH, pyB = 0;
-    for (int i = 0; i < 4; ++i) {
-        int cxp = colPx(rectCellX[i]), cyp = rowPx(rectCellY[i]);
-        pxL = std::min(pxL, cxp);  pxR = std::max(pxR, cxp);
-        pyT = std::min(pyT, cyp);  pyB = std::max(pyB, cyp);
-    }
-
-    const uint8_t LR = 90, LG = 90, LB = 90;    // grijze maatlijnen
-
-    // Breedte-maatlijn: net boven de kamer, met eindstreepjes en getal erboven.
-    int yDim = std::max(1, pyT - 12);
-    fill(pxL, yDim, pxR - pxL + 1, 1, LR, LG, LB);          // maatlijn
-    fill(pxL, yDim - 4, 1, 9, LR, LG, LB);                  // eindstreep links
-    fill(pxR, yDim - 4, 1, 9, LR, LG, LB);                  // eindstreep rechts
-    drawMeters(realW_m, (pxL + pxR) / 2 - textW(realW_m) / 2,
-               std::max(0, yDim - textH - 4));
-
-    // Hoogte-maatlijn: net links van de kamer, met eindstreepjes en getal ernaast.
-    int xDim = std::max(1, pxL - 12);
-    fill(xDim, pyT, 1, pyB - pyT + 1, LR, LG, LB);          // maatlijn
-    fill(xDim - 4, pyT, 9, 1, LR, LG, LB);                  // eindstreep boven
-    fill(xDim - 4, pyB, 9, 1, LR, LG, LB);                  // eindstreep onder
-    int hx = xDim - textW(realH_m) - 4;
-    if (hx < 0) hx = xDim + 6;                              // te weinig marge links → rechts v/d lijn
-    drawMeters(realH_m, hx, (pyT + pyB) / 2 - textH / 2);
-
-    // ── Stap 8: schrijf PPM bestand ───────────────────────────────
-    std::ofstream f2(filename, std::ios::binary);
-    if (!f2) return false;
-
-    f2 << "P6\n";
-    f2 << "# breedte=" << realW_m << "m  hoogte=" << realH_m << "m\n";
-    f2 << "# schaal: 1px=" << resolution * 100.0f << "cm  |  maten op kaart in meter\n";
-    f2 << imgW << " " << totalH << "\n255\n";
-    f2.write(reinterpret_cast<const char*>(img.data()),
-             static_cast<std::streamsize>(img.size()));
-    return true;
 }

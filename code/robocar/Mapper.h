@@ -8,22 +8,13 @@
 
 class Mapper {
 public:
-    Mapper(int width = 300, int height = 300, float resolution = 0.05f);
+    Mapper(int width = 260, int height = 160, float resolution = 0.03f);
 
-    void Update(const float ranges[], const float angles[],
-                int count, const Position& position);
-    void Update(const float scan360[], const Position& position);
+    void Update(const float ranges[], const float angles[], int count, const Position& position);
 
-    void PrintMap(float robotX, float robotY,
-                  int scanCount, int coverage) const;
+    void UpdateMotionCorrected(const float ranges[], const float angles[], int count, const Position& position,
+        float omegaDegS, float scanDuurSec);
 
-    // In Mapper.h, public sectie:
-    void UpdateMotionCorrected(const float ranges[], const float angles[],
-                    int count, const Position& position,
-                    float omegaDegS, float scanDuurSec);
-
-    // Sla de geplande waypoints op voor visualisatie in de PPM-export.
-    // Aanroepen elke keer dat een nieuw pad berekend wordt.
     void SetWaypoints(const Path& path);
                     
     int            GetCoverage()  const;
@@ -38,4 +29,4 @@ private:
     bool    updated;
 };
 
-#endif // MAPPER_H
+#endif

@@ -177,7 +177,7 @@ static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position po
             printf("[MAIN] Navigator blocked -> replan\n");
 #endif
             Position bt = navigator.GetCurrentTarget();
-            VoegToeAanBlacklist(frontierBlacklist, bt.GetX(), bt.GetY());
+            AddToBlackList(frontierBlacklist, bt.GetX(), bt.GetY());
             navigator.ResetBlock();
             heeftPad = false;
             scansSindsHerplan = HERPLAN_SCANS;
@@ -188,7 +188,7 @@ static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position po
             printf("[MAIN] Navigator blocked -> wacht op stabiele lokalisatie\n");
 #endif
             Position bt = navigator.GetCurrentTarget();
-            VoegToeAanBlacklist(frontierBlacklist, bt.GetX(), bt.GetY());
+            AddToBlackList(frontierBlacklist, bt.GetX(), bt.GetY());
             navigator.ResetBlock();
             heeftPad = false;
             scansSindsHerplan = 0;  // forceer herplan pas bij volgende scan-cyclus
@@ -236,7 +236,7 @@ static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position po
                 if (!pad.IsEmpty()) { navigator.SetPath(pad); mapper.SetWaypoints(pad); heeftPad = true; }
             } else {
                 TickBlacklist(frontierBlacklist);
-                Position doel = KiesFrontierDoel(mapper, pos, lastRanges, frontierBlacklist);
+                Position doel = ChooseFrontierGoal(mapper, pos, lastRanges, frontierBlacklist);
                 if (doel.GetX() == pos.GetX() && doel.GetY() == pos.GetY()) {
                     ++mislukteTeller;
                     ka.SetCommand(200.0f, 0.0f);
@@ -252,7 +252,7 @@ static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position po
                         // Vooruit rijden hier stuurde de robot recht terug in het obstakel.
                         // Bij de volgende scan kiest KiesFrontierDoel een ander doel.
                         ++mislukteTeller;
-                        VoegToeAanBlacklist(frontierBlacklist, doel.GetX(), doel.GetY());
+                        AddToBlackList(frontierBlacklist, doel.GetX(), doel.GetY());
                         ka.Stop();
                     }
                 }
