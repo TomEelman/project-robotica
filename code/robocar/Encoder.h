@@ -5,7 +5,7 @@
 
 class Encoder {
 public:
-    Encoder(int gpioPin, int gpioPinRes);
+    Encoder(int gpioPinRes);
 
     // Returns true when a new velocity sample was produced (once per UPDATE_INTERVAL_US).
     bool Update();
@@ -13,8 +13,8 @@ public:
 
     float GetLinVelocity() const;
     float GetDistanceMm()  const;
-    int   GetGpio()        const;
-    int   GetGpioPinRes()  const;
+   // int   GetGpio()        const;
+    // int   GetGpioPinRes()  const;
 
     // True if Update() produced a new sample since the last ConsumeFreshFlag() call.
     // Used by Drive to avoid re-running PID on stale encoder data.
@@ -22,9 +22,9 @@ public:
     void ConsumeFreshFlag()       { freshData = false; }
 
 private:
-    int      gpio;
-    int      gpioPinRes;
-    int      pulsesPerRotation;
+    // int      gpio; // without resolution
+    int      gpioPinRes; // with resolution
+    int      pulsesPerRotation; 
 
     float    linearVelocity;
     float    distanceMm;

@@ -1,8 +1,7 @@
 #include "Robot.h"
 
-// GPIO pin assignments — Pico hardware layout.
-// GP0/GP1 are reserved for UART (SensorHub), so motor and encoder signals
-// start from GP2 onwards.
+// GPIO pin assignments
+// GP0/GP1 are reserved for UART (in picouarthandler), so motor and encoder signals start from GP2 onwards.
 static constexpr int MOTOR_LEFT_PWM       = 8;
 static constexpr int MOTOR_LEFT_FORWARD   = 2;
 static constexpr int MOTOR_LEFT_BACKWARD  = 3;
@@ -21,20 +20,18 @@ static constexpr int IMU_SDA = 4;
 static constexpr int IMU_SCL = 5;
 
 // Physical robot dimensions.
-static constexpr float WHEELBASE_M = 0.219f; // distance between wheel contact points [m]
+static constexpr float WHEELBASE_M = 0.219f; // distance between wheel contact points meters
 
 Robot::Robot()
     : motorLeft (MOTOR_LEFT_PWM,  MOTOR_LEFT_FORWARD,  MOTOR_LEFT_BACKWARD),
       motorRight(MOTOR_RIGHT_PWM, MOTOR_RIGHT_FORWARD, MOTOR_RIGHT_BACKWARD),
-      sensorHub(ENCODER_LEFT_PULSE,  ENCODER_LEFT_RES,
-                ENCODER_RIGHT_PULSE, ENCODER_RIGHT_RES,
+      sensorHub(ENCODER_LEFT_RES,ENCODER_RIGHT_RES,
                 IMU_SDA, IMU_SCL),
       drive(motorLeft, motorRight, sensorHub, WHEELBASE_M, 
             13.0f,  // minAngleVel
             35.0f,  // maxAngleVel
             55.0f,  // minPwmLeft
-            55.0f), // minPwmRight
-      localisation(WHEELBASE_M)
+            55.0f) // minPwmRight
 {
 }
 

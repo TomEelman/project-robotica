@@ -7,21 +7,23 @@
 #include "hardware/uart.h"
 #include "hardware/irq.h"
 
-#define SENSOR_UART       uart0 // default uart for 
-static constexpr uint         SENSOR_BAUD     = 115200;
+//#define SENSOR_UART       uart0 // default uart for 
+
+//static constexpr uint         SENSOR_BAUD     = 115200;
+/*
 static constexpr int          SENSOR_UART_TX  = 0;
 static constexpr int          SENSOR_UART_RX  = 1;
 static constexpr int          UART_BUFFER_LEN = 64;
+*/
 
 class SensorHub {
 public:
-    SensorHub(int encLeft,    int encLeftRes,
-              int encRight,   int encRightRes,
+    SensorHub(int encLeftRes, int encRightRes,
               int imuSdaPin,  int imuSclPin);
-
+/*
     void InitUart();
     void HandleUart();
-
+*/
     bool UpdateSensors();
 
     float GetSpeedLeft()     const;
@@ -47,7 +49,7 @@ private:
     DateTime lastUpdate;
     bool sensorsUpdated;
 
-    static volatile char rxBuffer[UART_BUFFER_LEN];
+    /*static volatile char rxBuffer[UART_BUFFER_LEN];
     static volatile int  rxPos;
     static volatile bool messageReady;
     static SensorHub*    instance;
@@ -55,6 +57,7 @@ private:
     static void uartRxIrqHandler();
     void        processRequest(const char* request);
     void        sendResponse(const char* response);
+    */
 };
 
 #endif

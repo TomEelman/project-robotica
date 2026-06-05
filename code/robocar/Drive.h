@@ -20,13 +20,13 @@ public:
           Motor&     rightMotor,
           SensorHub& sensors,
           float      wheelbaseMeters,
-          float      minAngVel   = 13.0f,
+          float      minAngVel   = 13.0f, // numbers to prevent stalling and slipping
           float      maxAngVel   = 40.0f,
-          float      minPwmLeft  = 35.0f,
+          float      minPwmLeft  = 35.0f, 
           float      minPwmRight = 35.0f);
 
-    void Execute(const DriveCommand& command);
-    void Stop();
+    void Execute(const DriveCommand& command); // gets the drivecommand and directs it to the right function
+    void Stop(); // stops the motors and sets the data right
 
 private:
     Motor&     motorLeft;
@@ -60,8 +60,7 @@ private:
     float rampedTurnSpeed;
 
     // Smoothed version of the incoming linear command.
-    // Limits how fast the navigator can change the requested speed per tick,
-    // preventing abrupt jumps like 278 → 0 from reaching the ramp in one step.
+    // preventing abrupt jumps like 278 to 0
     float cmdSmoothedLinear;
 
     float minAngVel;
@@ -69,23 +68,11 @@ private:
     float minPwmLeft;
     float minPwmRight;
 
-    // ── Reversal lockout ────────────────────────────────────────────────────
-    // Single-channel encoders measure magnitude only — never direction.
-    // When the drive mode flips from Forward→Backward or Backward→Forward,
-    // the robot still rolls in the old direction due to inertia while the
-    // command sign has already changed. EncoderMetTeken on the Pi5 would then
-    // assign the wrong sign to the measured speed, causing a position jump in
-    // the localisation that smears the map.
-    //
-    // Fix: on a reversal, hold the motors at zero (non-blocking) until both
-    // encoders read below REVERSAL_STILL_MM_S, then continue with the new
-    // direction. A safety timeout (REVERSAL_TIMEOUT_MS) prevents stalling
-    // indefinitely if the encoders are noisy.
+    // prevents smearing of the map on the pi5 due to the sign
     bool     reversalLockout;
     uint32_t reversalStartMs;
 
-    // Clamps |pwm| to [minPwm, 255]. Values below minPwm are zeroed to avoid
-    // stalling the motor driver in a region where no movement occurs.
+    // Clamps pwm to [minPwm, 255]
     void  ClampPwm(float& pwm, float minPwm);
 
     // Maps a percentage [-100, 100] to a PWM value [-255, 255].
@@ -94,7 +81,8 @@ private:
     // Smoothly accelerates rampedLinear toward the requested linear setpoint.
     void UpdateRamp(float linearTarget);
 
-    void UpdateDriveMode(float linear, float angular);
+    // for the drivemodes 
+    void UpdateDriveMode(float linear, float angular); 
 
     // Computes a yaw-correction delta for straight-line driving.
     float ComputeYawCorrection();

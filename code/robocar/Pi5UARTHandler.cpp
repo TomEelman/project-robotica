@@ -88,8 +88,6 @@ bool Pi5UARTHandler::LeesData() {
                     hadData = true;
                 } else if (strncmp(lineBuffer, "ACK:", 4) == 0) {
                     // ACK:OK:lin=...,ang=... en ACK:STOP komen elke 100ms
-                    // binnen â€” stilzwijgend negeren zodat stderr niet blokkeert
-                    // en de loop-timing niet verstoord wordt.
                 } else if (regelLen > 2) {
                     // Onbekende regels loggen (ERR:, debug prints van Pico, etc.)
                     fprintf(stderr, "[Pico] %s\n", lineBuffer);
@@ -98,7 +96,7 @@ bool Pi5UARTHandler::LeesData() {
         } else if (linePos < (int)sizeof(lineBuffer) - 1) {
             lineBuffer[linePos++] = c;
         } else {
-            // Buffer vol zonder newline â€” sync verloren, reset
+            // Buffer vol zonder newline sync verloren, reset
             linePos = 0;
         }
     }
@@ -117,7 +115,7 @@ bool Pi5UARTHandler::ParseDataRegel(const char* regel) {
     float yaw   = strtof(p, &end); if (end == p || *end != ',') return false; p = end + 1;
     float omega = strtof(p, &end); if (end == p)                return false;
 
-    // Sanity check â€” gooi onmogelijke waarden weg
+    // Sanity check, gooi onmogelijke waarden weg
     if (encL < -5000.0f || encL > 5000.0f) return false;
     if (encR < -5000.0f || encR > 5000.0f) return false;
     if (yaw  <  -360.0f || yaw  >  360.0f) return false;

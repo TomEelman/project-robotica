@@ -1,23 +1,23 @@
 #include "SensorHub.h"
 #include <string.h>
 #include <cstdio>
-
+/*
 volatile char  SensorHub::rxBuffer[UART_BUFFER_LEN] = {0};
 volatile int   SensorHub::rxPos       = 0;
 volatile bool  SensorHub::messageReady = false;
 SensorHub*     SensorHub::instance    = nullptr;
-
-SensorHub::SensorHub(int encLeft,   int encLeftRes,
-                     int encRight,  int encRightRes,
+*/
+SensorHub::SensorHub(int encLeftRes,int encRightRes,
                      int imuSdaPin, int imuSclPin)
-    : encoderLeft (encLeft,  encLeftRes),
-      encoderRight(encRight, encRightRes),
+    : encoderLeft (encLeftRes),
+      encoderRight(encRightRes),
       imu(imuSdaPin, imuSclPin, 0x28),
       sensorsUpdated(false)
 {
-    instance = this;
+   // instance = this;
 }
 
+/*
 void SensorHub::InitUart()
 {
     uart_init(SENSOR_UART, SENSOR_BAUD);
@@ -32,6 +32,8 @@ void SensorHub::InitUart()
     irq_set_enabled(irqNum, true);
     uart_set_irq_enables(SENSOR_UART, true, false);
 }
+
+
 
 void SensorHub::uartRxIrqHandler()
 {
@@ -87,7 +89,7 @@ void SensorHub::sendResponse(const char* response)
 {
     uart_puts(SENSOR_UART, response);
 }
-
+*/
 bool SensorHub::UpdateSensors()
 {
     bool imuOk   = imu.Update();

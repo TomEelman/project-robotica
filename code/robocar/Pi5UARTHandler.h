@@ -40,8 +40,7 @@ public:
     void Close();
     bool IsOpen() const;
 
-    // Non-blocking: leest alle beschikbare DATA-regels uit de buffer,
-    // slaat de laatste op. Geeft true als er nieuwe data was.
+
     bool LeesData();
 
     // Geeft de laatste ontvangen sensorwaarden terug.

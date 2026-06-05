@@ -45,7 +45,6 @@ add_executable(MainPico
     PIDController.cpp
     DriveCommand.cpp
     Motor.cpp
-    Localisation.cpp
     PicoUARTHandler.cpp     
 )
 
