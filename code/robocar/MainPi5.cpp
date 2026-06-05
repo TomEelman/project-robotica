@@ -108,7 +108,7 @@ static int RunPathFinding(Pi5UARTHandler& uart, LIDAR& lidar) {
 
     float imuOffset  = 0.0f;
     bool  imuNulled = false;
-    float currentImuYaw = 0.0f;
+    //float currentImuYaw = 0.0f;
     float omegaDegS     = 0.0f;
 
     ExplorationPlanner         explorationPlanner;
@@ -132,7 +132,7 @@ static int RunPathFinding(Pi5UARTHandler& uart, LIDAR& lidar) {
 
     CommandKeepAlive ka(uart);
     ScanMatcher scanMatcher;
-    float linSpeed = 0.0f;
+    //float linSpeed = 0.0f;
 
     float lastScanX = 0.0f;
     float lastScanY = 0.0f;
@@ -169,7 +169,7 @@ static int RunPathFinding(Pi5UARTHandler& uart, LIDAR& lidar) {
             EncoderWithSign(ka.GetLin(), ka.GetAng(), vL, vR);
 
             omegaDegS = ka.GetAng();
-            linSpeed  = 0.5f * (vL + vR);  
+            //linSpeed  = 0.5f * (vL + vR);  
 
             float cmdLinNow  = ka.GetLin();
             float cmdSignNow = (cmdLinNow > 1.0f) ? 1.0f : (cmdLinNow < -1.0f) ? -1.0f : 0.0f;
@@ -194,7 +194,7 @@ static int RunPathFinding(Pi5UARTHandler& uart, LIDAR& lidar) {
                 loc.UpdateIMU(sens.yawDegrees - imuOffset, DT);
             }
 
-            currentImuYaw = sens.yawDegrees - imuOffset;
+            //currentImuYaw = sens.yawDegrees - imuOffset;
 
             if (!startPointLocked) {
                 StartPoint = Position(loc.GetX(), loc.GetY(), loc.GetTheta());
@@ -204,7 +204,7 @@ static int RunPathFinding(Pi5UARTHandler& uart, LIDAR& lidar) {
 
         Position pos(loc.GetX(), loc.GetY(), loc.GetTheta());
 
-        bool newScan = false;
+        //bool newScan = false;
         if (lidar.Update()) {
             float angles[360];
             for (int a = 0; a < 360; ++a) {
@@ -217,7 +217,7 @@ static int RunPathFinding(Pi5UARTHandler& uart, LIDAR& lidar) {
                 encDx = loc.GetX() - lastScanX;
                 encDy = loc.GetY() - lastScanY;
             }
-            IcpResult icp = scanMatcher.Match(lastRanges, encDx, encDy);
+            scanMatcher.Match(lastRanges, encDx, encDy);
 
             loc.SetIcpAnchor(); 
 
@@ -229,7 +229,7 @@ static int RunPathFinding(Pi5UARTHandler& uart, LIDAR& lidar) {
             hasRanges= true;
             ++scanCount;
             ++scansSinceReplan;
-            newScan = true;
+            //newScan = true;
         }
 
         ScanAnalysis scan{};
@@ -306,7 +306,7 @@ static int RunWallFollowing(Pi5UARTHandler& uart, LIDAR& lidar) {
     int   scanCount     = 0;
     float imuOffset     = 0.0f;
     bool  imuNulled    = false;
-    float currentImuYaw = 0.0f;
+    //float currentImuYaw = 0.0f;
     float omegaDegS     = 0.0f;
 
     Navigator   navigator;
@@ -315,7 +315,7 @@ static int RunWallFollowing(Pi5UARTHandler& uart, LIDAR& lidar) {
     CommandKeepAlive ka(uart);
     ScanMatcher      scanMatcher; 
 
-    float linSpeed       = 0.0f; 
+    //float linSpeed       = 0.0f; 
 
     float lastScanX      = 0.0f, lastScanY = 0.0f;
     bool  hasLastScanPos = false;
@@ -349,7 +349,7 @@ static int RunWallFollowing(Pi5UARTHandler& uart, LIDAR& lidar) {
             EncoderWithSign(ka.GetLin(), ka.GetAng(), vL, vR);
 
             omegaDegS = ka.GetAng();
-            linSpeed  = 0.5f * (vL + vR);
+            //linSpeed  = 0.5f * (vL + vR);
 
             bool isMoving = (sens.speedLeft != 0.0f || sens.speedRight != 0.0f);
 
@@ -358,7 +358,7 @@ static int RunWallFollowing(Pi5UARTHandler& uart, LIDAR& lidar) {
                 loc.UpdateIMU(sens.yawDegrees - imuOffset, DT);
             }
 
-            currentImuYaw = sens.yawDegrees - imuOffset;
+            //currentImuYaw = sens.yawDegrees - imuOffset;
 
             if (!newData && isMoving) {
                 //printf("[UART] geen vers pakket deze tick — Predict overgeslagen\n");
@@ -379,7 +379,8 @@ static int RunWallFollowing(Pi5UARTHandler& uart, LIDAR& lidar) {
                 encDx = loc.GetX() - lastScanX;
                 encDy = loc.GetY() - lastScanY;
             }
-            IcpResult icp = scanMatcher.Match(lastRanges, encDx, encDy);
+            
+            scanMatcher.Match(lastRanges, encDx, encDy);
 
             loc.SetIcpAnchor();
 
@@ -488,7 +489,7 @@ static int RunPicoCommunication(Pi5UARTHandler& uart, LIDAR& lidar) {
 
     float imuOffset     = 0.0f;
     bool  imuNulled    = false;
-    float currentImuYaw = 0.0f;
+    //float currentImuYaw = 0.0f;
     float omegaDegS     = 0.0f;
     int   scanCount     = 0;
 
@@ -563,7 +564,7 @@ static int RunPicoCommunication(Pi5UARTHandler& uart, LIDAR& lidar) {
             uart.ReadData();
             SensorData sens = uart.GetSensorData();
             bool  isMoving      = false;
-            float linSpeedPico = 0.0f;
+            //float linSpeedPico = 0.0f;
             if (sens.valid) {
                 if (!imuNulled) { imuOffset = sens.yawDegrees; imuNulled = true; }
 
@@ -577,7 +578,7 @@ static int RunPicoCommunication(Pi5UARTHandler& uart, LIDAR& lidar) {
                     loc.Predict(vL, vR, DT);
                     loc.UpdateIMU(sens.yawDegrees - imuOffset, DT);
                 }
-                currentImuYaw = sens.yawDegrees - imuOffset;
+                //currentImuYaw = sens.yawDegrees - imuOffset;
             }
 
             if (lidar.Update()) {
