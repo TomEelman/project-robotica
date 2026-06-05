@@ -4,6 +4,7 @@
 #include "Position.h"
 #include "GridMap.h"
 #include "DriveCommand.h"
+#include "ExplorationPlanner.h"
 #include <vector>
 
 class Localisation;
@@ -55,7 +56,7 @@ struct WallResult {
 class Navigator {
 public:
     Navigator();
-
+    
     void         SetPath(const Path& newPath);
     void         Update(Position current);
 
@@ -118,6 +119,7 @@ private:
     static constexpr int   WF_OUTER_CORNER_MAX_TICKS = 20;
 
     Path     path;
+    ExplorationPlanner explorationPlanner;
     Position currentTarget;
     bool     isUpdated;
     bool     hasPath;
