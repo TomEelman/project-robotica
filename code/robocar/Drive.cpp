@@ -349,36 +349,15 @@ void Drive::ExecuteLinear(float linear, float angular)
 
     ClampPwm(pwmLeft,  CLAMP_MIN_PWM);
     ClampPwm(pwmRight, CLAMP_MIN_PWM);
-
-    /*
-    const char* tag =
-        (driveMode == DriveMode::Forward)  ? "FWD" :
-        (driveMode == DriveMode::Backward) ? "BWD" : "MOV";
-
-    printf("[%s] ramp=%.1f ang=%.1f tgtL=%.1f tgtR=%.1f rawL=%.1f rawR=%.1f fL=%.1f fR=%.1f frL=%d frR=%d pwmL=%.0f pwmR=%.0f yaw=%.6f\n",
-           tag, rampedLinear, angular, targetLeft, targetRight,
-           rawL, rawR, speedLeftFiltered, speedRightFiltered,
-           (int)freshL, (int)freshR, pwmLeft, pwmRight,
-           sensorHub.GetCurrentYaw());
-    */
 }
 
 void Drive::Execute(const DriveCommand& command)
 {
     float linear  = command.GetLinVelocity();
     float angular = command.GetAngVelocity();
-    /*
-    printf("[EXEC] lin=%.1f ang=%.1f mode=%d lock=%d spdL=%.1f spdR=%.1f pwmL=%.0f pwmR=%.0f\n",
-           linear, angular, (int)driveMode, (int)reversalLockout,
-           sensorHub.GetSpeedLeft(), sensorHub.GetSpeedRight(), pwmLeft, pwmRight);
-    */
     
-
-    // Non-blocking: Execute() keeps being called every tick we just hold Stop
+    // Non-blocking: Execute() keeps being called every tick it just hold stop
     // and return early until the encoders confirm the robot has stopped.
-
-    // The lockout is based on driveMode (physical state) not on the command,
-    // so keepalive repetitions of the same command do not re-trigger it.
     float linForModeCheck = linear;
     {
         bool newForward  = linForModeCheck >  1.0f;
@@ -463,7 +442,7 @@ void Drive::Stop()
     rampedLinear      = 0.0f;
     rampedTurnSpeed   = 0.0f;
     cmdSmoothedLinear = 0.0f;
-    
+
     yawInitialized    = false;
     filterInitialized = false;
 

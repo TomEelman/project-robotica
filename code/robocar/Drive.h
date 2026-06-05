@@ -87,7 +87,10 @@ private:
     // Computes a yaw-correction delta for straight-line driving.
     float ComputeYawCorrection();
 
+    //turn on position
     void ExecuteTurn(float angular);
+
+    // linear holds his angle more or less
     void ExecuteLinear(float linear, float angular);
 };
 

@@ -10,13 +10,9 @@ public:
                   float maxOutput   = 255.0f);
 
     // Returns a control output in the range [-maxOutput, +maxOutput].
-    // Call once per control loop tick with the current measured value
-    // and the desired setpoint.
     float Compute(float currentValue, float setpoint);
 
     // Clears integrator, derivative state and resets the dt timer.
-    // Call whenever the controller is taken out of the loop (motor stop,
-    // mode switch) to prevent integrator wind-up on re-entry.
     void Reset();
 
 private:
