@@ -19,7 +19,7 @@ static constexpr float PID_YAW_KP   = 4.0f;
 static constexpr float PID_YAW_KI   = 0.1f;
 static constexpr float PID_YAW_KD   = 0.3f;
 
-static constexpr float PID_MAX_INTEGRAL = 49.0f;
+static constexpr float PID_MAX_INTEGRAL = 150.0f;
 static constexpr float PID_MAX_OUTPUT   = 100.0f;
 
 // Minimum PWM below which the motor physically does not move (stall zone).
@@ -37,8 +37,8 @@ static constexpr float TURN_COUPLED_MIN_FACTOR = 0.5f;
 static constexpr float TURN_COUPLED_MAX_FACTOR = 1.5f;
 
 // Ramping rates in mm/s per Execute() tick.
-static constexpr float RAMP_ACCEL_STEP = 2.0f;
-static constexpr float RAMP_DECEL_STEP = 2.0f;
+static constexpr float RAMP_ACCEL_STEP = 3.0f;
+static constexpr float RAMP_DECEL_STEP = 3.0f;
 
 // Maximum change in the incoming linear command per Execute() call.
 static constexpr float CMD_MAX_LIN_STEP = 20.0f;
@@ -65,7 +65,7 @@ Drive::Drive(Motor&     leftMotor,
       sensorHub(sensors),
       pidLeft (PID_LEFT_KP,  PID_LEFT_KI,  PID_LEFT_KD,  PID_MAX_INTEGRAL, PID_MAX_OUTPUT),
       pidRight(PID_RIGHT_KP, PID_RIGHT_KI, PID_RIGHT_KD, PID_MAX_INTEGRAL, PID_MAX_OUTPUT),
-      pidYaw  (PID_YAW_KP,   PID_YAW_KI,   PID_YAW_KD,   400.0f,           PID_MAX_OUTPUT),
+      pidYaw  (PID_YAW_KP,   PID_YAW_KI,   PID_YAW_KD,   70.0f,           PID_MAX_OUTPUT),
       wheelbaseMeters(wheelbaseMeters),
       enableMotorLeft(true),
       enableMotorRight(true),
@@ -224,7 +224,7 @@ void Drive::ExecuteTurn(float angular)
     if (feedforward < minPwmLeft) feedforward = minPwmLeft;
     if (feedforward > MAX_PWM)     feedforward = MAX_PWM;
 
-    if (speedLeftFiltered < 5.0f && speedRightFiltered < 5.0f) {
+    if (speedLeftFiltered < 60.0f && speedRightFiltered < 60.0f) {
     if (feedforward < 120.0f) feedforward = 120.0f;
 }
 

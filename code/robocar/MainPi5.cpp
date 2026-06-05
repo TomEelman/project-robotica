@@ -106,7 +106,7 @@ static int RunPathFinding(Pi5UARTHandler& uart, LIDAR& lidar) {
 
     float imuOffset  = 0.0f;
     bool  imuNulled = false;
-    //float currentImuYaw = 0.0f;
+
     float omegaDegS     = 0.0f;
 
     ExplorationPlanner         explorationPlanner;
@@ -130,7 +130,6 @@ static int RunPathFinding(Pi5UARTHandler& uart, LIDAR& lidar) {
 
     CommandKeepAlive ka(uart);
     ScanMatcher scanMatcher;
-    //float linSpeed = 0.0f;
 
     float lastScanX = 0.0f;
     float lastScanY = 0.0f;
@@ -167,7 +166,6 @@ static int RunPathFinding(Pi5UARTHandler& uart, LIDAR& lidar) {
             EncoderWithSign(ka.GetLin(), ka.GetAng(), vL, vR);
 
             omegaDegS = ka.GetAng();
-            //linSpeed  = 0.5f * (vL + vR);  
 
             float cmdLinNow  = ka.GetLin();
             float cmdSignNow = (cmdLinNow > 1.0f) ? 1.0f : (cmdLinNow < -1.0f) ? -1.0f : 0.0f;
@@ -192,7 +190,6 @@ static int RunPathFinding(Pi5UARTHandler& uart, LIDAR& lidar) {
                 loc.UpdateIMU(sens.yawDegrees - imuOffset, DT);
             }
 
-            //currentImuYaw = sens.yawDegrees - imuOffset;
 
             if (!startPointLocked) {
                 StartPoint = Position(loc.GetX(), loc.GetY(), loc.GetTheta());
@@ -202,7 +199,6 @@ static int RunPathFinding(Pi5UARTHandler& uart, LIDAR& lidar) {
 
         Position pos(loc.GetX(), loc.GetY(), loc.GetTheta());
 
-        //bool newScan = false;
         if (lidar.Update()) {
             float angles[360];
             for (int a = 0; a < 360; ++a) {
@@ -227,7 +223,6 @@ static int RunPathFinding(Pi5UARTHandler& uart, LIDAR& lidar) {
             hasRanges= true;
             ++scanCount;
             ++scansSinceReplan;
-            //newScan = true;
         }
 
         ScanAnalysis scan{};
@@ -304,7 +299,6 @@ static int RunWallFollowing(Pi5UARTHandler& uart, LIDAR& lidar) {
     int   scanCount     = 0;
     float imuOffset     = 0.0f;
     bool  imuNulled    = false;
-    //float currentImuYaw = 0.0f;
     float omegaDegS     = 0.0f;
 
     Navigator   navigator;
@@ -313,7 +307,6 @@ static int RunWallFollowing(Pi5UARTHandler& uart, LIDAR& lidar) {
     CommandKeepAlive ka(uart);
     ScanMatcher      scanMatcher; 
 
-    //float linSpeed       = 0.0f; 
 
     float lastScanX      = 0.0f, lastScanY = 0.0f;
     bool  hasLastScanPos = false;
@@ -347,19 +340,12 @@ static int RunWallFollowing(Pi5UARTHandler& uart, LIDAR& lidar) {
             EncoderWithSign(ka.GetLin(), ka.GetAng(), vL, vR);
 
             omegaDegS = ka.GetAng();
-            //linSpeed  = 0.5f * (vL + vR);
 
             bool isMoving = (sens.speedLeft != 0.0f || sens.speedRight != 0.0f);
 
             if (newData && isMoving) {
                 loc.Predict(vL, vR, DT);
                 loc.UpdateIMU(sens.yawDegrees - imuOffset, DT);
-            }
-
-            //currentImuYaw = sens.yawDegrees - imuOffset;
-
-            if (!newData && isMoving) {
-                //printf("[UART] geen vers pakket deze tick — Predict overgeslagen\n");
             }
         }
 
@@ -442,7 +428,6 @@ static int RunMapping(Pi5UARTHandler& uart, LIDAR& lidar) {
         mapper.Update(ranges, angles, 360, pos);
         ++scanCount;
 
-        // mapper.PrintMap(loc.GetX(), loc.GetY(), scanCount, mapper.GetCoverage());
 
         auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - tStart).count();
@@ -487,7 +472,6 @@ static int RunPicoCommunication(Pi5UARTHandler& uart, LIDAR& lidar) {
 
     float imuOffset     = 0.0f;
     bool  imuNulled    = false;
-    //float currentImuYaw = 0.0f;
     float omegaDegS     = 0.0f;
     int   scanCount     = 0;
 
@@ -541,17 +525,14 @@ static int RunPicoCommunication(Pi5UARTHandler& uart, LIDAR& lidar) {
         else if (name == "achteruit") { driveLin = -278.0f; driveAng =   0.0f; }
         else if (name == "links")     { driveLin =    0.0f; driveAng = -40.0f; }
         else if (name == "rechts")    { driveLin =    0.0f; driveAng =  40.0f; }
-        else if (name == "bochtl")    { driveLin =   20.0f; driveAng = -40.0f; }
-        else if (name == "bochtr")    { driveLin =   20.0f; driveAng =  40.0f; }
+        else if (name == "bochtl")    { driveLin =   20.0f; driveAng = -50.0f; }
+        else if (name == "bochtr")    { driveLin =   20.0f; driveAng =  50.0f; }
         else if (name == "stop")      { driveLin =    0.0f; driveAng =   0.0f; }
         else {
             printf("[PICO] Onbekend commando '%s'\n", name.c_str());
             continue;
         }
 
-        /*printf("  → %s  (lin=%.0f ang=%.0f)  |  SPATIE = ander commando  |  q = stoppen\n",
-               name.c_str(), driveLin, driveAng);
-*/
         ka.SetCommand(driveLin, driveAng);
 
         SetTerminalRaw(true);
@@ -562,7 +543,7 @@ static int RunPicoCommunication(Pi5UARTHandler& uart, LIDAR& lidar) {
             uart.ReadData();
             SensorData sens = uart.GetSensorData();
             bool  isMoving      = false;
-            //float linSpeedPico = 0.0f;
+
             if (sens.valid) {
                 if (!imuNulled) { imuOffset = sens.yawDegrees; imuNulled = true; }
 
@@ -576,7 +557,6 @@ static int RunPicoCommunication(Pi5UARTHandler& uart, LIDAR& lidar) {
                     loc.Predict(vL, vR, DT);
                     loc.UpdateIMU(sens.yawDegrees - imuOffset, DT);
                 }
-                //currentImuYaw = sens.yawDegrees - imuOffset;
             }
 
             if (lidar.Update()) {
@@ -598,7 +578,6 @@ static int RunPicoCommunication(Pi5UARTHandler& uart, LIDAR& lidar) {
                     lastScanX = loc.GetX(); lastScanY = loc.GetY(); hasLastScanPos = true;
                     mapper.UpdateMotionCorrected(lastRanges, angles, 360, pos, omegaDegS, lidarScanTime);
                     ++scanCount;
-                    //mapper.PrintMap(loc.GetX(), loc.GetY(), scanCount, mapper.GetCoverage());
                 }
             }
 
@@ -628,7 +607,6 @@ static int RunPicoCommunication(Pi5UARTHandler& uart, LIDAR& lidar) {
     for (int i = 0; i < 10; ++i) { uart.SendStop(); usleep(50000); }
     lidar.Disconnect();
     mapper.SaveDebugMap("kaart.pgm");
-    //printf("[PICO] Kaart opgeslagen als kaart.pgm\n");
     return 0;
 }
 

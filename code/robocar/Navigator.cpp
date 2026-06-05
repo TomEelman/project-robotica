@@ -166,14 +166,12 @@ DriveCommand Navigator::GetNextCommand(Position current, float minFront, float m
                 stableAng     = 0.0f;
                 recoveryTicks = RECOVERY_TICKS;
                 blocked       = true;
-           //     printf("[NAV] RECOVERY reverse (front=%.0f rear=%.0f)\n", minFront, minRear);
             } else {
                 float angleErr = CalculateAngleError(current, currentTarget);
                 stableLin     = 0.0f;
                 stableAng     = (angleErr > 0.0f) ? -MAX_ANGULAR_DEG_S : MAX_ANGULAR_DEG_S;
                 recoveryTicks = RECOVERY_TICKS;
                 blocked       = true;
-           //     printf("[NAV] RECOVERY turn (front=%.0f rear=%.0f)\n", minFront, minRear);
             }
             blockCounter = 0;
             return DriveCommand(stableLin, stableAng);
@@ -303,22 +301,18 @@ WallResult Navigator::ComputeWallCommand(const float ranges[360]) {
         wallState = NavMode_WALLFOLLOWING::INNER_CORNER; wfFilteredError = 0.0f; outerCornerTicks = 0;
         res.cmd   = DriveCommand(0.0f, -WF_INNER_CORNER_TURN);
         res.state = NavMode_WALLFOLLOWING::INNER_CORNER; res.errorMm = 0.0f;
-        //printf("[WALL] INNER_CORNER front=%.0fmm -> turn left\n", minFrontNarrow);
         return res;
     }
 
     if (!rightWallPresent && frontRightClear && wallState == NavMode_WALLFOLLOWING::FOLLOW_RIGHT) {
         wallState = NavMode_WALLFOLLOWING::OUTER_CORNER; outerCornerTicks = 0; wfFilteredError = 0.0f;
-          //printf("[WALL] OUTER_CORNER wallR=%.0fmm frontR=%.0fmm -> turn right\n", wallRight, frontRight);
     }
 
     if (wallState == NavMode_WALLFOLLOWING::OUTER_CORNER) {
         if (rightWallPresent && wallRight < WF_TARGET_DIST_MM * 1.5f) {
             wallState = NavMode_WALLFOLLOWING::FOLLOW_RIGHT; outerCornerTicks = 0;
-           // printf("[WALL] wall regained at %.0fmm -> FOLLOW_RIGHT\n", wallRight);
         } else if (++outerCornerTicks > WF_OUTER_CORNER_MAX_TICKS) {
             wallState = NavMode_WALLFOLLOWING::OPEN_SPACE; outerCornerTicks = 0;
-           // printf("[WALL] OUTER_CORNER timeout -> OPEN_SPACE\n");
         } else {
             res.cmd   = DriveCommand(WF_LIN_SLOW, WF_OUTER_CORNER_TURN);
             res.state = NavMode_WALLFOLLOWING::OUTER_CORNER; res.errorMm = 0.0f;
@@ -329,7 +323,6 @@ WallResult Navigator::ComputeWallCommand(const float ranges[360]) {
     if (!rightWallPresent) {
         wallState   = NavMode_WALLFOLLOWING::OPEN_SPACE;
         float lin   = wallFrontLikely ? WF_LIN_SLOW : WF_LIN_NORMAL;
-        //printf("[WALL] OPEN_SPACE front=%.0fmm right=%.0fmm\n", minFront, wallRight);
         res.cmd   = DriveCommand(lin, 0.0f);
         res.state = NavMode_WALLFOLLOWING::OPEN_SPACE; res.errorMm = 0.0f;
         return res;
@@ -345,8 +338,6 @@ WallResult Navigator::ComputeWallCommand(const float ranges[360]) {
     if (std::fabs(corrDegS) < WF_MIN_CORR) corrDegS = 0.0f;
 
     float lin = wallFrontLikely ? WF_LIN_SLOW : WF_LIN_NORMAL;
-    //printf("[WALL] FOLLOW_RIGHT wallR=%.0fmm err=%.0fmm corr=%.1f lin=%.0f\n",
-    //       wallRight, wfFilteredError, corrDegS, lin);
 
     res.cmd   = DriveCommand(lin, corrDegS);
     res.state = NavMode_WALLFOLLOWING::FOLLOW_RIGHT; res.errorMm = wfFilteredError;
@@ -512,17 +503,17 @@ void Navigator::HandleFrontierMode(Mapper& mapper, Position pos, bool newScan,
         if (newScan) {
             scansSinceReplan = 0;
 
-            constexpr float OUTER_WALL_MIN = 75.0f;
-            constexpr float INTERIOR_MIN   = 80.0f;
+            constexpr float OUTER_WALL_MIN = 9.0f;
+            constexpr float INTERIOR_MIN   = 70.0f;
             float outerWallPct, interiorPct, relCoveragePct;
             mapper.GetRoomCoverage(outerWallPct, interiorPct, relCoveragePct);
 
             bool mapDone = (outerWallPct >= OUTER_WALL_MIN &&
                                interiorPct  >= INTERIOR_MIN);
 
-            //printf("[MAIN] FRONTIER rand=%.0f%% int=%.0f%% rel=%.0f%%%s\n",
-            //       outerWallPct, interiorPct, relCoveragePct,
-            //       mapDone ? " *** KAART KLAAR ***" : "");
+            printf("[MAIN] FRONTIER rand=%.0f%% int=%.0f%% rel=%.0f%%%s\n",
+                   outerWallPct, interiorPct, relCoveragePct,
+                  mapDone ? " *** KAART KLAAR ***" : "");
 
             if (mapDone) {
                 navMode = NavMode_HEAD::RETURN_HOME;

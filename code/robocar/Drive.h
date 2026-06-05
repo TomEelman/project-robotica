@@ -21,7 +21,7 @@ public:
           SensorHub& sensors,
           float      wheelbaseMeters,
           float      minAngVel   = 13.0f, // numbers to prevent stalling and slipping
-          float      maxAngVel   = 40.0f,
+          float      maxAngVel   = 50.0f,
           float      minPwmLeft  = 35.0f, 
           float      minPwmRight = 35.0f);
 
