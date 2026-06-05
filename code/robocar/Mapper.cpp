@@ -51,9 +51,11 @@ void Mapper::SetWaypoints(const Path& path) {
     map.SetWaypoints(waypoints);
 }
 
+/*
 int Mapper::GetCoverage() const {
     return static_cast<int>(map.GetCoveragePercent());
 }
+*/
 
 void Mapper::GetRoomCoverage(float& outerWallPct, float& interiorPct, float& relCoveragePct) const {
     map.GetRoomCoverage(outerWallPct, interiorPct, relCoveragePct);
