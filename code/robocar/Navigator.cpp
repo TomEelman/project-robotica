@@ -226,8 +226,8 @@ DriveCommand Navigator::GetNextCommand(Position current, float minFront, float m
     hasStableCmd = true;
     cmdTicks     = 0;
 
-    //printf("[NAV] cmd lin=%.0f ang=%.1f (dist=%.0fmm err=%.1fdeg)\n",
-    //      newLin, newAng, dist, angleErr);
+    printf("[NAV] cmd lin=%.0f ang=%.1f (dist=%.0fmm err=%.1fdeg)\n",
+          newLin, newAng, dist, angleErr);
 
     return DriveCommand(stableLin, stableAng);
 }
@@ -435,10 +435,50 @@ bool Navigator::HandleObstacleAvoidance(const ScanAnalysis& scan, Localisation& 
     return true;
 }
 
+// Bepaalt naar welke kant de robot moet draaien wanneer er geen bereikbaar
+// frontier-doel is. Kijkt naar de vrije ruimte links vs rechts in de LIDAR-scan
+// en draait naar de ruimste kant. Een statische voorkeur zorgt dat hij niet
+// heen-en-weer flipt tussen links en rechts wanneer beide kanten ongeveer gelijk zijn.
+static float ChooseFreestTurn(const float* ranges)
+{
+    constexpr float MAX_RANGE  = 8000.0f;
+    constexpr float TURN_DEG_S = 35.0f;   // draaisnelheid
+    constexpr float HYSTERESIS = 300.0f;  // mm voorkeur voor de vorige kant
+
+    static float prevDir = TURN_DEG_S;    // onthoud laatste draairichting
+
+    // Gemiddelde vrije ruimte links (90..180 graden) en rechts (180..270 graden).
+    // Index 0 = recht vooruit, oplopend met de klok mee.
+    float sumRight = 0.0f; int nRight = 0;
+    float sumLeft  = 0.0f; int nLeft  = 0;
+
+    for (int a = 30; a <= 150; ++a) {           // rechterkant
+        float r = ranges[a];
+        if (r <= 0.0f || r > MAX_RANGE) r = MAX_RANGE;
+        sumRight += r; ++nRight;
+    }
+    for (int a = 210; a <= 330; ++a) {          // linkerkant
+        float r = ranges[a];
+        if (r <= 0.0f || r > MAX_RANGE) r = MAX_RANGE;
+        sumLeft += r; ++nLeft;
+    }
+
+    float avgRight = (nRight > 0) ? sumRight / static_cast<float>(nRight) : 0.0f;
+    float avgLeft  = (nLeft  > 0) ? sumLeft  / static_cast<float>(nLeft)  : 0.0f;
+
+    // Voorkeur voor de vorige richting om flip-flop te voorkomen.
+    if (prevDir > 0.0f) avgRight += HYSTERESIS;
+    else                avgLeft  += HYSTERESIS;
+
+    float dir = (avgRight >= avgLeft) ? TURN_DEG_S : -TURN_DEG_S;
+    prevDir = dir;
+    return dir;
+}
+
 void Navigator::HandleFrontierMode(Mapper& mapper, Position pos, bool newScan,
-    int& scansSinceReplan, int& failedCounter, NavMode_HEAD& navMode, bool& hasPath
+    int& scansSinceReplan, NavMode_HEAD& navMode, bool& hasPath
     , CommandKeepAlive& ka, PathPlanner& planner, std::vector<BlacklistItem>& frontierBlacklist, 
-    int REPLAN_SCANS, int FAILED_THRESHOLD, const float* lastRanges, float minFront)
+    int REPLAN_SCANS, const float* lastRanges, float minFront)
 {
     if (hasPath && !IsFinished()) {
         Update(pos);
@@ -462,7 +502,6 @@ void Navigator::HandleFrontierMode(Mapper& mapper, Position pos, bool newScan,
             ResetBlock();
             hasPath = false;
             scansSinceReplan = 0; 
-            failedCounter = 0;     
         }
 
     } else {
@@ -473,22 +512,21 @@ void Navigator::HandleFrontierMode(Mapper& mapper, Position pos, bool newScan,
         if (newScan) {
             scansSinceReplan = 0;
 
-            constexpr float OUTER_WALL_MIN = 25.0f; 
-            constexpr float INTERIOR_MIN   = 80.0f; 
+            constexpr float OUTER_WALL_MIN = 75.0f;
+            constexpr float INTERIOR_MIN   = 80.0f;
             float outerWallPct, interiorPct, relCoveragePct;
             mapper.GetRoomCoverage(outerWallPct, interiorPct, relCoveragePct);
 
             bool mapDone = (outerWallPct >= OUTER_WALL_MIN &&
                                interiorPct  >= INTERIOR_MIN);
 
-            //printf("[MAIN] FRONTIER rand=%.0f%% int=%.0f%% rel=%.0f%% mislukt=%d%s\n",
-            //       outerWallPct, interiorPct, relCoveragePct, failedCounter,
+            //printf("[MAIN] FRONTIER rand=%.0f%% int=%.0f%% rel=%.0f%%%s\n",
+            //       outerWallPct, interiorPct, relCoveragePct,
             //       mapDone ? " *** KAART KLAAR ***" : "");
 
-            if (mapDone || failedCounter >= FAILED_THRESHOLD) {
+            if (mapDone) {
                 navMode = NavMode_HEAD::RETURN_HOME;
                 hasPath = false;
-                failedCounter = 0;
                 //printf("[MAIN] Kaart gemapped (rand=%.0f%% int=%.0f%%) -> TERUG_HOME\n",
                 //       outerWallPct, interiorPct);
                 Path path = planner.PlanPath(pos, Position(0.0f, 0.0f, 0.0f), mapper.GetMap());
@@ -496,18 +534,24 @@ void Navigator::HandleFrontierMode(Mapper& mapper, Position pos, bool newScan,
             } else {
                 explorationPlanner.TickBlacklist(frontierBlacklist);
                 Position goal = explorationPlanner.ChooseFrontierGoal(mapper, pos, lastRanges, frontierBlacklist);
-                if (goal.GetX() == pos.GetX() && goal.GetY() == pos.GetY()) {
-                    ++failedCounter;
-                    ka.SetCommand(200.0f, 0.0f);
+                bool noGoal = (goal.GetX() == pos.GetX() && goal.GetY() == pos.GetY());
+
+                if (noGoal) {
+                    // Geen bereikbaar frontier-doel gevonden vanaf deze plek.
+                    // Blacklist de huidige omgeving zodat ChooseFrontierGoal hier
+                    // niet meteen opnieuw op vastloopt, en draai weg naar de kant
+                    // met de meeste vrije ruimte (voorkomt heen-en-weer in een hoek).
+                    explorationPlanner.AddToBlackList(frontierBlacklist, pos.GetX(), pos.GetY());
+
+                    float turnDir = ChooseFreestTurn(lastRanges);
+                    ka.SetCommand(0.0f, turnDir);
                 } else {
                     Path path = planner.PlanPath(pos, goal, mapper.GetMap());
                     if (!path.IsEmpty()) {
                         SetPath(path);
                         mapper.SetWaypoints(path);
                         hasPath = true;
-                        failedCounter = 0;
                     } else {
-                        ++failedCounter;
                         explorationPlanner.AddToBlackList(frontierBlacklist, goal.GetX(), goal.GetY());
                         ka.Stop();
                     }

@@ -89,7 +89,6 @@ static int RunPathFinding(Pi5UARTHandler& uart, LIDAR& lidar) {
     constexpr long  LOOP_US     = 100000;
     constexpr float LIN_SPEED   = 278.0f;
     constexpr int   REPLAN_SCANS   = 15;
-    constexpr int   FAILED_THRESHOLD = 5;
     constexpr float HOME_THRESHOLD_MM = 300.0f;
     constexpr float lidarScanTime     = 0.1f;
 
@@ -97,7 +96,6 @@ static int RunPathFinding(Pi5UARTHandler& uart, LIDAR& lidar) {
 
     int scanCount         = 0;
     int scansSinceReplan = REPLAN_SCANS;
-    int failedCounter    = 0;
 
     constexpr int   STUCK_TIMEOUT  = 400;
     constexpr float STUCK_MOVE_MM = 150.0f;
@@ -268,9 +266,9 @@ static int RunPathFinding(Pi5UARTHandler& uart, LIDAR& lidar) {
             switch (navMode) {
                 case NavMode_HEAD::FRONTIER:
                     navigator.HandleFrontierMode(mapper, pos, newData, scansSinceReplan,
-                        failedCounter, navMode, hasPath, ka, planner,
+                        navMode, hasPath, ka, planner,
                         frontierBlacklist, REPLAN_SCANS,
-                        FAILED_THRESHOLD, lastRanges, scan.minFront);
+                        lastRanges, scan.minFront);
                     break;
                 case NavMode_HEAD::RETURN_HOME:
                     navigator.HandleReturnToHome(mapper, pos, StartPoint, hasPath, ka, planner, HOME_THRESHOLD_MM, navMode);

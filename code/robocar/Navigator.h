@@ -4,7 +4,6 @@
 #include "Position.h"
 #include "GridMap.h"
 #include "DriveCommand.h"
-#include "ExplorationPlanner.h"
 #include <vector>
 
 class Localisation;
@@ -56,7 +55,7 @@ struct WallResult {
 class Navigator {
 public:
     Navigator();
-    
+
     void         SetPath(const Path& newPath);
     void         Update(Position current);
 
@@ -80,9 +79,9 @@ public:
         float& escapeX, float& escapeY, CommandKeepAlive& ka, float LIN_SPEED, int& scansSinceReplan);
 
     void HandleFrontierMode(Mapper& mapper, Position pos, bool newScan,
-        int& scansSinceReplan, int& failedCounter, NavMode_HEAD& navMode, bool& hasPath,
+        int& scansSinceReplan, NavMode_HEAD& navMode, bool& hasPath,
         CommandKeepAlive& ka, PathPlanner& planner, std::vector<BlacklistItem>& frontierBlacklist,
-        int REPLAN_SCANS, int FAILED_THRESHOLD, const float* lastRanges, float minFront);
+        int REPLAN_SCANS, const float* lastRanges, float minFront);
 
     void HandleReturnToHome(Mapper& mapper, Position pos, Position startPoint,
         bool& hasPath, CommandKeepAlive& ka, PathPlanner& planner, float HOME_THRESHOLD_MM, NavMode_HEAD& navMode);
@@ -119,7 +118,6 @@ private:
     static constexpr int   WF_OUTER_CORNER_MAX_TICKS = 20;
 
     Path     path;
-    ExplorationPlanner explorationPlanner;
     Position currentTarget;
     bool     isUpdated;
     bool     hasPath;
