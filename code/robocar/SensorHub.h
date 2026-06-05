@@ -7,11 +7,7 @@
 #include "hardware/uart.h"
 #include "hardware/irq.h"
 
-
-// UART0 is used to expose sensor data to an external host (e.g. a Raspberry Pi)
-// over a simple ASCII request/response protocol. Pins 0/1 are the default UART0
-// pins on the Pico; they are reserved and must not be used for anything else.
-#define SENSOR_UART       uart0
+#define SENSOR_UART       uart0 // default uart for 
 static constexpr uint         SENSOR_BAUD     = 115200;
 static constexpr int          SENSOR_UART_TX  = 0;
 static constexpr int          SENSOR_UART_RX  = 1;

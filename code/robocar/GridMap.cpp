@@ -335,6 +335,20 @@ bool GridMap::SavePGM(const std::string& filename) const {
     return true;
 }
 
+// 3x5 pixel font bitmaps for digits 0-9 (used by SavePGMCropped for coordinate labels)
+static const uint8_t kDigitFont[10][5] = {
+    {0b111, 0b101, 0b101, 0b101, 0b111}, // 0
+    {0b010, 0b110, 0b010, 0b010, 0b111}, // 1
+    {0b111, 0b001, 0b111, 0b100, 0b111}, // 2
+    {0b111, 0b001, 0b111, 0b001, 0b111}, // 3
+    {0b101, 0b101, 0b111, 0b001, 0b001}, // 4
+    {0b111, 0b100, 0b111, 0b001, 0b111}, // 5
+    {0b111, 0b100, 0b111, 0b101, 0b111}, // 6
+    {0b111, 0b001, 0b001, 0b001, 0b001}, // 7
+    {0b111, 0b101, 0b111, 0b101, 0b111}, // 8
+    {0b111, 0b101, 0b111, 0b001, 0b111}, // 9
+};
+
 bool GridMap::SavePGMCropped(const std::string& filename, float margin_m) const {
     // Step 1: Scan the grid to calculate the bounding limits of all explored territory
     int minX = width,  maxX = -1;
@@ -774,7 +788,7 @@ bool GridMap::SavePGMCropped(const std::string& filename, float margin_m) const 
     return true;
 }
 
-void GridMap::ClampLogOdds(int8_t& val) const {
+void GridMap::clampLogOdds(int8_t& val) const {
     // if the value drops below the minimum threshold, cap it at the floor limit
     if (val < L_MIN) { 
         val = L_MIN; 
@@ -804,20 +818,7 @@ void GridMap::bresenhamLine(int x0, int y0, int x1, int y1, std::vector<std::pai
     }
 }
 
-static const uint8_t kDigitFont[10][5] = {
-    {0b111, 0b101, 0b101, 0b101, 0b111}, // 0
-    {0b010, 0b110, 0b010, 0b010, 0b111}, // 1
-    {0b111, 0b001, 0b111, 0b100, 0b111}, // 2
-    {0b111, 0b001, 0b111, 0b001, 0b111}, // 3
-    {0b101, 0b101, 0b111, 0b001, 0b001}, // 4
-    {0b111, 0b100, 0b111, 0b001, 0b111}, // 5
-    {0b111, 0b100, 0b111, 0b101, 0b111}, // 6
-    {0b111, 0b001, 0b001, 0b001, 0b001}, // 7
-    {0b111, 0b101, 0b111, 0b101, 0b111}, // 8
-    {0b111, 0b101, 0b111, 0b001, 0b111}, // 9
-};
-
-static void drawDigit(std::vector<uint8_t>& img, int imgW, int imgH,
+void GridMap::drawDigit(std::vector<uint8_t>& img, int imgW, int imgH,
                       int px, int py, int digit,
                       uint8_t r, uint8_t g, uint8_t b)
 {
