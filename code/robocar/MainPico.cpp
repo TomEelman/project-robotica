@@ -4,19 +4,6 @@
 #include "PicoUARTHandler.h"
 #include <cstdio>
 
-// ════════════════════════════════════════════════════════════════
-// MainPico  —  Pico main loop
-//
-// PicoUARTHandler.Tick() handles:
-//   - Receiving CMD messages from the Pi5
-//   - Automatically pushing DATA packets every 50 ms
-//   - Command timeout watchdog (500 ms → emergency stop)
-//
-// MainPico only needs to:
-//   1. Call Tick()
-//   2. Execute commands when Tick() returns true
-// ════════════════════════════════════════════════════════════════
-
 int main()
 {
     stdio_init_all();
