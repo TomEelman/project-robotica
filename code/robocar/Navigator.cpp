@@ -449,7 +449,7 @@ void Navigator::HandleFrontierMode(Mapper& mapper, Position pos, bool newScan,
         if (IsBlocked()) {
            //  printf("[MAIN] Navigator blocked -> replan\n");
             Position blockedTarget = GetCurrentTarget();
-            AddToBlackList(frontierBlacklist, blockedTarget.GetX(), blockedTarget.GetY());
+            explorationPlanner.AddToBlackList(frontierBlacklist, blockedTarget.GetX(), blockedTarget.GetY());
             ResetBlock();
             hasPath = false;
             scansSinceReplan = REPLAN_SCANS;
@@ -459,7 +459,7 @@ void Navigator::HandleFrontierMode(Mapper& mapper, Position pos, bool newScan,
             // printf("[MAIN] Navigator blocked -> wacht op stabiele lokalisatie\n");
 
             Position blockedTarget = GetCurrentTarget();
-            AddToBlackList(frontierBlacklist, blockedTarget.GetX(), blockedTarget.GetY());
+            explorationPlanner.AddToBlackList(frontierBlacklist, blockedTarget.GetX(), blockedTarget.GetY());
             ResetBlock();
             hasPath = false;
             scansSinceReplan = 0; 
@@ -495,8 +495,8 @@ void Navigator::HandleFrontierMode(Mapper& mapper, Position pos, bool newScan,
                 Path path = planner.PlanPath(pos, Position(0.0f, 0.0f, 0.0f), mapper.GetMap());
                 if (!path.IsEmpty()) { SetPath(path); mapper.SetWaypoints(path); hasPath = true; }
             } else {
-                TickBlacklist(frontierBlacklist);
-                Position goal = ChooseFrontierGoal(mapper, pos, lastRanges, frontierBlacklist);
+                explorationPlanner.TickBlacklist(frontierBlacklist);
+                Position goal = explorationPlanner.ChooseFrontierGoal(mapper, pos, lastRanges, frontierBlacklist);
                 if (goal.GetX() == pos.GetX() && goal.GetY() == pos.GetY()) {
                     ++failedCounter;
                     ka.SetCommand(200.0f, 0.0f);
@@ -509,7 +509,7 @@ void Navigator::HandleFrontierMode(Mapper& mapper, Position pos, bool newScan,
                         failedCounter = 0;
                     } else {
                         ++failedCounter;
-                        AddToBlackList(frontierBlacklist, goal.GetX(), goal.GetY());
+                        explorationPlanner.AddToBlackList(frontierBlacklist, goal.GetX(), goal.GetY());
                         ka.Stop();
                     }
                 }
