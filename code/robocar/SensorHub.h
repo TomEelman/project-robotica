@@ -3,7 +3,6 @@
 
 #include "IMU.h"
 #include "Encoder.h"
-#include "DateTime.h"
 #include "hardware/uart.h"
 #include "hardware/irq.h"
 
@@ -20,7 +19,6 @@ public:
     float GetDistanceRight() const;
     float GetCurrentYaw()    const;
     float GetAngVelocity()   const;
-    DateTime GetLastUpdate() const;
 
     bool HasFreshLeft()  const { return encoderLeft.HasFreshData();  }
     bool HasFreshRight() const { return encoderRight.HasFreshData(); }
