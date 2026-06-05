@@ -88,7 +88,7 @@ static bool HandleObstacleAvoidance(const ScanAnalysis& scan, Localisation& loc,
 static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position pos, bool nieuweScan,
     int& scansSindsHerplan, int& mislukteTeller, HoofdModus& hoofdModus, bool& heeftPad,
     float /*ontsnapX*/, float /*ontsnapY*/, CommandKeepAlive& ka, PathPlanner& planner,
-    std::vector<BlacklistItem>& frontierBlacklist, int HERPLAN_SCANS, int /*MIN_DEKKING_PCT*/,
+    ExplorationPlanner& ep, std::vector<BlacklistItem>& frontierBlacklist, int HERPLAN_SCANS, int /*MIN_DEKKING_PCT*/,
     int MISLUKT_DREMPEL, float /*ONTSNAP_RADIUS*/, const float* lastRanges,
     float minFront);
 
@@ -158,7 +158,7 @@ static bool HandleObstacleAvoidance(const ScanAnalysis& scan, Localisation& loc,
 static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position pos, bool nieuweScan,
     int& scansSindsHerplan, int& mislukteTeller, HoofdModus& hoofdModus, bool& heeftPad,
     float /*ontsnapX*/, float /*ontsnapY*/, CommandKeepAlive& ka, PathPlanner& planner,
-    std::vector<BlacklistItem>& frontierBlacklist, int HERPLAN_SCANS, int /*MIN_DEKKING_PCT*/,
+    ExplorationPlanner& ep, std::vector<BlacklistItem>& frontierBlacklist, int HERPLAN_SCANS, int /*MIN_DEKKING_PCT*/,
     int MISLUKT_DREMPEL, float /*ONTSNAP_RADIUS*/, const float* lastRanges,
     float minFront) {
 
@@ -177,7 +177,7 @@ static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position po
             printf("[MAIN] Navigator blocked -> replan\n");
 #endif
             Position bt = navigator.GetCurrentTarget();
-            AddToBlackList(frontierBlacklist, bt.GetX(), bt.GetY());
+            ep.AddToBlackList(frontierBlacklist, bt.GetX(), bt.GetY());
             navigator.ResetBlock();
             heeftPad = false;
             scansSindsHerplan = HERPLAN_SCANS;
@@ -188,7 +188,7 @@ static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position po
             printf("[MAIN] Navigator blocked -> wacht op stabiele lokalisatie\n");
 #endif
             Position bt = navigator.GetCurrentTarget();
-            AddToBlackList(frontierBlacklist, bt.GetX(), bt.GetY());
+            ep.AddToBlackList(frontierBlacklist, bt.GetX(), bt.GetY());
             navigator.ResetBlock();
             heeftPad = false;
             scansSindsHerplan = 0;  // forceer herplan pas bij volgende scan-cyclus
@@ -235,8 +235,8 @@ static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position po
                 Path pad = planner.PlanPath(pos, Position(0.0f, 0.0f, 0.0f), mapper.GetMap());
                 if (!pad.IsEmpty()) { navigator.SetPath(pad); mapper.SetWaypoints(pad); heeftPad = true; }
             } else {
-                TickBlacklist(frontierBlacklist);
-                Position doel = ChooseFrontierGoal(mapper, pos, lastRanges, frontierBlacklist);
+                ep.TickBlacklist(frontierBlacklist);
+                Position doel = ep.ChooseFrontierGoal(mapper, pos, lastRanges, frontierBlacklist);
                 if (doel.GetX() == pos.GetX() && doel.GetY() == pos.GetY()) {
                     ++mislukteTeller;
                     ka.SetCommand(200.0f, 0.0f);
@@ -252,7 +252,7 @@ static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position po
                         // Vooruit rijden hier stuurde de robot recht terug in het obstakel.
                         // Bij de volgende scan kiest KiesFrontierDoel een ander doel.
                         ++mislukteTeller;
-                        AddToBlackList(frontierBlacklist, doel.GetX(), doel.GetY());
+                        ep.AddToBlackList(frontierBlacklist, doel.GetX(), doel.GetY());
                         ka.Stop();
                     }
                 }
@@ -359,6 +359,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
     float huidigeImuYaw = 0.0f;
     float omegaDegS     = 0.0f;
 
+    ExplorationPlanner         explorationPlanner;
     std::vector<BlacklistItem> frontierBlacklist;
     PathPlanner planner(mapper.GetMap(), true);
     Navigator   navigator;
@@ -539,7 +540,7 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
                 case HoofdModus::FRONTIER:
                     HandleFrontierMode(navigator, mapper, pos, nieuweScan, scansSindsHerplan,
                         mislukteTeller, hoofdModus, heeftPad, ontsnapX, ontsnapY, ka, planner,
-                        frontierBlacklist, HERPLAN_SCANS, MIN_DEKKING_PCT,
+                        explorationPlanner, frontierBlacklist, HERPLAN_SCANS, MIN_DEKKING_PCT,
                         MISLUKT_DREMPEL, ONTSNAP_RADIUS, lastRanges, scan.minFront);
                     break;
                 case HoofdModus::TERUG_HOME:
