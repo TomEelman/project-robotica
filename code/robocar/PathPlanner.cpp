@@ -17,9 +17,7 @@ void PathPlanner::UpdateMap(const GridMap& map) {
     gridMap = map;
 }
 
-// ─────────────────────────────────────────────────────────────────
-//  PlanPath — Wavefront (BFS vanuit het doel)
-// ─────────────────────────────────────────────────────────────────
+//  PlanPath — Wavefront BFS
 Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
     gridMap = map;
 
@@ -29,18 +27,15 @@ Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
     const int W = gridMap.GetWidth();
     const int H = gridMap.GetHeight();
 
-    // ── 1. Wereld → cel voor start en doel ───────────────────────
+    // convert world to cell
     int sx, sy, gx, gy;
     gridMap.WorldToCell(start.GetX() * MM2M, start.GetY() * MM2M, sx, sy);
     gridMap.WorldToCell(goal.GetX()  * MM2M, goal.GetY()  * MM2M, gx, gy);
 
-   // if (!gridMap.InBounds(sx, sy)) { std::cerr << "Planner: start outside grid\n"; return Path(); }
+    // if (!gridMap.InBounds(sx, sy)) { std::cerr << "Planner: start outside grid\n"; return Path(); }
     // if (!gridMap.InBounds(gx, gy)) { std::cerr << "Planner: goal outside grid\n";  return Path(); }
 
-    // ── 2. Inflatie-masker bouwen ────────────────────────────────
-    // Mark every cell within INFLATIE_CELLEN of a wall as
-    // "blockedCell". Zo plant de planner een veilige marge rond muren
-    // robot does not scrape past them. Done once per plan.
+    // mark all cells within INFLATION_CELLS of a wall as blocked so planner can avoid the wall
     std::vector<uint8_t> blockedCell(W * H, 0);
     auto idx = [&](int x, int y) { return y * W + x; };
 
@@ -48,8 +43,8 @@ Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
         for (int x = 0; x < W; ++x) {
             if (!gridMap.IsOccupied(x, y)) continue;
             // Mark this obstacle + all cells within the inflation radius
-            for (int dy = -INFLATIE_CELLEN; dy <= INFLATIE_CELLEN; ++dy) {
-                for (int dx = -INFLATIE_CELLEN; dx <= INFLATIE_CELLEN; ++dx) {
+            for (int dy = -INFLATION_CELLS; dy <= INFLATION_CELLS; ++dy) {
+                for (int dx = -INFLATION_CELLS; dx <= INFLATION_CELLS; ++dx) {
                     int nx = x + dx, ny = y + dy;
                     if (gridMap.InBounds(nx, ny)) blockedCell[idx(nx, ny)] = 1;
                 }
@@ -57,20 +52,14 @@ Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
         }
     }
 
-    // ── 3. Betreedbaarheidstest ──────────────────────────────────
-    // A cell is walkable if it is not occupied/inflated and -
-    // depending on allowUnknown - optionally also if unknown.
+    // a cell is walkable if it is not occupied/inflated
     auto walkable = [&](int x, int y) -> bool {
         if (!gridMap.InBounds(x, y))   return false;
-        if (blockedCell[idx(x, y)])    return false;   // wall + inflation margin
+        if (blockedCell[idx(x, y)])    return false;
         if (gridMap.IsUnknown(x, y) && !allowUnknown) return false;
         return true;
     };
 
-    // ── 4. Start-cel herstel ─────────────────────────────────────
-    // Door inflatie kan de robot net in een "blockedCelle" cel staan
-    // (right next to a wall). Find the nearest walkable cell
-    // in a growing ring, otherwise BFS can never start.
     if (!walkable(sx, sy)) {
         bool gevonden = false;
         for (int r = 1; r <= 6 && !gevonden; ++r) {
@@ -82,17 +71,14 @@ Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
                     }
                 }
         }
-      //  if (!gevonden) { std::cerr << "Planner: start trapped (no free neighbour)\n"; return Path(); }
+        // if (!gevonden) { std::cerr << "Planner: start trapped (no free neighbour)\n"; return Path(); }
     }
-
-    // The goal may be a frontier cell bordering unknown space; we
-    // only require it is not inside a wall/inflation.
     if (gridMap.InBounds(gx, gy) && blockedCell[idx(gx, gy)]) {
-     //   std::cerr << "Planner: goal lies in obstacle/margin\n";
+        // std::cerr << "Planner: goal lies in obstacle/margin\n";
         return Path();
     }
 
-    // ── 5. Wavefront: BFS VANUIT HET DOEL ────────────────────────
+    // Wavefront
     // dist[cell] = number of steps from that cell to the goal.
     // The wave starts at the goal (dist=0) and expands over
     // walkable neighbours. Because BFS works in layers, each cell
@@ -121,26 +107,23 @@ Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
         }
     }
 
-
-    // Geen pad: wave heeft de start nooit bereikt → lege Path
     if (dist[idx(sx, sy)] < 0) {
         return Path();
     }
 
-    // ── 6. Padreconstructie: volg dalende afstanden ──────────────
-    // From the start, step to the neighbour cell with the LOWEST
-    // dist value. This is guaranteed to reach the goal (dist=0).
+    // step from start to neighbor cell with LOWEST dist value this is guaranteed to reach the goal (dist=0)
     std::vector<std::pair<int,int>> rawCells;
     int cx = sx, cy = sy;
     rawCells.emplace_back(cx, cy);
 
-    int safetyCounter = W * H;  // guard against infinite loop on bad data
+    int safetyCounter = W * H;  
     while (!(cx == gx && cy == gy) && safetyCounter-- > 0) {
         int bestX2 = cx, bestY2 = cy;
         int bestDist2 = dist[idx(cx, cy)];
         for (int i = 0; i < 4; ++i) {
             int nx = cx + dx4[i], ny = cy + dy4[i];
             if (!gridMap.InBounds(nx, ny)) continue;
+
             int d = dist[idx(nx, ny)];
             if (d >= 0 && d < bestDist2) { bestDist2 = d; bestX2 = nx; bestY2 = ny; }
         }
@@ -149,10 +132,6 @@ Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
         rawCells.emplace_back(cx, cy);
     }
 
-    // ── 7. Waypoint-verdunning: alleen hoekpunten bewaren ────────
-    // The raw path is cell-by-cell. We only give the Navigator the
-    // points where the DIRECTION changes (the corners), plus start
-    // and end. This yields long straight runs -> less wobbling.
     constexpr int MIN_SEG = 5;  // minimum segment length between waypoints
 
     auto cellToWaypoint = [&](int x, int y) -> Position {
@@ -162,8 +141,17 @@ Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
     };
 
     std::vector<Position> waypoints;
+    
     if (rawCells.size() <= 2) {
-        for (auto& [x, y] : rawCells) waypoints.push_back(cellToWaypoint(x, y));
+        for (size_t i = 0; i < rawCells.size(); ++i) {
+            std::pair<int, int> currentCell = rawCells[i];
+            int cellX = currentCell.first;
+            int cellY = currentCell.second;
+            
+            Position processedPosition = cellToWaypoint(cellX, cellY);
+            
+            waypoints.push_back(processedPosition);
+        }
     } else {
         waypoints.push_back(cellToWaypoint(rawCells[0].first, rawCells[0].second));
 
@@ -187,7 +175,7 @@ Path PathPlanner::PlanPath(Position start, Position goal, const GridMap& map) {
 
     currentPath = Path(waypoints);
     //std::cout << "Planner: Wavefront path with " << waypoints.size()
-      //        << " waypoints (" << rawCells.size() << " cells)\n";
+    //          << " waypoints (" << rawCells.size() << " cells)\n";
     return currentPath;
 }
 

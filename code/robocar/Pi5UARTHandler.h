@@ -2,31 +2,16 @@
 
 #include <string>
 
-// ═══════════════════════════════════════════════════════════════
-//  Pi5UARTHandler  —  Pi5-kant UART, push-model
-//
-//  De Pico stuurt automatisch elke 50ms:
-//    "DATA:encL,encR,yaw,omega\n"
-//
-//  Pi5 stuurt:
-//    "CMD:lin,ang\n"   →  DriveCommand naar Pico
-//    "REBOOT\n"        →  Pico herstart
-//
-//  LeesData() is non-blocking: leest wat er in de buffer zit
-//  en slaat de laatste waarden op. Geen GET-requests meer,
-//  geen 200ms timeout per sensor.
-// ═══════════════════════════════════════════════════════════════
-
 struct SensorData {
-    float speedLinks;    // mm/s
-    float speedRechts;   // mm/s
-    float yawGraden;     // graden
-    float hoeksnelheid;  // graden/s
-    bool  geldig;        // true = minstens één DATA-pakket ontvangen
+    float speedLeft;    // mm/s
+    float speedRight;   // mm/s
+    float yawDegrees;   // graden
+    float angleSpeed;   // graden/s
+    bool  valid;        // true = minstens één DATA-pakket ontvangen
 };
 
 struct CommandAck {
-    bool  geldig;
+    bool  valid;
     float lin;
     float ang;
 };
@@ -40,20 +25,16 @@ public:
     void Close();
     bool IsOpen() const;
 
-    // Non-blocking: leest alle beschikbare DATA-regels uit de buffer,
-    // slaat de laatste op. Geeft true als er nieuwe data was.
-    bool LeesData();
+    bool ReadData();
 
-    // Geeft de laatste ontvangen sensorwaarden terug.
     SensorData GetSensorData() const { return lastData; }
 
-    // Stuur een DriveCommand naar de Pico (fire-and-forget, geen ACK-wait).
-    void StuurCommand(float lin, float ang);
-    void StuurStop();
+    void SendCommand(float lin, float ang);
+    void SendStop();
     bool RebootPico();
 
     const std::string& GetPort() const { return port; }
-    int  GetFd()   const { return fd; }  // voor async-signal-safe noodstop
+    int  GetFd()   const { return fd; }
 
 private:
     std::string port;
@@ -61,10 +42,9 @@ private:
     int         fd;
 
     SensorData  lastData{};
-    char        lineBuffer[256]; // 128 was too small for long [FWD]/[BWD] lines (~150 chars),
-                                 // causing overflow → linePos reset → tail printed as "[Pico] 500"
+    char        lineBuffer[256];
     int         linePos;
 
-    bool ConfigureerPoort();
-    bool ParseDataRegel(const char* regel);
+    bool ConfigurePort();
+    bool ParseDataCommand(const char* cmd);
 };

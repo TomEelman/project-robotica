@@ -17,9 +17,6 @@
 #include <unistd.h>
 #include <termios.h>
 
-// Zet op 1 om de LIDAR-kaart + debug-printf's te tonen, 0 om ze te verbergen
-#define DEBUG_PRINT 0
-
 std::atomic<bool> running{true};
 static Pi5UARTHandler* g_uart = nullptr;
 
@@ -44,7 +41,7 @@ void CommandKeepAlive::SetCommand(float linearMmS, float angularDegS) {
 
 void CommandKeepAlive::Stop() {
     { std::lock_guard<std::mutex> lk(mtx); lin = ang = 0.0f; actief = false; }
-    uart.StuurStop();
+    uart.SendStop();
 }
 
 void CommandKeepAlive::Start() {
@@ -52,8 +49,8 @@ void CommandKeepAlive::Start() {
     worker = std::thread([this]() {
         while (threadActief) {
             { std::lock_guard<std::mutex> lk(mtx);
-                if (actief && running) uart.StuurCommand(lin, ang);
-                else if (!running) { uart.StuurStop(); actief = false; }
+                if (actief && running) uart.SendCommand(lin, ang);
+                else if (!running) { uart.SendStop(); actief = false; }
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
@@ -69,255 +66,12 @@ bool CommandKeepAlive::IsActief() const { return actief.load(); }
 float CommandKeepAlive::GetLin() const { return lin; }
 float CommandKeepAlive::GetAng() const { return ang; }
 
-// ─────────────────────────────────────────────────────────────────
-// Enums
-// ─────────────────────────────────────────────────────────────────
-
-// HoofdModus: MUUR_VOLGEN verwijderd — robot start direct in FRONTIER.
-enum class HoofdModus { FRONTIER, TERUG_HOME, KLAAR };
-enum class OntwijkFase { NORMAAL, DRAAIEN, VRIJRIJDEN, ACHTERUIT };
-
-// ─────────────────────────────────────────────────────────────────
-// Helper declaraties
-// ─────────────────────────────────────────────────────────────────
-static bool HandleObstacleAvoidance(const ScanAnalysis& scan, Localisation& loc,
-    OntwijkFase& ontwijkFase, float& doelHoek, float& draaiRichting,
-    int& vrijrijTicks, int& achteruitTicks, int& vastzitTeller, int& achteruitEscalatie,
-    float& ontsnapX, float& ontsnapY, CommandKeepAlive& ka, float LIN_SPEED, int& scansSindsHerplan);
-
-static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position pos, bool nieuweScan,
-    int& scansSindsHerplan, int& mislukteTeller, HoofdModus& hoofdModus, bool& heeftPad,
-    float /*ontsnapX*/, float /*ontsnapY*/, CommandKeepAlive& ka, PathPlanner& planner,
-    std::vector<BlacklistItem>& frontierBlacklist, int HERPLAN_SCANS, int /*MIN_DEKKING_PCT*/,
-    int MISLUKT_DREMPEL, float /*ONTSNAP_RADIUS*/, const float* lastRanges,
-    float minFront);
-
-static void HandleReturnToHome(Navigator& navigator, Mapper& mapper, Position pos, Position beginPunt,
-    bool& heeftPad, CommandKeepAlive& ka, PathPlanner& planner, float HOME_DREMPEL_MM, HoofdModus& hoofdModus);
-
-// ─────────────────────────────────────────────────────────────────
-// Helper implementaties
-// ─────────────────────────────────────────────────────────────────
-static bool HandleObstacleAvoidance(const ScanAnalysis& scan, Localisation& loc,
-    OntwijkFase& ontwijkFase, float& doelHoek, float& draaiRichting,
-    int& vrijrijTicks, int& achteruitTicks, int& vastzitTeller, int& achteruitEscalatie,
-    float& ontsnapX, float& ontsnapY, CommandKeepAlive& ka, float LIN_SPEED, int& scansSindsHerplan) {
-
-    if (ontwijkFase == OntwijkFase::DRAAIEN) {
-        float fout = NormDeg(doelHoek - loc.GetTheta());
-        if (std::fabs(fout) < 8.0f) {
-            ontwijkFase = OntwijkFase::VRIJRIJDEN;
-            vrijrijTicks = (scan.minFront < 600.0f ? 10 : 25) + achteruitEscalatie * 8;
-            scansSindsHerplan = 15;
-            ka.SetCommand(LIN_SPEED, 0.0f);
-        } else if (scan.state >= 3) {
-            draaiRichting = -draaiRichting;
-            doelHoek = NormDeg(loc.GetTheta() - draaiRichting * 90.0f);
-            ka.SetCommand(0.0f, draaiRichting * 40.0f);
-        } else {
-            ka.SetCommand(0.0f, draaiRichting * 40.0f);
-        }
-    } else if (ontwijkFase == OntwijkFase::VRIJRIJDEN) {
-        if (scan.state >= 3) {
-            if (++vastzitTeller >= 2) {
-                ++achteruitEscalatie;
-                achteruitTicks = 18 + std::min(achteruitEscalatie * 8, 40);
-                ontwijkFase = OntwijkFase::ACHTERUIT;
-                ka.SetCommand(-LIN_SPEED * 0.6f, 0.0f);
-            } else {
-                draaiRichting = -draaiRichting;
-                doelHoek = NormDeg(loc.GetTheta() - draaiRichting * 90.0f);
-                ontwijkFase = OntwijkFase::DRAAIEN;
-                ka.SetCommand(0.0f, draaiRichting * 40.0f);
-            }
-        } else if (--vrijrijTicks <= 0) {
-            vastzitTeller = achteruitEscalatie = 0;
-            ontwijkFase = OntwijkFase::NORMAAL;
-            scansSindsHerplan = 15;
-        } else {
-            ka.SetCommand(LIN_SPEED, 0.0f);
-        }
-    } else if (ontwijkFase == OntwijkFase::ACHTERUIT) {
-        if (scan.minRear < 300.0f || --achteruitTicks <= 0) {
-            float bh = 0.0f;
-            doelHoek = NormDeg(loc.GetTheta() + bh);
-            draaiRichting = (bh >= 0.0f ? 1.0f : -1.0f);
-            ontwijkFase = OntwijkFase::DRAAIEN;
-            ka.SetCommand(0.0f, draaiRichting * 40.0f);
-            ontsnapX = loc.GetX(); ontsnapY = loc.GetY();
-        } else {
-            ka.SetCommand(-LIN_SPEED * 0.6f, 0.0f);
-        }
-    }
-    return true;
-}
-
-// HandleWallFollowing is verwijderd — robot navigeert puur via frontier/Wavefront.
-// ComputeWallCommand in Navigator blijft beschikbaar voor eventueel later gebruik.
-
-static void HandleFrontierMode(Navigator& navigator, Mapper& mapper, Position pos, bool nieuweScan,
-    int& scansSindsHerplan, int& mislukteTeller, HoofdModus& hoofdModus, bool& heeftPad,
-    float /*ontsnapX*/, float /*ontsnapY*/, CommandKeepAlive& ka, PathPlanner& planner,
-    std::vector<BlacklistItem>& frontierBlacklist, int HERPLAN_SCANS, int /*MIN_DEKKING_PCT*/,
-    int MISLUKT_DREMPEL, float /*ONTSNAP_RADIUS*/, const float* lastRanges,
-    float minFront) {
-
-    // Muurvolger-check verwijderd: robot schakelt niet meer automatisch
-    // naar MUUR_VOLGEN zodra hij een muur naast zich detecteert.
-    // Obstakels worden afgehandeld door HandleObstacleAvoidance in de hoofdlus.
-
-    if (heeftPad && !navigator.IsFinished()) {
-        navigator.Update(pos);
-        DriveCommand cmd = navigator.GetNextCommand(pos, minFront);
-        ka.SetCommand(cmd.GetLinVelocity(), cmd.GetAngVelocity());
-
-        // Replan als de Navigator klem zat en een herstelactie uitvoerde
-        if (navigator.IsBlocked()) {
-#if DEBUG_PRINT
-            printf("[MAIN] Navigator blocked -> replan\n");
-#endif
-            Position bt = navigator.GetCurrentTarget();
-            AddToBlackList(frontierBlacklist, bt.GetX(), bt.GetY());
-            navigator.ResetBlock();
-            heeftPad = false;
-            scansSindsHerplan = HERPLAN_SCANS;
-        }
-
-        if (navigator.IsBlocked()) {
-#if DEBUG_PRINT
-            printf("[MAIN] Navigator blocked -> wacht op stabiele lokalisatie\n");
-#endif
-            Position bt = navigator.GetCurrentTarget();
-            AddToBlackList(frontierBlacklist, bt.GetX(), bt.GetY());
-            navigator.ResetBlock();
-            heeftPad = false;
-            scansSindsHerplan = 0;  // forceer herplan pas bij volgende scan-cyclus
-            mislukteTeller = 0;     // reset zodat hij niet meteen naar TERUG_HOME gaat
-        }
-
-    } else {
-        if (heeftPad && navigator.IsFinished()) {
-            heeftPad = false;
-            scansSindsHerplan = HERPLAN_SCANS;
-        }
-        if (nieuweScan) {
-            scansSindsHerplan = 0;
-
-            // ── Kamer-dekkingscheck ───────────────────────────────────
-            // outerWallPct   : % van de buitenste rand (5-cel-band) dat
-            //                  als muur geclassificeerd is → muren rondom gevonden.
-            // interiorPct    : % bekende cellen BINNEN die rand → interieur gemapt.
-            // relCoveragePct : % van de bounding box dat bekend is (eerlijk getal,
-            //                  vervangt de gebroken GetCoverage() die door het
-            //                  hele grid deelt en zo veel te laag uitkomt).
-            constexpr float OUTER_WALL_MIN  = 25.0f;  // % buitenste rand = muur
-            constexpr float INTERIOR_MIN    = 80.0f;  // % interieur bekend
-            float outerWallPct, interiorPct, relCoveragePct;
-            mapper.GetRoomCoverage(outerWallPct, interiorPct, relCoveragePct);
-
-            bool kaartKlaar = (outerWallPct  >= OUTER_WALL_MIN &&
-                               interiorPct   >= INTERIOR_MIN);
-
-#if DEBUG_PRINT
-            printf("[MAIN] FRONTIER rand=%.0f%% int=%.0f%% rel=%.0f%% mislukt=%d%s\n",
-                   outerWallPct, interiorPct, relCoveragePct, mislukteTeller,
-                   kaartKlaar ? " *** KAART KLAAR ***" : "");
-#endif
-
-            if (kaartKlaar || mislukteTeller >= MISLUKT_DREMPEL) {
-                hoofdModus = HoofdModus::TERUG_HOME;
-                heeftPad = false;
-                mislukteTeller = 0;
-#if DEBUG_PRINT
-                printf("[MAIN] Kaart gemapped (rand=%.0f%% int=%.0f%%) -> TERUG_HOME\n",
-                       outerWallPct, interiorPct);
-#endif
-                Path pad = planner.PlanPath(pos, Position(0.0f, 0.0f, 0.0f), mapper.GetMap());
-                if (!pad.IsEmpty()) { navigator.SetPath(pad); mapper.SetWaypoints(pad); heeftPad = true; }
-            } else {
-                TickBlacklist(frontierBlacklist);
-                Position doel = ChooseFrontierGoal(mapper, pos, lastRanges, frontierBlacklist);
-                if (doel.GetX() == pos.GetX() && doel.GetY() == pos.GetY()) {
-                    ++mislukteTeller;
-                    ka.SetCommand(200.0f, 0.0f);
-                } else {
-                    Path pad = planner.PlanPath(pos, doel, mapper.GetMap());
-                    if (!pad.IsEmpty()) {
-                        navigator.SetPath(pad);
-                        mapper.SetWaypoints(pad);
-                        heeftPad = true;
-                        mislukteTeller = 0;
-                    } else {
-                        // Doel ligt in een obstakel of marge — blacklist het en stop.
-                        // Vooruit rijden hier stuurde de robot recht terug in het obstakel.
-                        // Bij de volgende scan kiest KiesFrontierDoel een ander doel.
-                        ++mislukteTeller;
-                        AddToBlackList(frontierBlacklist, doel.GetX(), doel.GetY());
-                        ka.Stop();
-                    }
-                }
-            }
-        }
-        // Geen nieuwe scan → ka herhaalt het laatste commando vanzelf
-    }
-}
-
-static void HandleReturnToHome(Navigator& navigator, Mapper& mapper, Position pos, Position beginPunt,
-    bool& heeftPad, CommandKeepAlive& ka, PathPlanner& planner, float HOME_DREMPEL_MM, HoofdModus& hoofdModus) {
-
-    float dx = pos.GetX() - beginPunt.GetX();
-    float dy = pos.GetY() - beginPunt.GetY();
-    if (std::hypot(dx, dy) < HOME_DREMPEL_MM) {
-        ka.Stop();
-        mapper.SaveDebugMap("kaart.pgm");
-        printf("[MAIN] Kaart gemapped!\n");
-        hoofdModus = HoofdModus::KLAAR;
-        running = false;
-        return;
-    } else {
-        if (!heeftPad || navigator.IsFinished()) {
-            heeftPad = false;
-            Path pad = planner.PlanPath(pos, beginPunt, mapper.GetMap());
-            if (!pad.IsEmpty()) {
-                navigator.SetPath(pad);
-                mapper.SetWaypoints(pad);
-                heeftPad = true;
-            } else {
-                float hoek = static_cast<float>(std::atan2(-dy, -dx)) * (180.0f / static_cast<float>(M_PI));
-                ka.SetCommand(200.0f, NormDeg(hoek - pos.GetTheta()) * 0.5f);
-            }
-        }
-        if (heeftPad && !navigator.IsFinished()) {
-            navigator.Update(pos);
-            DriveCommand cmd = navigator.GetNextCommand(pos);
-            ka.SetCommand(cmd.GetLinVelocity(), cmd.GetAngVelocity());
-        }
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────
-// EncoderMetTeken — corrigeert altijd-positieve encoder-waarden
-//
-// De Pico-encoders geven de rijsnelheid als absolute waarde (magnitude),
-// ongeacht de rijrichting. Deze functie bepaalt het teken van elk wiel
-// op basis van het laatste gestuurde commando.
-//
-// Formule zelfde als Drive.cpp ExecuteLinear:
-//   vLeft_cmd  = lin + omega_rad * wheelbase/2
-//   vRight_cmd = lin - omega_rad * wheelbase/2
-//
-// Het teken van vLeft_cmd / vRight_cmd geeft de rijrichting van elk wiel.
-// Bij transitie (ramp loopt nog) kan het teken 1 tick te vroeg omslaan,
-// maar dat is verwaarloosbaar t.o.v. de permanente drift bij geen fix.
-// ─────────────────────────────────────────────────────────────────
-static void EncoderMetTeken(float cmdLin, float cmdAng,
-                             float& vLeft, float& vRight)
-{
-    constexpr float HALF_BASE = 219.0f / 2.0f;                     // 109.5 mm
+static void EncoderWithSign(float cmdLin, float cmdAng, float& vLeft, float& vRight) {
+    constexpr float HALF_BASE = 219.0f / 2.0f;
     constexpr float DEG2RAD   = static_cast<float>(M_PI) / 180.0f;
 
     float omegaRad  = cmdAng * DEG2RAD;
-    float cmdVLeft  = cmdLin + omegaRad * HALF_BASE;   // positief = vooruit
+    float cmdVLeft  = cmdLin + omegaRad * HALF_BASE;
     float cmdVRight = cmdLin - omegaRad * HALF_BASE;
 
     float signLeft  = (cmdVLeft  >= 0.0f) ? 1.0f : -1.0f;
@@ -327,79 +81,76 @@ static void EncoderMetTeken(float cmdLin, float cmdAng,
     vRight = signRight * std::fabs(vRight);
 }
 
-static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
+static int RunPathFinding(Pi5UARTHandler& uart, LIDAR& lidar) {
     Localisation loc(219.0f);
     Mapper mapper(260, 160, 0.03f);
 
     constexpr float DT          = 0.1f;
     constexpr long  LOOP_US     = 100000;
     constexpr float LIN_SPEED   = 278.0f;
-    constexpr int   HERPLAN_SCANS   = 15;
-    constexpr int   MIN_DEKKING_PCT = 30;
-    constexpr int   MISLUKT_DREMPEL = 5;
-    constexpr float HOME_DREMPEL_MM = 300.0f;
-    constexpr float ONTSNAP_RADIUS  = 700.0f;
-    constexpr float scanDuurSec     = 0.1f;
+    constexpr int   REPLAN_SCANS   = 15;
+    constexpr int   FAILED_THRESHOLD = 5;
+    constexpr float HOME_THRESHOLD_MM = 300.0f;
+    constexpr float lidarScanTime     = 0.1f;
 
-    // Robot start direct in FRONTIER — geen muuromloop meer
-    HoofdModus hoofdModus = HoofdModus::FRONTIER;
+    NavMode_HEAD navMode = NavMode_HEAD::FRONTIER;
 
     int scanCount         = 0;
-    int scansSindsHerplan = HERPLAN_SCANS;
-    int mislukteTeller    = 0;
+    int scansSinceReplan = REPLAN_SCANS;
+    int failedCounter    = 0;
 
-    constexpr int   VASTZIT_TIMEOUT  = 400;
-    constexpr float VASTZIT_BEWEG_MM = 150.0f;
+    constexpr int   STUCK_TIMEOUT  = 400;
+    constexpr float STUCK_MOVE_MM = 150.0f;
 
-    int   vastzitTicks = 0;
-    float vastzitRefX  = 0.0f, vastzitRefY = 0.0f;
+    int   stuckTicks = 0;
+    float stuckRefX  = 0.0f;
+    float stuckRefY = 0.0f;
 
     float imuOffset  = 0.0f;
-    bool  imuGenulld = false;
-    float huidigeImuYaw = 0.0f;
+    bool  imuNulled = false;
+    float currentImuYaw = 0.0f;
     float omegaDegS     = 0.0f;
 
     std::vector<BlacklistItem> frontierBlacklist;
     PathPlanner planner(mapper.GetMap(), true);
     Navigator   navigator;
-    bool        heeftPad = false;
+    bool        hasPath = false;
 
-    Position beginPunt(0.0f, 0.0f, 0.0f);
-    bool     beginPuntVergrendeld = false;
+    Position StartPoint(0.0f, 0.0f, 0.0f);
+    bool     startPointLocked = false;
 
-    OntwijkFase ontwijkFase      = OntwijkFase::NORMAAL;
-    float       doelHoek         = 0.0f;
-    float       draaiRichting    = 0.0f;
-    int         vrijrijTicks     = 0, achteruitTicks = 0,
-                vastzitTeller_loc = 0, achteruitEscalatie = 0;
-    float       ontsnapX = 1e9f, ontsnapY = 1e9f;
+    NavMode_EVADING evadeMode = NavMode_EVADING::NORMAL;
+    float goalAngle = 0.0f;
+    float currentAngle = 0.0f;
+    int clearDriveTicks = 0;
+    int reverseTicks = 0;
+    int stuckCounter = 0;
+    int reverseEscalation = 0;
+    float escapeX = 1e9f;
+    float escapeY = 1e9f;
 
     CommandKeepAlive ka(uart);
-    ScanMatcher      scanMatcher;  // ICP scan-to-scan matching
+    ScanMatcher scanMatcher;
+    float linSpeed = 0.0f;
 
-    float linSpeed       = 0.0f;  // gemiddelde lineaire snelheid voor ICP-check
-
-    // Encoder-seeding voor ICP: onthoud EKF-positie bij de vorige scan zodat
-    // we de geschatte verplaatsing als initiële gok aan Match() kunnen meegeven.
-    float lastScanX      = 0.0f, lastScanY = 0.0f;
+    float lastScanX = 0.0f;
+    float lastScanY = 0.0f;
     bool  hasLastScanPos = false;
 
-    float vorigeCmdSign = 0.0f;   // teken van ka.GetLin() vorige tick
-    bool  wachtUitrol   = false;  // commando net omgeklapt, wacht tot encoders ~0
+    float lastCommandSign = 0.0f;  
+    bool  waitRollout = false;
     float lastRanges[360] = {};
-    bool  heeftRanges     = false;
+    bool hasRanges = false;
 
-    // Wacht tot Pico opgestart is
     usleep(1200000);
-    for (int i = 0; i < 5; ++i) { uart.StuurStop(); usleep(20000); }
+    for (int i = 0; i < 5; ++i) { uart.SendStop(); usleep(20000); }
     tcflush(uart.GetFd(), TCIFLUSH);
-    for (int i = 0; i < 15; ++i) { uart.LeesData(); usleep(10000); }
+    for (int i = 0; i < 15; ++i) { uart.ReadData(); usleep(10000); }
 
-    // Wacht op eerste geldige LIDAR-scan
-    while (!heeftRanges && running) {
+    while (!hasRanges && running) {
         if (lidar.Update()) {
             for (int a = 0; a < 360; ++a) lastRanges[a] = lidar.GetDistance(a).distance;
-            heeftRanges = true;
+            hasRanges = true;
         } else usleep(100000);
     }
 
@@ -408,61 +159,51 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
     while (running) {
         auto tStart = std::chrono::steady_clock::now();
 
-        bool versData = uart.LeesData();   // true = nieuw Pico-pakket ontvangen
+        bool newData = uart.ReadData();  
         SensorData sens = uart.GetSensorData();
-        if (sens.geldig) {
-            if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
+        if (sens.valid) {
+            if (!imuNulled) { imuOffset = sens.yawDegrees; imuNulled = true; }
 
-            float vL = sens.speedLinks, vR = sens.speedRechts;
-            EncoderMetTeken(ka.GetLin(), ka.GetAng(), vL, vR);
+            float vL = sens.speedLeft, vR = sens.speedRight;
+            EncoderWithSign(ka.GetLin(), ka.GetAng(), vL, vR);
 
             omegaDegS = ka.GetAng();
-            linSpeed  = 0.5f * (vL + vR);  // bijhouden voor ICP-draai-check
+            linSpeed  = 0.5f * (vL + vR);  
 
-            // ── Uitroll-detectie na richtingswissel ──────────────────────────
-            // EncoderMetTeken bepaalt het teken uit het commando. Bij een
-            // FWD<->BWD wissel klapt dat teken direct om, maar de robot rolt nog
-            // enkele ticks in de OUDE richting uit. Predict zou die uitroll dan
-            // met het verkeerde teken integreren → positie schuift de verkeerde
-            // kant op (~2x de uitrolafstand). Daarom: zodra het commando-teken
-            // omklapt, sla Predict over tot de encoders (magnitude) onder een
-            // drempel zakken — dan is de uitroll voorbij en klopt het teken weer.
-            float cmdLinNu  = ka.GetLin();
-            float cmdSignNu = (cmdLinNu > 1.0f) ? 1.0f : (cmdLinNu < -1.0f) ? -1.0f : 0.0f;
+            float cmdLinNow  = ka.GetLin();
+            float cmdSignNow = (cmdLinNow > 1.0f) ? 1.0f : (cmdLinNow < -1.0f) ? -1.0f : 0.0f;
 
-            bool tekenFlip = (vorigeCmdSign > 0.0f && cmdSignNu < 0.0f) ||
-                             (vorigeCmdSign < 0.0f && cmdSignNu > 0.0f);
-            if (tekenFlip) wachtUitrol = true;
-            vorigeCmdSign = cmdSignNu;
+            bool signFlipped = (lastCommandSign > 0.0f && cmdSignNow < 0.0f) || (lastCommandSign < 0.0f && cmdSignNow > 0.0f);
+            if (signFlipped) {
+                waitRollout = true;
+            }
+            lastCommandSign = cmdSignNow;
 
-            // Uitroll voorbij? Encoders (magnitude) onder de drempel → klaar.
-            constexpr float UITROL_KLAAR_MM_S = 15.0f;
-            if (wachtUitrol &&
-                std::fabs(sens.speedLinks)  < UITROL_KLAAR_MM_S &&
-                std::fabs(sens.speedRechts) < UITROL_KLAAR_MM_S) {
-                wachtUitrol = false;
+            constexpr float ROLLOUT_DONE_MM_S = 15.0f;
+            if (waitRollout &&
+                std::fabs(sens.speedLeft)  < ROLLOUT_DONE_MM_S &&
+                std::fabs(sens.speedRight) < ROLLOUT_DONE_MM_S) {
+                waitRollout = false;
             }
 
-            // Predict ALLEEN op vers pakket én niet tijdens de uitroll.
-            if (versData && !wachtUitrol) {
+            if (newData && !waitRollout) {
                 loc.Predict(vL, vR, DT);
-                loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
-            } else if (versData && wachtUitrol) {
-                // Heading blijft wel kloppen (IMU), positie bevriezen tijdens uitroll.
-                loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
+                loc.UpdateIMU(sens.yawDegrees - imuOffset, DT);
+            } else if (newData && waitRollout) {
+                loc.UpdateIMU(sens.yawDegrees - imuOffset, DT);
             }
 
-            huidigeImuYaw = sens.yawGraden - imuOffset;
+            currentImuYaw = sens.yawDegrees - imuOffset;
 
-            if (!beginPuntVergrendeld) {
-                beginPunt = Position(loc.GetX(), loc.GetY(), loc.GetTheta());
-                beginPuntVergrendeld = true;
+            if (!startPointLocked) {
+                StartPoint = Position(loc.GetX(), loc.GetY(), loc.GetTheta());
+                startPointLocked = true;
             }
         }
 
-        Position pos(loc.GetX(), loc.GetY(), loc.GetTheta()); // BUG4 FIX: EKF-theta
+        Position pos(loc.GetX(), loc.GetY(), loc.GetTheta());
 
-        bool nieuweScan = false;
+        bool newScan = false;
         if (lidar.Update()) {
             float angles[360];
             for (int a = 0; a < 360; ++a) {
@@ -470,83 +211,70 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
                 angles[a]     = static_cast<float>(a);
             }
 
-            // ICP scan matching: corrigeer positie voor we in kaart schrijven.
-            // Geef de encoder-verplaatsing mee als initiële gok zodat ICP
-            // al dicht bij het goede lokale minimum begint.
             float encDx = 0.0f, encDy = 0.0f;
             if (hasLastScanPos) {
                 encDx = loc.GetX() - lastScanX;
                 encDy = loc.GetY() - lastScanY;
             }
             IcpResult icp = scanMatcher.Match(lastRanges, encDx, encDy);
-            // ICP overslaan tijdens draaien: de roterende puntenwolk geeft
-            // willekeurige translaties terug die de positie laten springen.
-            /*
-            constexpr float ICP_LIN_MIN = 20.0f;
-            if (std::fabs(linSpeed) > ICP_LIN_MIN && icp.valid) {
-                loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
-                // BUG3 FIX: huidigeImuYaw NIET optellen met icp.dtheta
-                pos = Position(loc.GetX(), loc.GetY(), loc.GetTheta()); // BUG4 FIX
-            } else {
-                loc.SetIcpAnchor();
-            }
-                */
 
             loc.SetIcpAnchor(); 
 
-            // Bewaar huidige EKF-positie voor encoder-seeding van de volgende ICP-ronde.
             lastScanX      = loc.GetX();
             lastScanY      = loc.GetY();
             hasLastScanPos = true;
 
-            mapper.UpdateMotionCorrected(lastRanges, angles, 360, pos, omegaDegS, scanDuurSec);
-            heeftRanges = true;
+            mapper.UpdateMotionCorrected(lastRanges, angles, 360, pos, omegaDegS, lidarScanTime);
+            hasRanges= true;
             ++scanCount;
-            ++scansSindsHerplan;
-            nieuweScan = true;
+            ++scansSinceReplan;
+            newScan = true;
         }
 
         ScanAnalysis scan{};
-        if (heeftRanges) scan = AnalyzeScan(lastRanges);
+        if (hasRanges) scan = AnalyzeScan(lastRanges);
 
-        // Vastzit-detectie: als de robot in ontwijkmodus zit maar niet beweegt
-        if (ontwijkFase != OntwijkFase::NORMAAL && hoofdModus != HoofdModus::TERUG_HOME) {
-            if (vastzitTicks == 0) { vastzitRefX = pos.GetX(); vastzitRefY = pos.GetY(); }
-            ++vastzitTicks;
-            float beweging = std::hypot(pos.GetX() - vastzitRefX, pos.GetY() - vastzitRefY);
-            if (beweging > VASTZIT_BEWEG_MM) {
-                vastzitRefX = pos.GetX(); vastzitRefY = pos.GetY(); vastzitTicks = 0;
+        if (evadeMode != NavMode_EVADING::NORMAL && navMode != NavMode_HEAD::RETURN_HOME) {
+            if (stuckTicks == 0) { 
+                stuckRefX = pos.GetX(); 
+                stuckRefY = pos.GetY(); 
             }
-            if (vastzitTicks >= VASTZIT_TIMEOUT) {
-                hoofdModus = HoofdModus::TERUG_HOME;
-                ontwijkFase = OntwijkFase::NORMAAL;
-                heeftPad = false;
-                scansSindsHerplan = HERPLAN_SCANS;
-                Path pad = planner.PlanPath(pos, beginPunt, mapper.GetMap());
-                if (!pad.IsEmpty()) { navigator.SetPath(pad); mapper.SetWaypoints(pad); heeftPad = true; }
+            ++stuckTicks;
+
+            float movement = std::hypot(pos.GetX() - stuckRefX, pos.GetY() - stuckRefY);
+
+            if (movement > STUCK_MOVE_MM) {
+                stuckRefX = pos.GetX(); stuckRefY = pos.GetY(); stuckTicks = 0;
+            }
+
+            if (stuckTicks >= STUCK_TIMEOUT) {
+                navMode = NavMode_HEAD::RETURN_HOME;
+                evadeMode = NavMode_EVADING::NORMAL;
+                hasPath = false;
+                scansSinceReplan = REPLAN_SCANS;
+                Path path = planner.PlanPath(pos, StartPoint, mapper.GetMap());
+                if (!path.IsEmpty()) { navigator.SetPath(path); mapper.SetWaypoints(path); hasPath = true; }
             }
         } else {
-            vastzitTicks = 0;
+            stuckTicks = 0;
         }
 
-        // Rijlogica
-        if (ontwijkFase != OntwijkFase::NORMAAL) {
-            HandleObstacleAvoidance(scan, loc, ontwijkFase, doelHoek, draaiRichting,
-                vrijrijTicks, achteruitTicks, vastzitTeller_loc, achteruitEscalatie,
-                ontsnapX, ontsnapY, ka, LIN_SPEED, scansSindsHerplan);
+        if (evadeMode != NavMode_EVADING::NORMAL) {
+            navigator.HandleObstacleAvoidance(scan, loc, evadeMode, goalAngle, currentAngle,
+                clearDriveTicks, reverseTicks, stuckCounter, reverseEscalation,
+                escapeX, escapeY, ka, LIN_SPEED, scansSinceReplan);
         } else {
-            switch (hoofdModus) {
-                case HoofdModus::FRONTIER:
-                    HandleFrontierMode(navigator, mapper, pos, nieuweScan, scansSindsHerplan,
-                        mislukteTeller, hoofdModus, heeftPad, ontsnapX, ontsnapY, ka, planner,
-                        frontierBlacklist, HERPLAN_SCANS, MIN_DEKKING_PCT,
-                        MISLUKT_DREMPEL, ONTSNAP_RADIUS, lastRanges, scan.minFront);
+            switch (navMode) {
+                case NavMode_HEAD::FRONTIER:
+                    navigator.HandleFrontierMode(mapper, pos, newData, scansSinceReplan,
+                        failedCounter, navMode, hasPath, ka, planner,
+                        frontierBlacklist, REPLAN_SCANS,
+                        FAILED_THRESHOLD, lastRanges, scan.minFront);
                     break;
-                case HoofdModus::TERUG_HOME:
-                    HandleReturnToHome(navigator, mapper, pos, beginPunt, heeftPad, ka, planner,
-                        HOME_DREMPEL_MM, hoofdModus);
+                case NavMode_HEAD::RETURN_HOME:
+                    navigator.HandleReturnToHome(mapper, pos, StartPoint, hasPath, ka, planner, HOME_THRESHOLD_MM, navMode);
                     break;
-                case HoofdModus::KLAAR:
+                case NavMode_HEAD::DONE:
                     running = false;
                     break;
             }
@@ -561,58 +289,48 @@ static int RunRijdenEnMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
     mapper.SaveDebugMap("kaart.pgm");
     ka.Stop();
     ka.Shutdown();
-    for (int i = 0; i < 10; ++i) { uart.StuurStop(); usleep(50000); }
+    for (int i = 0; i < 10; ++i) { uart.SendStop(); usleep(50000); }
     lidar.Disconnect();
     return 0;
 }
 
-// ─────────────────────────────────────────────────────────────────
-// RunRijdenEnMappenwf — autonoom rijden + mappen via wall following.
-// Zelfde mapping/lokalisatie-pijplijn (motion-corrected mapping)
-// als RunRijdenEnMappen, maar de navigatie houdt de rechter muur aan
-// via Navigator::ComputeWallCommand i.p.v. frontier/Wavefront.
-// ─────────────────────────────────────────────────────────────────
-static int RunRijdenEnMappenwf(Pi5UARTHandler& uart, LIDAR& lidar) {
+static int RunWallFollowing(Pi5UARTHandler& uart, LIDAR& lidar) {
     Localisation loc(219.0f);
     Mapper mapper(260, 160, 0.03f);
 
     constexpr float DT          = 0.1f;
     constexpr long  LOOP_US     = 100000;
-    constexpr float scanDuurSec = 0.1f;
+    constexpr float lidarScanTime = 0.1f;
 
     int   scanCount     = 0;
     float imuOffset     = 0.0f;
-    bool  imuGenulld    = false;
-    float huidigeImuYaw = 0.0f;
+    bool  imuNulled    = false;
+    float currentImuYaw = 0.0f;
     float omegaDegS     = 0.0f;
 
     Navigator   navigator;
     navigator.ResetWallFollower();
 
     CommandKeepAlive ka(uart);
-    ScanMatcher      scanMatcher;  // ICP scan-to-scan matching
+    ScanMatcher      scanMatcher; 
 
-    float linSpeed       = 0.0f;  // gemiddelde lineaire snelheid voor ICP-check
+    float linSpeed       = 0.0f; 
 
-    // Encoder-seeding voor ICP: onthoud EKF-positie bij de vorige scan zodat
-    // we de geschatte verplaatsing als initiële gok aan Match() kunnen meegeven.
     float lastScanX      = 0.0f, lastScanY = 0.0f;
     bool  hasLastScanPos = false;
 
     float lastRanges[360] = {};
-    bool  heeftRanges     = false;
+    bool  hasRanges     = false;
 
-    // Wacht tot Pico opgestart is
     usleep(1200000);
-    for (int i = 0; i < 5; ++i) { uart.StuurStop(); usleep(20000); }
+    for (int i = 0; i < 5; ++i) { uart.SendStop(); usleep(20000); }
     tcflush(uart.GetFd(), TCIFLUSH);
-    for (int i = 0; i < 15; ++i) { uart.LeesData(); usleep(10000); }
+    for (int i = 0; i < 15; ++i) { uart.ReadData(); usleep(10000); }
 
-    // Wacht op eerste geldige LIDAR-scan
-    while (!heeftRanges && running) {
+    while (!hasRanges && running) {
         if (lidar.Update()) {
             for (int a = 0; a < 360; ++a) lastRanges[a] = lidar.GetDistance(a).distance;
-            heeftRanges = true;
+            hasRanges = true;
         } else usleep(100000);
     }
 
@@ -621,39 +339,32 @@ static int RunRijdenEnMappenwf(Pi5UARTHandler& uart, LIDAR& lidar) {
     while (running) {
         auto tStart = std::chrono::steady_clock::now();
 
-        bool versData = uart.LeesData();   // true = nieuw Pico-pakket ontvangen
+        bool newData = uart.ReadData();   
         SensorData sens = uart.GetSensorData();
-        if (sens.geldig) {
-            if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
+        if (sens.valid) {
+            if (!imuNulled) { imuOffset = sens.yawDegrees; imuNulled = true; }
 
-            // Teken herstellen voor beide wielen (encoders zijn altijd positief).
-            float vL = sens.speedLinks, vR = sens.speedRechts;
-            EncoderMetTeken(ka.GetLin(), ka.GetAng(), vL, vR);
+            float vL = sens.speedLeft, vR = sens.speedRight;
+            EncoderWithSign(ka.GetLin(), ka.GetAng(), vL, vR);
 
-            // omegaDegS op basis van gecorrigeerde snelheden (voor mapper).
             omegaDegS = ka.GetAng();
-            linSpeed  = 0.5f * (vL + vR);  // bijhouden voor ICP-draai-check
+            linSpeed  = 0.5f * (vL + vR);
 
-            bool beweegt = (sens.speedLinks != 0.0f || sens.speedRechts != 0.0f);
+            bool isMoving = (sens.speedLeft != 0.0f || sens.speedRight != 0.0f);
 
-            // Predict/UpdateIMU ALLEEN aanroepen als er een vers pakket is én de
-            // robot beweegt. Zonder versData-check zou dezelfde snelheid opnieuw
-            // geïntegreerd worden (stale-data drift).
-            if (versData && beweegt) {
+            if (newData && isMoving) {
                 loc.Predict(vL, vR, DT);
-                loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
+                loc.UpdateIMU(sens.yawDegrees - imuOffset, DT);
             }
 
-            huidigeImuYaw = sens.yawGraden - imuOffset;
+            currentImuYaw = sens.yawDegrees - imuOffset;
 
-            if (!versData && beweegt) {
-#if DEBUG_PRINT
-                printf("[UART] geen vers pakket deze tick — Predict overgeslagen\n");
-#endif
+            if (!newData && isMoving) {
+                //printf("[UART] geen vers pakket deze tick — Predict overgeslagen\n");
             }
         }
 
-        Position pos(loc.GetX(), loc.GetY(), loc.GetTheta()); // BUG4 FIX
+        Position pos(loc.GetX(), loc.GetY(), loc.GetTheta());
 
         if (lidar.Update()) {
             float angles[360];
@@ -662,25 +373,12 @@ static int RunRijdenEnMappenwf(Pi5UARTHandler& uart, LIDAR& lidar) {
                 angles[a]     = static_cast<float>(a);
             }
 
-            // ICP scan matching: corrigeer positie voor we in kaart schrijven.
-            // Geef de encoder-verplaatsing mee als initiële gok zodat ICP
-            // al dicht bij het goede lokale minimum begint.
             float encDx = 0.0f, encDy = 0.0f;
             if (hasLastScanPos) {
                 encDx = loc.GetX() - lastScanX;
                 encDy = loc.GetY() - lastScanY;
             }
             IcpResult icp = scanMatcher.Match(lastRanges, encDx, encDy);
-            /*
-            constexpr float ICP_LIN_MIN = 20.0f;
-            if (std::fabs(linSpeed) > ICP_LIN_MIN && icp.valid) {
-                loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
-                // BUG3 FIX: huidigeImuYaw niet optellen met icp.dtheta
-                pos = Position(loc.GetX(), loc.GetY(), loc.GetTheta()); // BUG4 FIX
-            } else {
-                loc.SetIcpAnchor();
-            }
-            */
 
             loc.SetIcpAnchor();
 
@@ -688,13 +386,11 @@ static int RunRijdenEnMappenwf(Pi5UARTHandler& uart, LIDAR& lidar) {
             lastScanY      = loc.GetY();
             hasLastScanPos = true;
 
-            mapper.UpdateMotionCorrected(lastRanges, angles, 360, pos, omegaDegS, scanDuurSec);
-            heeftRanges = true;
+            mapper.UpdateMotionCorrected(lastRanges, angles, 360, pos, omegaDegS, lidarScanTime);
+            hasRanges = true;
             ++scanCount;
         }
 
-        // Rijlogica: volg de rechter muur. ComputeWallCommand handelt
-        // binnen-/buitenbochten en open ruimte zelf af op basis van de scan.
         WallResult wf = navigator.ComputeWallCommand(lastRanges);
         ka.SetCommand(wf.cmd.GetLinVelocity(), wf.cmd.GetAngVelocity());
 
@@ -707,34 +403,31 @@ static int RunRijdenEnMappenwf(Pi5UARTHandler& uart, LIDAR& lidar) {
     mapper.SaveDebugMap("kaart.pgm");
     ka.Stop();
     ka.Shutdown();
-    for (int i = 0; i < 10; ++i) { uart.StuurStop(); usleep(50000); }
+    for (int i = 0; i < 10; ++i) { uart.SendStop(); usleep(50000); }
     lidar.Disconnect();
     return 0;
 }
 
-// ─────────────────────────────────────────────────────────────────
-// RunMappen
-// ─────────────────────────────────────────────────────────────────
-static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
-    Localisation loc(219.0f); // BUG2 FIX: consistent 219mm
+static int RunMapping(Pi5UARTHandler& uart, LIDAR& lidar) {
+    Localisation loc(219.0f); 
     Mapper mapper(260, 160, 0.03f);
     constexpr float DT = 0.1f, LOOP_US = 100000;
-    int scanCount = 0;
 
     float imuOffset  = 0.0f;
-    bool  imuGenulld = false;
+    bool  imuNulled = false;
+    int   scanCount  = 0;
 
     usleep(1200000);
 
     while (running) {
         auto tStart = std::chrono::steady_clock::now();
 
-        uart.LeesData();
+        uart.ReadData();
         SensorData sens = uart.GetSensorData();
-        if (sens.geldig) {
-            if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
-            loc.Predict(sens.speedLinks, sens.speedRechts, DT);
-            loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
+        if (sens.valid) {
+            if (!imuNulled) { imuOffset = sens.yawDegrees; imuNulled = true; }
+            loc.Predict(sens.speedLeft, sens.speedRight, DT);
+            loc.UpdateIMU(sens.yawDegrees - imuOffset, DT);
         }
 
         if (!lidar.Update()) { usleep(200000); continue; }
@@ -745,13 +438,11 @@ static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
             angles[a] = static_cast<float>(a);
         }
 
-        Position pos(loc.GetX(), loc.GetY(), loc.GetTheta()); // BUG4 FIX
+        Position pos(loc.GetX(), loc.GetY(), loc.GetTheta());
         mapper.Update(ranges, angles, 360, pos);
         ++scanCount;
 
-#if DEBUG_PRINT
-        mapper.PrintMap(loc.GetX(), loc.GetY(), scanCount, mapper.GetCoverage());
-#endif
+        // mapper.PrintMap(loc.GetX(), loc.GetY(), scanCount, mapper.GetCoverage());
 
         auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - tStart).count();
@@ -764,13 +455,6 @@ static int RunMappen(Pi5UARTHandler& uart, LIDAR& lidar) {
     return 0;
 }
 
-// ─────────────────────────────────────────────────────────────────
-// Terminal helpers — raw mode voor directe toetsdetectie
-// ─────────────────────────────────────────────────────────────────
-
-// Schakelt stdin in raw mode (geen Enter nodig) of terug naar normaal.
-// Bewaart de originele termios de eerste keer zodat we altijd netjes
-// kunnen herstellen, ook na meerdere aan/uit-cycli.
 static void SetTerminalRaw(bool raw) {
     static struct termios orig;
     static bool saved = false;
@@ -778,63 +462,52 @@ static void SetTerminalRaw(bool raw) {
     if (raw) {
         struct termios t = orig;
         t.c_lflag &= ~(ICANON | ECHO);
-        t.c_cc[VMIN]  = 0;   // niet-blokkerend lezen
+        t.c_cc[VMIN]  = 0;   
         t.c_cc[VTIME] = 0;
         tcsetattr(STDIN_FILENO, TCSANOW, &t);
     } else {
         tcsetattr(STDIN_FILENO, TCSANOW, &orig);
-        tcflush(STDIN_FILENO, TCIFLUSH);  // gooi eventuele raw-invoer weg
+        tcflush(STDIN_FILENO, TCIFLUSH);  
     }
 }
 
-// Leest één toets zonder te blokkeren. Geeft de char-waarde terug of -1.
 static int PollKey() {
     char c;
     return (read(STDIN_FILENO, &c, 1) == 1) ? static_cast<int>((unsigned char)c) : -1;
 }
 
-// ─────────────────────────────────────────────────────────────────
-// RunPicoCommunicatie — interactief rijden + live mappen
-//
-// Type een commando + Enter → robot rijdt tot je SPATIE drukt.
-// SPATIE = nieuw commando invoeren.
-// q (tijdens rijden, zonder Enter) of q + Enter (bij prompt) = stoppen
-// en terug naar het hoofdmenu.
-// ─────────────────────────────────────────────────────────────────
-static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
+static int RunPicoCommunication(Pi5UARTHandler& uart, LIDAR& lidar) {
     constexpr float DT          = 0.1f;
     constexpr long  LOOP_US     = 100000;
-    constexpr float scanDuurSec = 0.1f;
+    constexpr float lidarScanTime = 0.1f;
 
     Localisation loc(219.0f);
     Mapper       mapper(260, 160, 0.03f);
-    ScanMatcher  scanMatcher;  // ICP scan-to-scan matching
+    ScanMatcher  scanMatcher; 
 
     float imuOffset     = 0.0f;
-    bool  imuGenulld    = false;
-    float huidigeImuYaw = 0.0f;
+    bool  imuNulled    = false;
+    float currentImuYaw = 0.0f;
     float omegaDegS     = 0.0f;
     int   scanCount     = 0;
 
     float lastRanges[360] = {};
-    bool  heeftRanges     = false;
+    bool  hasRanges     = false;
 
-    // Encoder-seeding voor ICP: onthoud de EKF-positie bij de vorige scan,
-    // zodat we de odometrie-verplaatsing als initiële gok aan Match() geven.
     float lastScanX      = 0.0f, lastScanY = 0.0f;
     bool  hasLastScanPos = false;
 
     CommandKeepAlive ka(uart);
 
     usleep(1200000);
-    for (int i = 0; i < 5; ++i) { uart.StuurStop(); usleep(20000); }
+    for (int i = 0; i < 5; ++i) { uart.SendStop(); usleep(20000); }
     tcflush(uart.GetFd(), TCIFLUSH);
-    for (int i = 0; i < 15; ++i) { uart.LeesData(); usleep(10000); }
+    for (int i = 0; i < 15; ++i) { uart.ReadData(); usleep(10000); }
 
-    while (!heeftRanges && running) {
+    while (!hasRanges && running) {
         if (lidar.Update()) {
             for (int a = 0; a < 360; ++a) lastRanges[a] = lidar.GetDistance(a).distance;
-            heeftRanges = true;
+            hasRanges = true;
         } else usleep(100000);
     }
 
@@ -844,123 +517,101 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
     printf("  Commando's: vooruit  achteruit  links  rechts  bochtl  bochtr  stop\n");
     printf("  SPATIE = nieuw commando invoeren  |  q = stoppen en terug naar menu\n\n");
 
-    bool stopGevraagd = false;
+    bool stopRequested = false;
 
-    while (running && !stopGevraagd) {
-        // ── Invoerfase: normale terminal, wacht op Enter ────────────────────
+    while (running && !stopRequested) {
         SetTerminalRaw(false);
         ka.SetCommand(0.0f, 0.0f);
 
         printf("commando> ");
         fflush(stdout);
 
-        std::string invoer;
-        if (!std::getline(std::cin, invoer)) break;
+        std::string input;
+        if (!std::getline(std::cin, input)) break;
 
-        // Isoleer eerste token (naam van het commando)
-        size_t b = invoer.find_first_not_of(" \t");
+        size_t b = input.find_first_not_of(" \t");
         if (b == std::string::npos) continue;
-        size_t e = invoer.find_first_of(" \t", b);
-        std::string naam = invoer.substr(b, e == std::string::npos ? e : e - b);
+        size_t e = input.find_first_of(" \t", b);
+        std::string name = input.substr(b, e == std::string::npos ? e : e - b);
 
-        if (naam == "q" || naam == "Q") break;
+        if (name == "q" || name == "Q") break;
 
-        float rijLin, rijAng;
-        if      (naam == "vooruit")   { rijLin =  278.0f; rijAng =   0.0f; }
-        else if (naam == "achteruit") { rijLin = -278.0f; rijAng =   0.0f; }
-        else if (naam == "links")     { rijLin =    0.0f; rijAng = -40.0f; }
-        else if (naam == "rechts")    { rijLin =    0.0f; rijAng =  40.0f; }
-        else if (naam == "bochtl")    { rijLin =   20.0f; rijAng = -40.0f; }
-        else if (naam == "bochtr")    { rijLin =   20.0f; rijAng =  40.0f; }
-        else if (naam == "stop")      { rijLin =    0.0f; rijAng =   0.0f; }
+        float driveLin, driveAng;
+        if      (name == "vooruit")   { driveLin =  278.0f; driveAng =   0.0f; }
+        else if (name == "achteruit") { driveLin = -278.0f; driveAng =   0.0f; }
+        else if (name == "links")     { driveLin =    0.0f; driveAng = -40.0f; }
+        else if (name == "rechts")    { driveLin =    0.0f; driveAng =  40.0f; }
+        else if (name == "bochtl")    { driveLin =   20.0f; driveAng = -40.0f; }
+        else if (name == "bochtr")    { driveLin =   20.0f; driveAng =  40.0f; }
+        else if (name == "stop")      { driveLin =    0.0f; driveAng =   0.0f; }
         else {
-            printf("[PICO] Onbekend commando '%s'\n", naam.c_str());
+            printf("[PICO] Onbekend commando '%s'\n", name.c_str());
             continue;
         }
 
         /*printf("  → %s  (lin=%.0f ang=%.0f)  |  SPATIE = ander commando  |  q = stoppen\n",
-               naam.c_str(), rijLin, rijAng);
+               name.c_str(), driveLin, driveAng);
 */
-        ka.SetCommand(rijLin, rijAng);
+        ka.SetCommand(driveLin, driveAng);
 
-        // ── Rijfase: sensor/mapping loop + wacht op SPATIE of q ────────────
         SetTerminalRaw(true);
 
-        while (running && !stopGevraagd) {
+        while (running && !stopRequested) {
             auto tStart = std::chrono::steady_clock::now();
 
-            // Sensor + lokalisatie (alleen bijwerken tijdens beweging)
-            uart.LeesData();
+            uart.ReadData();
             SensorData sens = uart.GetSensorData();
-            bool  beweegt      = false;
-            float linSpeedPico = 0.0f;  // voor ICP-draai-check
-            if (sens.geldig) {
-                if (!imuGenulld) { imuOffset = sens.yawGraden; imuGenulld = true; }
+            bool  isMoving      = false;
+            float linSpeedPico = 0.0f;
+            if (sens.valid) {
+                if (!imuNulled) { imuOffset = sens.yawDegrees; imuNulled = true; }
 
-                // Teken herstellen voor beide wielen (encoders zijn altijd positief).
-                float vL = sens.speedLinks, vR = sens.speedRechts;
-                EncoderMetTeken(ka.GetLin(), ka.GetAng(), vL, vR);
+                float vL = sens.speedLeft, vR = sens.speedRight;
+                EncoderWithSign(ka.GetLin(), ka.GetAng(), vL, vR);
 
-                // omegaDegS op basis van gecorrigeerde snelheden (voor mapper).
                 omegaDegS      = ka.GetAng();
                 linSpeedPico   = 0.5f * (vL + vR);
 
-                beweegt = (sens.speedLinks != 0.0f || sens.speedRechts != 0.0f);
-                if (beweegt) {
+                isMoving = (sens.speedLeft != 0.0f || sens.speedRight != 0.0f);
+                if (isMoving) {
                     loc.Predict(vL, vR, DT);
-                    loc.UpdateIMU(sens.yawGraden - imuOffset, DT);
+                    loc.UpdateIMU(sens.yawDegrees - imuOffset, DT);
                 }
-                huidigeImuYaw = sens.yawGraden - imuOffset;
+                currentImuYaw = sens.yawDegrees - imuOffset;
             }
 
-            // LIDAR + mapping (alleen tijdens beweging)
             if (lidar.Update()) {
                 float angles[360];
                 for (int a = 0; a < 360; ++a) {
                     lastRanges[a] = lidar.GetDistance(a).distance;
                     angles[a]     = static_cast<float>(a);
                 }
-                if (beweegt) {
-                    Position pos(loc.GetX(), loc.GetY(), loc.GetTheta()); // Bug4: EKF-theta
+                if (isMoving) {
+                    Position pos(loc.GetX(), loc.GetY(), loc.GetTheta());
                     float encDx = 0.0f, encDy = 0.0f;
                     if (hasLastScanPos) {
                         encDx = loc.GetX() - lastScanX;
                         encDy = loc.GetY() - lastScanY;
                     }
-                    IcpResult icp = scanMatcher.Match(lastRanges, encDx, encDy);
-                    /*
-                    constexpr float ICP_LIN_MIN = 20.0f;
-                    if (std::fabs(linSpeedPico) > ICP_LIN_MIN && icp.valid) {
-                        loc.ApplyIcpCorrection(icp.dx, icp.dy, icp.dtheta);
-                        // Bug3: huidigeImuYaw NIET optellen met icp.dtheta
-                        pos = Position(loc.GetX(), loc.GetY(), loc.GetTheta()); // Bug4
-                    } else {
-                        loc.SetIcpAnchor();
-                    }
-                    */
-
+                    scanMatcher.Match(lastRanges, encDx, encDy);
+                    
                     loc.SetIcpAnchor();
                     lastScanX = loc.GetX(); lastScanY = loc.GetY(); hasLastScanPos = true;
-                    mapper.UpdateMotionCorrected(lastRanges, angles, 360, pos, omegaDegS, scanDuurSec);
+                    mapper.UpdateMotionCorrected(lastRanges, angles, 360, pos, omegaDegS, lidarScanTime);
                     ++scanCount;
-#if DEBUG_PRINT
-                    mapper.PrintMap(loc.GetX(), loc.GetY(), scanCount, mapper.GetCoverage());
-#endif
+                    //mapper.PrintMap(loc.GetX(), loc.GetY(), scanCount, mapper.GetCoverage());
                 }
             }
 
-            // Toetsdetectie (niet-blokkerend)
             int ch = PollKey();
             if (ch == ' ') {
-                // Spatie → stop en vraag een nieuw commando
                 ka.SetCommand(0.0f, 0.0f);
                 printf("\n");
                 break;
             }
             if (ch == 'q' || ch == 'Q') {
-                // q → direct stoppen en terug naar menu
                 ka.SetCommand(0.0f, 0.0f);
-                stopGevraagd = true;
+                stopRequested = true;
                 break;
             }
 
@@ -975,16 +626,16 @@ static int RunPicoCommunicatie(Pi5UARTHandler& uart, LIDAR& lidar) {
     ka.SetCommand(0.0f, 0.0f);
     ka.Stop();
     ka.Shutdown();
-    for (int i = 0; i < 10; ++i) { uart.StuurStop(); usleep(50000); }
+    for (int i = 0; i < 10; ++i) { uart.SendStop(); usleep(50000); }
     lidar.Disconnect();
     mapper.SaveDebugMap("kaart.pgm");
     //printf("[PICO] Kaart opgeslagen als kaart.pgm\n");
     return 0;
 }
 
-enum class MenuKeuze { MAPPEN, PICO_COMMUNICATIE, PATHFINDING, RIJDEN_EN_MAPPEN };
+enum class MenuChoice { MAPPING, PICO_COMMUNICATION, PATHFINDING, DRIVE_AND_MAP };
 
-static MenuKeuze VraagMenuKeuze() {
+static MenuChoice AskMenuChoice() {
     while (true) {
         std::cout << "\n"
                   << "╔══════════════════════════════════════╗\n"
@@ -996,11 +647,11 @@ static MenuKeuze VraagMenuKeuze() {
                   << "║ 4. Autonoom rijden + mappen          ║\n"
                   << "╚══════════════════════════════════════╝\n"
                   << "Keuze: ";
-        std::string invoer; std::getline(std::cin, invoer);
-        if (invoer == "1") return MenuKeuze::MAPPEN;
-        if (invoer == "2") return MenuKeuze::PICO_COMMUNICATIE;
-        if (invoer == "3") return MenuKeuze::PATHFINDING;
-        if (invoer == "4") return MenuKeuze::RIJDEN_EN_MAPPEN;
+        std::string input; std::getline(std::cin, input);
+        if (input == "1") return MenuChoice::MAPPING;
+        if (input == "2") return MenuChoice::PICO_COMMUNICATION;
+        if (input == "3") return MenuChoice::PATHFINDING;
+        if (input == "4") return MenuChoice::DRIVE_AND_MAP;
         std::cout << "Ongeldige keuze.\n";
     }
 }
@@ -1017,19 +668,19 @@ int main() {
     if (!uart.RebootPico()) std::cout << "Pico reboot overgeslagen (al actief).\n";
     else usleep(1500000);
 
-    switch (VraagMenuKeuze()) {
-        case MenuKeuze::MAPPEN:
+    switch (AskMenuChoice()) {
+        case MenuChoice::MAPPING:
             if (!lidar.Connect()) { std::cerr << "LIDAR niet beschikbaar.\n"; return 1; }
-            return RunMappen(uart, lidar);
-        case MenuKeuze::PICO_COMMUNICATIE:
+            return RunMapping(uart, lidar);
+        case MenuChoice::PICO_COMMUNICATION:
             if (!lidar.Connect()) { std::cerr << "LIDAR niet beschikbaar.\n"; return 1; }
-            return RunPicoCommunicatie(uart, lidar);
-        case MenuKeuze::PATHFINDING:
+            return RunPicoCommunication(uart, lidar);
+        case MenuChoice::PATHFINDING:
             if (!lidar.Connect()) { std::cerr << "LIDAR niet beschikbaar.\n"; return 1; }
-            return RunRijdenEnMappen(uart, lidar);
-        case MenuKeuze::RIJDEN_EN_MAPPEN:
+            return RunPathFinding(uart, lidar);
+        case MenuChoice::DRIVE_AND_MAP:
             if (!lidar.Connect()) { std::cerr << "LIDAR niet beschikbaar.\n"; return 1; }
-            return RunRijdenEnMappenwf(uart, lidar);
+            return RunWallFollowing(uart, lidar);
     }
     return 0;
 }

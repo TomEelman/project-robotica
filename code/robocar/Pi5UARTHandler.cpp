@@ -23,14 +23,14 @@ bool Pi5UARTHandler::Open() {
         perror(("Pi5UARTHandler: open " + port).c_str());
         return false;
     }
-    if (!ConfigureerPoort()) { Close(); return false; }
-    // Flush oude rommel uit de buffer
+    if (!ConfigurePort()) { Close(); return false; }
+
     tcflush(fd, TCIOFLUSH);
     std::cout << "UART geopend op " << port << "\n";
     return true;
 }
 
-bool Pi5UARTHandler::ConfigureerPoort() {
+bool Pi5UARTHandler::ConfigurePort() {
     termios tty{};
     if (tcgetattr(fd, &tty) != 0) {
         perror("Pi5UARTHandler: tcgetattr");
@@ -51,7 +51,6 @@ bool Pi5UARTHandler::ConfigureerPoort() {
     tty.c_oflag &= ~OPOST;
     tty.c_lflag  = 0;
 
-    // Non-blocking lezen
     tty.c_cc[VMIN]  = 0;
     tty.c_cc[VTIME] = 0;
 
@@ -68,9 +67,7 @@ void Pi5UARTHandler::Close() {
 
 bool Pi5UARTHandler::IsOpen() const { return fd >= 0; }
 
-// Non-blocking. Leest byte voor byte, bouwt regels op.
-// Herkent DATA: pakketten. Logt alles anders naar stderr.
-bool Pi5UARTHandler::LeesData() {
+bool Pi5UARTHandler::ReadData() {
     if (!IsOpen()) return false;
 
     bool hadData = false;
@@ -81,24 +78,19 @@ bool Pi5UARTHandler::LeesData() {
 
         if (c == '\n') {
             lineBuffer[linePos] = '\0';
-            int regelLen = linePos;  // bewaar lengte vÃ³Ã³r reset
+            int regelLen = linePos;
             linePos = 0;
             if (regelLen > 0) {
-                if (ParseDataRegel(lineBuffer)) {
+                if (ParseDataCommand(lineBuffer)) {
                     hadData = true;
                 } else if (strncmp(lineBuffer, "ACK:", 4) == 0) {
-                    // ACK:OK:lin=...,ang=... en ACK:STOP komen elke 100ms
-                    // binnen â€” stilzwijgend negeren zodat stderr niet blokkeert
-                    // en de loop-timing niet verstoord wordt.
                 } else if (regelLen > 2) {
-                    // Onbekende regels loggen (ERR:, debug prints van Pico, etc.)
                     fprintf(stderr, "[Pico] %s\n", lineBuffer);
                 }
             }
         } else if (linePos < (int)sizeof(lineBuffer) - 1) {
             lineBuffer[linePos++] = c;
         } else {
-            // Buffer vol zonder newline â€” sync verloren, reset
             linePos = 0;
         }
     }
@@ -106,10 +98,10 @@ bool Pi5UARTHandler::LeesData() {
     return hadData;
 }
 
-bool Pi5UARTHandler::ParseDataRegel(const char* regel) {
-    if (strncmp(regel, "DATA:", 5) != 0) return false;
+bool Pi5UARTHandler::ParseDataCommand(const char* cmd) {
+    if (strncmp(cmd, "DATA:", 5) != 0) return false;
 
-    const char* p = regel + 5;
+    const char* p = cmd + 5;
     char* end;
 
     float encL  = strtof(p, &end); if (end == p || *end != ',') return false; p = end + 1;
@@ -117,33 +109,32 @@ bool Pi5UARTHandler::ParseDataRegel(const char* regel) {
     float yaw   = strtof(p, &end); if (end == p || *end != ',') return false; p = end + 1;
     float omega = strtof(p, &end); if (end == p)                return false;
 
-    // Sanity check â€” gooi onmogelijke waarden weg
     if (encL < -5000.0f || encL > 5000.0f) return false;
     if (encR < -5000.0f || encR > 5000.0f) return false;
     if (yaw  <  -360.0f || yaw  >  360.0f) return false;
 
-    lastData.speedLinks   = encL;
-    lastData.speedRechts  = encR;
-    lastData.yawGraden    = yaw;
-    lastData.hoeksnelheid = omega;
-    lastData.geldig       = true;
+    lastData.speedLeft   = encL;
+    lastData.speedRight  = encR;
+    lastData.yawDegrees    = yaw;
+    lastData.angleSpeed = omega;
+    lastData.valid       = true;
     return true;
 }
 
 
-void Pi5UARTHandler::StuurCommand(float lin, float ang) {
+void Pi5UARTHandler::SendCommand(float lin, float ang) {
     if (!IsOpen()) return;
     char buf[48];
     snprintf(buf, sizeof(buf), "CMD:%.1f,%.1f\n", lin, ang);
     write(fd, buf, strlen(buf));
 }
 
-void Pi5UARTHandler::StuurStop() {
+void Pi5UARTHandler::SendStop() {
     if (!IsOpen()) return;
     const char* stop = "STOP\n";
     write(fd, stop, strlen(stop));
     usleep(5000);
-    StuurCommand(0.0f, 0.0f);
+    SendCommand(0.0f, 0.0f);
 }
 
 bool Pi5UARTHandler::RebootPico() {

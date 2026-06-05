@@ -17,7 +17,6 @@ public:
 
     void SetWaypoints(const Path& path);
                     
-    int            GetCoverage()  const;
     void           GetRoomCoverage(float& outerWallPct, float& interiorPct, float& relCoveragePct) const;
     GridMap&       GetMap();
     const GridMap& GetMap()       const;

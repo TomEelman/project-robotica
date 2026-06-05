@@ -38,7 +38,6 @@ public:
     bool  IsFree    (int cellX, int cellY) const; // returns true if the cell is clear to drive through
     bool  IsUnknown (int cellX, int cellY) const; // returns true if the cell hasn't been scanned yet
     
-    float GetCoveragePercent() const; // returns total map exploration percentage
     void  GetRoomCoverage(float& outerWallPct, float& interiorPct, float& relCoveragePct) const;
 
     // converts real world coordinates (meters) to 2D grid index coordinates (cells)

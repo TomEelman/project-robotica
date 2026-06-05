@@ -4,13 +4,14 @@
 #include "Position.h"
 #include "GridMap.h"
 #include "DriveCommand.h"
+#include <vector>
 
-// ─────────────────────────────────────────────────────────────────
-//  ScanAnalysis — result of a 360° LIDAR scan (obstacle avoidance)
-//
-//  state:       0=clear  1=safe  2=brake  3=critical
-//  avoidDir:    +1=avoid right  -1=avoid left
-// ─────────────────────────────────────────────────────────────────
+class Localisation;
+class Mapper;
+class PathPlanner;
+class CommandKeepAlive;
+struct BlacklistItem;
+
 struct ScanAnalysis {
     int   state;
     float avoidDir;
@@ -25,11 +26,20 @@ struct ScanAnalysis {
 ScanAnalysis AnalyzeScan(const float ranges[360]);
 float NormDeg(float deg);
 
+enum class NavMode_HEAD  { 
+    FRONTIER, 
+    RETURN_HOME, 
+    DONE 
+};
+enum class NavMode_EVADING { 
+    NORMAL, 
+    TURNING, 
+    CLEARING, 
+    REVERSING 
+};
 
-// ─────────────────────────────────────────────────────────────────
-//  WallState — wall-follower state
-// ─────────────────────────────────────────────────────────────────
-enum class WallState {
+
+enum class NavMode_WALLFOLLOWING {
     FOLLOW_RIGHT,
     OUTER_CORNER,
     INNER_CORNER,
@@ -38,45 +48,45 @@ enum class WallState {
 
 struct WallResult {
     DriveCommand cmd;
-    WallState    state;
-    float        errorMm;   // deviation from target distance (debug)
+    NavMode_WALLFOLLOWING    state;
+    float        errorMm;  
 };
 
-
-// ─────────────────────────────────────────────────────────────────
-//  Navigator — waypoint follower + wall follower + recovery
-// ─────────────────────────────────────────────────────────────────
 class Navigator {
 public:
     Navigator();
 
-    // ── Waypoint follower ─────────────────────────────────────────
     void         SetPath(const Path& newPath);
     void         Update(Position current);
 
-    // minFront / minRear in mm — used for obstacle interrupt and to
-    // decide whether reversing is safe during recovery.
-    DriveCommand GetNextCommand(Position current,
-                                float minFront = 8000.0f,
-                                float minRear  = 8000.0f);
+    DriveCommand GetNextCommand(Position current, float minFront = 8000.0f, float minRear  = 8000.0f);
 
     bool         IsFinished() const;
     bool         IsUpdated()  const;
     Position     GetCurrentTarget() const;
     Path         GetPath()          const;
 
-    // True once the Navigator got stuck and abandoned the path. MainPi5
-    // uses this as a signal to replan (replan-on-block).
     bool         IsBlocked() const { return blocked; }
     void         ResetBlock()      { blocked = false; }
 
-    // ── Wall follower ─────────────────────────────────────────────
     WallResult ComputeWallCommand(const float ranges[360]);
     void       ResetWallFollower();
-    WallState  GetWallState() const { return wallState; }
+    NavMode_WALLFOLLOWING  GetWallState() const { return wallState; }
+
+    bool HandleObstacleAvoidance(const ScanAnalysis& scan, Localisation& loc,
+        NavMode_EVADING& evadingMode, float& goalAngle, float& turnDirection,
+        int& clearDriveTicks, int& reverseTicks, int& stuckCounter, int& reverseEscalation,
+        float& escapeX, float& escapeY, CommandKeepAlive& ka, float LIN_SPEED, int& scansSinceReplan);
+
+    void HandleFrontierMode(Mapper& mapper, Position pos, bool newScan,
+        int& scansSinceReplan, int& failedCounter, NavMode_HEAD& navMode, bool& hasPath,
+        CommandKeepAlive& ka, PathPlanner& planner, std::vector<BlacklistItem>& frontierBlacklist,
+        int REPLAN_SCANS, int FAILED_THRESHOLD, const float* lastRanges, float minFront);
+
+    void HandleReturnToHome(Mapper& mapper, Position pos, Position startPoint,
+        bool& hasPath, CommandKeepAlive& ka, PathPlanner& planner, float HOME_THRESHOLD_MM, NavMode_HEAD& navMode);
 
 private:
-    // ── Waypoint follower constants ───────────────────────────────
     static constexpr float REACHED_THRESHOLD_MM  = 200.0f;
     static constexpr float LINEAR_SPEED_MM_S     = 278.0f;
     static constexpr float ANGULAR_GAIN          = 2.5f;
@@ -85,17 +95,14 @@ private:
     static constexpr float SLOW_TURN_THRESHOLD   = 60.0f;
     static constexpr float SLOW_TURN_FACTOR      = 0.6f;
 
-    // Stable command: only recompute after N ticks or on obstacle/event
-    static constexpr int   CMD_STABLE_TICKS      = 3;      // herteken snel zodat slip wordt gecorrigeerd
-    static constexpr float OBSTACLE_INTERRUPT_MM = 400.0f; // front stop threshold
+    static constexpr int   CMD_STABLE_TICKS      = 3;      
+    static constexpr float OBSTACLE_INTERRUPT_MM = 400.0f; 
 
-    // ── Recovery constants ────────────────────────────────────────
-    static constexpr int   RECOVERY_TRIGGER      = 5;      // # blocked ticks
-    static constexpr float REVERSE_SAFE_MM       = 500.0f; // min clearance rear
-    static constexpr float REVERSE_SPEED         = -278.0f;// straight reverse
-    static constexpr int   RECOVERY_TICKS        = 15;     // duration of action
+    static constexpr int   RECOVERY_TRIGGER      = 5;      
+    static constexpr float REVERSE_SAFE_MM       = 500.0f; 
+    static constexpr float REVERSE_SPEED         = -278.0f;
+    static constexpr int   RECOVERY_TICKS        = 15;    
 
-    // ── Wall follower constants ───────────────────────────────────
     static constexpr float WF_TARGET_DIST_MM     = 300.0f;
     static constexpr float WF_WALL_PRESENT_MM    = 600.0f;
     static constexpr float WF_FRONT_CRITICAL_MM  = 350.0f;
@@ -110,29 +117,24 @@ private:
     static constexpr float WF_INNER_CORNER_TURN  = 35.0f;
     static constexpr int   WF_OUTER_CORNER_MAX_TICKS = 20;
 
-    // ── Waypoint follower state ───────────────────────────────────
     Path     path;
     Position currentTarget;
     bool     isUpdated;
     bool     hasPath;
 
-    // Stable command state
     float stableLin      = 0.0f;
     float stableAng      = 0.0f;
     bool  hasStableCmd   = false;
     int   cmdTicks       = 0;
 
-    // Recovery / block state
-    int   blockCounter   = 0;      // consecutive blocked ticks
-    int   recoveryTicks  = 0;      // remaining ticks of current recovery action
-    bool  blocked        = false;  // signal to MainPi5 for replan
+    int   blockCounter   = 0;      
+    int   recoveryTicks  = 0;      
+    bool  blocked        = false;  
 
-    // ── Wall follower state ───────────────────────────────────────
-    WallState wallState        = WallState::OPEN_SPACE;
+    NavMode_WALLFOLLOWING wallState        = NavMode_WALLFOLLOWING::OPEN_SPACE;
     float     wfFilteredError  = 0.0f;
     int       outerCornerTicks = 0;
 
-    // ── Helpers ───────────────────────────────────────────────────
     bool  ReachedPoint(Position current) const;
     float CalculateDistance  (Position a, Position b) const;
     float CalculateAngleError(Position current, Position target) const;
