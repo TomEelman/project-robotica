@@ -111,6 +111,7 @@ static int RunPathFinding(Pi5UARTHandler& uart, LIDAR& lidar) {
     float currentImuYaw = 0.0f;
     float omegaDegS     = 0.0f;
 
+    ExplorationPlanner         explorationPlanner;
     std::vector<BlacklistItem> frontierBlacklist;
     PathPlanner planner(mapper.GetMap(), true);
     Navigator   navigator;
@@ -570,7 +571,6 @@ static int RunPicoCommunication(Pi5UARTHandler& uart, LIDAR& lidar) {
                 EncoderWithSign(ka.GetLin(), ka.GetAng(), vL, vR);
 
                 omegaDegS      = ka.GetAng();
-                linSpeedPico   = 0.5f * (vL + vR);
 
                 isMoving = (sens.speedLeft != 0.0f || sens.speedRight != 0.0f);
                 if (isMoving) {

@@ -29,9 +29,7 @@ float PIDController::Compute(float currentValue, float setpoint)
     if (integral < -maxIntegral) integral = -maxIntegral;
     float i = ki * integral;
 
-    // Derivative on error (not measurement) — adequate here because setpoints
-    // change smoothly via the ramp in Drive. If setpoint steps become an issue,
-    // switch to derivative-on-measurement: -(currentValue - prevMeasured) / dt.
+    // Derivative on error (not measurement) because setpoints change smoothly via the ramp in drive.
     float derivative = (dt > 0.0f) ? (error - prevError) / dt : 0.0f;
     float d = kd * derivative;
 

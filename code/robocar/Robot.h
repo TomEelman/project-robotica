@@ -5,7 +5,6 @@
 #include "SensorHub.h"
 #include "Drive.h"
 #include "DriveCommand.h"
-#include "Localisation.h"
 
 class Robot {
 public:
@@ -24,7 +23,6 @@ private:
     Motor     motorRight;
     SensorHub sensorHub;
     Drive     drive;
-    Localisation localisation;
 };
 
 #endif

@@ -3,28 +3,27 @@
 #include "hardware/gpio.h"
 #include "pico/stdlib.h"
 
-// BNO055 register map (relevant subset).
-static constexpr uint8_t BNO055_CHIP_ID_VALUE = 0xA0;
-static constexpr uint8_t REG_CHIP_ID          = 0x00;
-static constexpr uint8_t REG_ACC_LSB          = 0x08;
-static constexpr uint8_t REG_GYR_LSB          = 0x14;
-static constexpr uint8_t REG_EULER_H_LSB      = 0x1A;
-static constexpr uint8_t REG_CALIB_STAT       = 0x35;
-static constexpr uint8_t REG_OPR_MODE         = 0x3D;
-static constexpr uint8_t REG_PWR_MODE         = 0x3E;
-static constexpr uint8_t REG_SYS_TRIGGER      = 0x3F;
+// BNO055 register map
+static constexpr uint8_t BNO055_CHIP_ID_VALUE = 0xA0; // expected chip id
+static constexpr uint8_t REG_CHIP_ID          = 0x00; // chip id
+static constexpr uint8_t REG_ACC_LSB          = 0x08; // accelerometer 
+static constexpr uint8_t REG_GYR_LSB          = 0x14; // gyro
+static constexpr uint8_t REG_EULER_H_LSB      = 0x1A; // euler corner
+static constexpr uint8_t REG_CALIB_STAT       = 0x35; // calibration status 
+static constexpr uint8_t REG_OPR_MODE         = 0x3D; // operating mode
+static constexpr uint8_t REG_PWR_MODE         = 0x3E; // power mode
+static constexpr uint8_t REG_SYS_TRIGGER      = 0x3F; // system trigger
 
 // BNO055 operation modes.
-static constexpr uint8_t OPR_CONFIG_MODE = 0x00;
+static constexpr uint8_t OPR_CONFIG_MODE = 0x00; // configuration mode
 static constexpr uint8_t OPR_NDOF_MODE   = 0x0C; // 9-DOF sensor fusion
 
-// Calibration: top 2 bits of CALIB_STAT reflect system calibration level (0–3).
-static constexpr uint8_t CALIB_SYS_MASK = 0xC0;
+
+static constexpr uint8_t CALIB_SYS_MASK = 0xC0; // bitmask 2 highest bits calib stat
 
 static constexpr i2c_inst_t* I2C_BUS = i2c0;
 
-// I2C clock: 100 kHz (standard mode). The BNO055 also supports 400 kHz fast
-// mode, but 100 kHz is safer over longer or unshielded traces.
+// I2C clock: 100 kHz
 static constexpr uint I2C_CLOCK_HZ = 100'000;
 
 static uint8_t BnoRead8(uint8_t addr, uint8_t reg)
@@ -69,12 +68,12 @@ IMU::IMU(int sdaPin, int sclPin, int i2cAddress)
 
     uint8_t chipId = BnoRead8(i2cAddress, REG_CHIP_ID);
     if (chipId != BNO055_CHIP_ID_VALUE)
-        return; // calibrated stays false — caller can check GetCalibrationStatus()
+        return; // calibrated stays false caller can check GetCalibrationStatus()
 
     BnoWrite8(i2cAddress, REG_OPR_MODE, OPR_CONFIG_MODE);
     sleep_ms(20);
 
-    // Soft-reset: clears sensor state and reloads factory calibration.
+    // clears sensor state and reloads factory calibration.
     BnoWrite8(i2cAddress, REG_SYS_TRIGGER, 0x20);
     sleep_ms(700); // BNO055 datasheet: ≥650 ms after reset before it is ready
 
@@ -110,12 +109,7 @@ bool IMU::Update()
     return true;
 }
 
-float IMU::GetLinVelocity()       const { return linearVelocity;  }
 float IMU::GetAngVelocity()       const { return angularVelocity; }
 float IMU::GetCurrentYaw()        const { return currentYaw;      }
 bool  IMU::GetCalibrationStatus() const { return calibrated;      }
 
-void  IMU::SetI2CAddress(int address) { i2cAddress = address; }
-int   IMU::GetI2CAddress()      const { return i2cAddress;    }
-int   IMU::GetSDAPin()          const { return sdaPin;        }
-int   IMU::GetSCLPin()          const { return sclPin;        }

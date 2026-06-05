@@ -75,7 +75,7 @@ static int BFSDistance(const GridMap& map, int sx, int sy, int gx, int gy) {
     return INT_MAX;  // unreachable
 }
 
-void AddToBlackList(std::vector<BlacklistItem>& blacklist, float x_mm, float y_mm, int ttl)
+void ExplorationPlanner::AddToBlackList(std::vector<BlacklistItem>& blacklist, float x_mm, float y_mm, int ttl)
 {
     // loops through the existing blacklist to check if this location is already known
     for (size_t i = 0; i < blacklist.size(); ++i) {
@@ -99,7 +99,7 @@ void AddToBlackList(std::vector<BlacklistItem>& blacklist, float x_mm, float y_m
     blacklist.push_back({x_mm, y_mm, ttl});
 }
 
-void TickBlacklist(std::vector<BlacklistItem>& blacklist) {
+void ExplorationPlanner::TickBlacklist(std::vector<BlacklistItem>& blacklist) {
     // Step 1: loop through the blacklist and decrease the time to live for every item
     for (size_t i = 0; i < blacklist.size(); ++i) {
         --blacklist[i].ttl;
@@ -134,7 +134,7 @@ static bool inBlacklist(const std::vector<BlacklistItem>& blacklist, float x_mm,
     return false;
 }
 
-Position ChooseFrontierGoal(const Mapper& mapper, const Position& currentPos, const float lidarRanges[360], 
+Position ExplorationPlanner::ChooseFrontierGoal(const Mapper& mapper, const Position& currentPos, const float lidarRanges[360], 
     const std::vector<BlacklistItem>& blacklist) {
     //  mm to meter conversion
     constexpr float MM2M       = 0.001f;

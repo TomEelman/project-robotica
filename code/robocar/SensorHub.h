@@ -3,28 +3,13 @@
 
 #include "IMU.h"
 #include "Encoder.h"
-#include "DateTime.h"
 #include "hardware/uart.h"
 #include "hardware/irq.h"
 
-
-// UART0 is used to expose sensor data to an external host (e.g. a Raspberry Pi)
-// over a simple ASCII request/response protocol. Pins 0/1 are the default UART0
-// pins on the Pico; they are reserved and must not be used for anything else.
-#define SENSOR_UART       uart0
-static constexpr uint         SENSOR_BAUD     = 115200;
-static constexpr int          SENSOR_UART_TX  = 0;
-static constexpr int          SENSOR_UART_RX  = 1;
-static constexpr int          UART_BUFFER_LEN = 64;
-
 class SensorHub {
 public:
-    SensorHub(int encLeft,    int encLeftRes,
-              int encRight,   int encRightRes,
+    SensorHub(int encLeftRes, int encRightRes,
               int imuSdaPin,  int imuSclPin);
-
-    void InitUart();
-    void HandleUart();
 
     bool UpdateSensors();
 
@@ -34,7 +19,6 @@ public:
     float GetDistanceRight() const;
     float GetCurrentYaw()    const;
     float GetAngVelocity()   const;
-    DateTime GetLastUpdate() const;
 
     bool HasFreshLeft()  const { return encoderLeft.HasFreshData();  }
     bool HasFreshRight() const { return encoderRight.HasFreshData(); }
@@ -48,17 +32,7 @@ private:
     IMU     imu;
     Encoder encoderLeft;
     Encoder encoderRight;
-    DateTime lastUpdate;
     bool sensorsUpdated;
-
-    static volatile char rxBuffer[UART_BUFFER_LEN];
-    static volatile int  rxPos;
-    static volatile bool messageReady;
-    static SensorHub*    instance;
-
-    static void uartRxIrqHandler();
-    void        processRequest(const char* request);
-    void        sendResponse(const char* response);
 };
 
 #endif

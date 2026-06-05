@@ -6,16 +6,10 @@ public:
     IMU(int sdaPin, int sclPin, int i2cAddress);
 
     bool Update();
-
-    float GetLinVelocity()      const;
     float GetAngVelocity()      const;
     float GetCurrentYaw()       const;
     bool  GetCalibrationStatus() const;
 
-    void SetI2CAddress(int address);
-    int  GetI2CAddress() const;
-    int  GetSDAPin()     const;
-    int  GetSCLPin()     const;
 
 private:
     int   sdaPin;

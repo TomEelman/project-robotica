@@ -20,17 +20,11 @@ Position ChooseFrontierGoal(const Mapper& mapper, const Position& huidig, const 
 class ExplorationPlanner {
 public:
     ExplorationPlanner();
-
     void AddToBlackList(std::vector<BlacklistItem>& blacklist, float x_mm, float y_mm, int ttl = 5);
-
-    void TickBlacklist(std::vector<BlacklistItem>& blacklist);   
-    
+    void TickBlacklist(std::vector<BlacklistItem>& blacklist);
     Position ChooseFrontierGoal(const Mapper& mapper, const Position& huidig, const float lidarRanges[360],
                         const std::vector<BlacklistItem>& blacklist = {});
-
 private:
-    static bool inBlacklist(const std::vector<BlacklistItem>& blacklist, float x_mm, float y_mm);
-
     Position currentTarget;
 };
 

@@ -46,7 +46,7 @@ void PicoUARTHandler::UartRxIrqHandler()
         } else if (rxPos < (int)sizeof(rxBuffer) - 1) {
             rxBuffer[rxPos++] = c;
         } else {
-            // Buffer overflow protection — reset on oversized input stream
+            // Buffer overflow protection
             rxPos = 0;
         }
     }
@@ -54,7 +54,7 @@ void PicoUARTHandler::UartRxIrqHandler()
 
 bool PicoUARTHandler::Tick(DriveCommand& out)
 {
-    // 1) Process incoming message
+    // Process incoming message
     if (messageReady) {
         char lineBuffer[128];
         strncpy(lineBuffer, (const char*)rxBuffer, sizeof(lineBuffer));
@@ -63,7 +63,7 @@ bool PicoUARTHandler::Tick(DriveCommand& out)
         handleLine(lineBuffer);
     }
 
-    // 2) Push sensor data every PUSH_INTERVAL_MS
+    // Push sensor data every PUSH_INTERVAL_MS
     uint32_t now = to_ms_since_boot(get_absolute_time());
     if (now - lastPushMs >= PUSH_INTERVAL_MS) {
         sensorHub.UpdateSensors();
@@ -71,14 +71,14 @@ bool PicoUARTHandler::Tick(DriveCommand& out)
         lastPushMs = now;
     }
 
-    // 3) Forward pending command
+    //  Forward pending command
     if (hasPendingCmd) {
         out           = pendingCmd;
         hasPendingCmd = false;
         return true;
     }
 
-    // 4) Command timeout → stop robot
+    // Command timeout, stop robot
     if (lastCmdTimeMs > 0 && (now - lastCmdTimeMs) > PICO_CMD_TIMEOUT_MS) {
         lastCmdTimeMs = 0;
         out = DriveCommand(0.0f, 0.0f);
@@ -90,15 +90,15 @@ bool PicoUARTHandler::Tick(DriveCommand& out)
 
 void PicoUARTHandler::pushData()
 {
-    // Use fixed-width formatting for easier Pi5 synchronization
+    // fixed-width format
     // Format: DATA:<encL>,<encR>,<yaw>,<omega>\n
-    // Use standard decimal formatting (no scientific notation)
+    // standard decimal formatting
     float encL  = sensorHub.GetSpeedLeft();
     float encR  = sensorHub.GetSpeedRight();
     float yaw   = sensorHub.GetCurrentYaw();
     float omega = sensorHub.GetAngVelocity();
 
-    // Clamp NaN/Inf to 0 to prevent invalid UART output strings
+    // to 0 to prevent invalid UART output strings
     if (encL  != encL  || encL  > 9999.0f || encL  < -9999.0f) encL  = 0.0f;
     if (encR  != encR  || encR  > 9999.0f || encR  < -9999.0f) encR  = 0.0f;
     if (yaw   != yaw   || yaw   >  360.0f || yaw   < -360.0f)  yaw   = 0.0f;
@@ -112,7 +112,7 @@ void PicoUARTHandler::pushData()
 
 void PicoUARTHandler::handleLine(const char* line)
 {
-    // STOP command — highest priority, execute immediately
+    // STOP command has highest priority, execute immediately
     if (strcmp(line, "STOP") == 0) {
         pendingCmd    = DriveCommand(0.0f, 0.0f);
         hasPendingCmd = true;
@@ -143,7 +143,7 @@ void PicoUARTHandler::handleLine(const char* line)
         return;
     }
 
-    // Unknown message — silently ignore to avoid UART spam
+    // Unknown message, ignore
 }
 
 

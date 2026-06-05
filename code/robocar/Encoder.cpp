@@ -2,30 +2,28 @@
 #include "hardware/gpio.h"
 #include "hardware/timer.h"
 
-// Encoder hardware constants — specific to the motor/wheel combination in use.
-static constexpr int   PULSES_PER_ROTATION  = 330;
-static constexpr float WHEEL_CIRCUMFERENCE_MM = 204.2f;
+// Encoder hardware constants
+static constexpr int   PULSES_PER_ROTATION  = 330; // from datasheet
+static constexpr float WHEEL_CIRCUMFERENCE_MM = 204.2f; // 65 mm diameter
 
-// Update rate: encoder velocity is recalculated every 50 ms (20 Hz).
-// Lower values give faster response but more noise; higher values smooth noise
-// but increase lag. 50 ms is a reasonable trade-off for this wheel size.
-static constexpr uint64_t UPDATE_INTERVAL_US = 50'000;
 
-// If no pulse arrives within this window the wheel is considered stopped.
-// 300 ms at the minimum detectable speed (~0.7 mm/s at 330 ppr, 204 mm circ)
-// avoids falsely reporting zero at very low speeds.
+static constexpr uint64_t UPDATE_INTERVAL_US = 50'000; // 50ms update rate
+
+// if no pulse arrives within this window the wheel is considered stopped.
 static constexpr uint64_t PULSE_TIMEOUT_US = 300'000;
 
 static volatile int pulseCounts[32] = {0};
 static bool         irqInitialized  = false;
+
+
 
 static void EncoderISR(uint gpio, uint32_t /*events*/)
 {
     if (gpio < 32) pulseCounts[gpio]++;
 }
 
-Encoder::Encoder(int gpioPin, int gpioPinRes)
-    : gpio(gpioPin),
+Encoder::Encoder(int gpioPinRes)
+    : 
       gpioPinRes(gpioPinRes),
       pulsesPerRotation(PULSES_PER_ROTATION),
       linearVelocity(0.0f),
@@ -40,8 +38,6 @@ Encoder::Encoder(int gpioPin, int gpioPinRes)
     gpio_set_dir(gpioPinRes, GPIO_IN);
     gpio_pull_up(gpioPinRes);
 
-    // The Pico SDK allows only one global IRQ callback. The first encoder
-    // registers it; subsequent encoders just enable the IRQ on their pin.
     if (!irqInitialized) {
         gpio_set_irq_enabled_with_callback(
             gpioPinRes, GPIO_IRQ_EDGE_RISE, true, &EncoderISR);
@@ -56,17 +52,19 @@ bool Encoder::Update()
     uint64_t now     = time_us_64();
     uint64_t elapsed = now - lastTime;
 
-    if (elapsed < UPDATE_INTERVAL_US)
+    if (elapsed < UPDATE_INTERVAL_US) {
         return false;
+    }
 
     lastTime = now;
 
-    int current = pulseCounts[gpioPinRes];
+    int current = pulseCounts[gpioPinRes]; 
     int delta   = current - lastPulseCount;
     lastPulseCount = current;
 
-    if (delta > 0)
+    if (delta > 0) {
         lastPulseTime = now;
+    }
 
     if ((now - lastPulseTime) > PULSE_TIMEOUT_US) {
         linearVelocity = 0.0f;
@@ -76,7 +74,7 @@ bool Encoder::Update()
     }
 
     // Convert pulse count to mm/s.
-    // rotations = delta / ppr;  distance = rotations * circumference;  speed = distance / dt
+    // rotations = delta / ppr;  distance = rotations * circumference;  veolcity = distance / dt
     float rotations  = static_cast<float>(delta) / static_cast<float>(pulsesPerRotation);
     float distanceDelta = rotations * WHEEL_CIRCUMFERENCE_MM;
     float dtSeconds  = static_cast<float>(elapsed) / 1'000'000.0f;
@@ -102,5 +100,5 @@ void Encoder::Reset()
 
 float Encoder::GetLinVelocity() const { return linearVelocity; }
 float Encoder::GetDistanceMm()  const { return distanceMm;     }
-int   Encoder::GetGpio()        const { return gpio;           }
-int   Encoder::GetGpioPinRes()  const { return gpioPinRes;     }
+// int   Encoder::GetGpio()        const { return gpio;           }
+// int   Encoder::GetGpioPinRes()  const { return gpioPinRes;     }

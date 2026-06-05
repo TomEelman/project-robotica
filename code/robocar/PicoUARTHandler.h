@@ -26,24 +26,24 @@
 #define PICO_UART_TX_PIN 0
 #define PICO_UART_RX_PIN 1
 
-// Hoe vaak sensor-data gepusht wordt (ms)
+// how much sensor data is pushed (ms)
 static constexpr uint32_t PUSH_INTERVAL_MS    = 50;
 
-// Watchdog: geen CMD binnen deze tijd → stop
+// Watchdog: no cmd within this time
 static constexpr uint32_t PICO_CMD_TIMEOUT_MS = 500;
 
 class PicoUARTHandler {
 public:
     explicit PicoUARTHandler(SensorHub& sensorHub);
 
-    // Initialiseer UART0 en installeer IRQ.
+    // init UART0 and IRQ.
     void Init();
 
-    // Aanroepen elke loop-iteratie (~10 ms).
-    // - Verwerkt inkomend CMD als de IRQ er één klaar heeft gezet
-    // - Pusht DATA naar Pi5 als PUSH_INTERVAL_MS verstreken is
-    // - Geeft stop als CMD-timeout verlopen is
-    // Geeft true als er een nieuw DriveCommand beschikbaar is.
+    // every loop iterate (~10 ms).
+    // - handles CMD if IRQ has one set
+    // - Pusht DATA to Pi5 if PUSH_INTERVAL_MS is done
+    // - gives stop when CMD-timeout is done
+    // gives true when new drivecommand is available
     bool Tick(DriveCommand& out);
 
     static void UartRxIrqHandler();
