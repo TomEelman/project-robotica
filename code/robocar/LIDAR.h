@@ -29,10 +29,6 @@ public:
 private:
     std::string port;
     int         baudRate;
-    int         frontBumperDistance;
-    int         backBumperDistance;
-    float       leftWheelDistance;
-    float       rightWheelDistance;
     float       minRange;
     float       maxRange;
 
