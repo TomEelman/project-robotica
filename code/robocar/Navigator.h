@@ -4,6 +4,7 @@
 #include "Position.h"
 #include "GridMap.h"
 #include "DriveCommand.h"
+#include "ExplorationPlanner.h"
 #include <vector>
 
 class Localisation;

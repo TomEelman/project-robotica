@@ -1,8 +1,7 @@
 #include "Navigator.h"
 #include "Localisation.h"
 #include "Mapper.h"
-#include "PathPlanner.h"
-#include "ExplorationPlanner.h"  
+#include "PathPlanner.h" 
 #include "MainPi5.h"            
 #include <cmath>
 #include <cstdio>
