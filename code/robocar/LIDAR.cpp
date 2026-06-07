@@ -18,12 +18,6 @@ LIDAR::LIDAR(const std::string& port, int baudrate)
         scanData[i].angle    = i;
         scanData[i].distance = 0.0f;
     }
-
-    // in mm the distance of the end for the collision detection
-    frontBumperDistance = 120;
-    backBumperDistance = 80;
-    leftWheelDistance = 110;
-    rightWheelDistance = 110;
 }
 
 LIDAR::~LIDAR() {
