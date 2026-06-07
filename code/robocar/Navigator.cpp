@@ -162,15 +162,19 @@ DriveCommand Navigator::GetNextCommand(Position current, float minFront, float m
 
         if (blockCounter >= RECOVERY_TRIGGER) {
             if (minRear > REVERSE_SAFE_MM) {
+                // Ruimte achter: kort achteruit om los te komen, daarna herplannen
+                // (blocked = true triggert een nieuw frontier-doel in HandleFrontierMode).
                 stableLin     = REVERSE_SPEED;
                 stableAng     = 0.0f;
                 recoveryTicks = RECOVERY_TICKS;
                 blocked       = true;
             } else {
-                float angleErr = CalculateAngleError(current, currentTarget);
+                // Geen ruimte achter: niet zelf draaien (dat draaide naar het
+                // pad-doel, vaak de verkeerde kant op). Gewoon stoppen en laten
+                // herplannen richting de meest open ruimte.
                 stableLin     = 0.0f;
-                stableAng     = (angleErr > 0.0f) ? -MAX_ANGULAR_DEG_S : MAX_ANGULAR_DEG_S;
-                recoveryTicks = RECOVERY_TICKS;
+                stableAng     = 0.0f;
+                recoveryTicks = 0;
                 blocked       = true;
             }
             blockCounter = 0;
