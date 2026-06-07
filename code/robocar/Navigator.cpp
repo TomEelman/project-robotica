@@ -162,16 +162,16 @@ DriveCommand Navigator::GetNextCommand(Position current, float minFront, float m
 
         if (blockCounter >= RECOVERY_TRIGGER) {
             if (minRear > REVERSE_SAFE_MM) {
-                // Ruimte achter: kort achteruit om los te komen, daarna herplannen
-                // (blocked = true triggert een nieuw frontier-doel in HandleFrontierMode).
+                // Space behind: back briefly to get clear, then replan
+                // (blocked = true triggers a new frontier target in HandleFrontierMode).
                 stableLin     = REVERSE_SPEED;
                 stableAng     = 0.0f;
                 recoveryTicks = RECOVERY_TICKS;
                 blocked       = true;
             } else {
-                // Geen ruimte achter: niet zelf draaien (dat draaide naar het
-                // pad-doel, vaak de verkeerde kant op). Gewoon stoppen en laten
-                // herplannen richting de meest open ruimte.
+                // No space behind: do not turn yourself (that turned towards the
+                // path goal, often in the wrong direction). Just stop and let
+                // replan towards the most open space.
                 stableLin     = 0.0f;
                 stableAng     = 0.0f;
                 recoveryTicks = 0;
@@ -430,29 +430,27 @@ bool Navigator::HandleObstacleAvoidance(const ScanAnalysis& scan, Localisation& 
     return true;
 }
 
-// Bepaalt naar welke kant de robot moet draaien wanneer er geen bereikbaar
-// frontier-doel is. Kijkt naar de vrije ruimte links vs rechts in de LIDAR-scan
-// en draait naar de ruimste kant. Een statische voorkeur zorgt dat hij niet
-// heen-en-weer flipt tussen links en rechts wanneer beide kanten ongeveer gelijk zijn.
+// Determines which way the robot should turn when there is no reachable
+// frontier target. Looks at the free space left vs right in the LIDAR scan
+// and turns to the widest side. A static preference ensures that it does not
+// flip back and forth between left and right when both sides are approximately equal.
 static float ChooseFreestTurn(const float* ranges)
 {
     constexpr float MAX_RANGE  = 8000.0f;
-    constexpr float TURN_DEG_S = 35.0f;   // draaisnelheid
-    constexpr float HYSTERESIS = 300.0f;  // mm voorkeur voor de vorige kant
+    constexpr float TURN_DEG_S = 35.0f;   // rotation speed
+    constexpr float HYSTERESIS = 300.0f;  // mm preference
 
-    static float prevDir = TURN_DEG_S;    // onthoud laatste draairichting
+    static float prevDir = TURN_DEG_S;    // remember last rotation
 
-    // Gemiddelde vrije ruimte links (90..180 graden) en rechts (180..270 graden).
-    // Index 0 = recht vooruit, oplopend met de klok mee.
     float sumRight = 0.0f; int nRight = 0;
     float sumLeft  = 0.0f; int nLeft  = 0;
 
-    for (int a = 30; a <= 150; ++a) {           // rechterkant
+    for (int a = 30; a <= 150; ++a) {           // right side
         float r = ranges[a];
         if (r <= 0.0f || r > MAX_RANGE) r = MAX_RANGE;
         sumRight += r; ++nRight;
     }
-    for (int a = 210; a <= 330; ++a) {          // linkerkant
+    for (int a = 210; a <= 330; ++a) {          // left side
         float r = ranges[a];
         if (r <= 0.0f || r > MAX_RANGE) r = MAX_RANGE;
         sumLeft += r; ++nLeft;
@@ -461,7 +459,7 @@ static float ChooseFreestTurn(const float* ranges)
     float avgRight = (nRight > 0) ? sumRight / static_cast<float>(nRight) : 0.0f;
     float avgLeft  = (nLeft  > 0) ? sumLeft  / static_cast<float>(nLeft)  : 0.0f;
 
-    // Voorkeur voor de vorige richting om flip-flop te voorkomen.
+
     if (prevDir > 0.0f) avgRight += HYSTERESIS;
     else                avgLeft  += HYSTERESIS;
 
@@ -481,7 +479,6 @@ void Navigator::HandleFrontierMode(Mapper& mapper, Position pos, bool newScan,
         ka.SetCommand(cmd.GetLinVelocity(), cmd.GetAngVelocity());
 
         if (IsBlocked()) {
-           //  printf("[MAIN] Navigator blocked -> replan\n");
             Position blockedTarget = GetCurrentTarget();
             explorationPlanner.AddToBlackList(frontierBlacklist, blockedTarget.GetX(), blockedTarget.GetY());
             ResetBlock();
@@ -490,8 +487,6 @@ void Navigator::HandleFrontierMode(Mapper& mapper, Position pos, bool newScan,
         }
 
         if (IsBlocked()) {
-            // printf("[MAIN] Navigator blocked -> wacht op stabiele lokalisatie\n");
-
             Position blockedTarget = GetCurrentTarget();
             explorationPlanner.AddToBlackList(frontierBlacklist, blockedTarget.GetX(), blockedTarget.GetY());
             ResetBlock();
@@ -522,8 +517,6 @@ void Navigator::HandleFrontierMode(Mapper& mapper, Position pos, bool newScan,
             if (mapDone) {
                 navMode = NavMode_HEAD::RETURN_HOME;
                 hasPath = false;
-                //printf("[MAIN] Kaart gemapped (rand=%.0f%% int=%.0f%%) -> TERUG_HOME\n",
-                //       outerWallPct, interiorPct);
                 Path path = planner.PlanPath(pos, Position(0.0f, 0.0f, 0.0f), mapper.GetMap());
                 if (!path.IsEmpty()) { SetPath(path); mapper.SetWaypoints(path); hasPath = true; }
             } else {
@@ -532,10 +525,11 @@ void Navigator::HandleFrontierMode(Mapper& mapper, Position pos, bool newScan,
                 bool noGoal = (goal.GetX() == pos.GetX() && goal.GetY() == pos.GetY());
 
                 if (noGoal) {
-                    // Geen bereikbaar frontier-doel gevonden vanaf deze plek.
-                    // Blacklist de huidige omgeving zodat ChooseFrontierGoal hier
-                    // niet meteen opnieuw op vastloopt, en draai weg naar de kant
-                    // met de meeste vrije ruimte (voorkomt heen-en-weer in een hoek).
+                    
+                // No reachable frontier goal found from this location.
+                // Blacklist the current area so that ChooseFrontierGoal does not
+                // immediately get stuck on it again, and turn away to the side
+                // with the most free space (prevents back-and-forth in a corner).
                     explorationPlanner.AddToBlackList(frontierBlacklist, pos.GetX(), pos.GetY());
 
                     float turnDir = ChooseFreestTurn(lastRanges);
